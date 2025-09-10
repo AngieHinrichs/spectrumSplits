@@ -67,14 +67,14 @@ def find_site_splits(position, mutation_count, total_mutations, root, args, mask
         total_memo[node.id] = total_descendant_mutations
 
         snps_above = mutation_count - mutation_occurrences
-        total_above = total_mutations - total_descendant_mutations - snps_above
+        total_above = total_mutations - total_descendant_mutations
 
         rate_below = mutation_occurrences / total_descendant_mutations if total_descendant_mutations > 0 else 0
         rate_above = snps_above / total_above if total_above > 0 else 0
 
         if total_above > args.min_total and total_descendant_mutations > args.min_total:
             observed = [
-                [total_above, snps_above],
+                [total_above - snps_above, snps_above],
                 [total_descendant_mutations - mutation_occurrences, mutation_occurrences]
             ]
             chi2, p, dof, expected = chi2_contingency(observed)
