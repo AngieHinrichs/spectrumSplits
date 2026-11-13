@@ -80,8 +80,11 @@ Key options:
   follow the greedy cascade into subtrees, where chi-squared is necessarily
   smaller and not comparable to the first pass.
 - `--fold` scores the strand-folded 6-type spectrum (6 categories, 5 degrees of
-  freedom) instead of 12. Worth considering for a double-stranded genome with
-  no strand-asymmetric replication process.
+  freedom) instead of 12. This must match how you intend to run
+  `spectrumSplits.py`, which takes the same `--fold` flag: the statistic changes
+  scale and the null changes shape, so a threshold calibrated one way is
+  meaningless the other. See `spectrumSplits/README.md` for when folding is
+  appropriate.
 - `--include_observed` scores the unpermuted tree through the same code path, so
   the real maximum and the null maximum are directly comparable. If the ratio is
   under about 2x, the strongest real split is close to what chance produces.
@@ -167,15 +170,19 @@ resistance calls use TB-Profiler or Mykrobe.
    sanity-checked against how many nodes stay eligible and against the
    `smallest_eligible_subtree_tips` column — a value that admits 1-tip clades
    lets a single bad genome become a "split".
-6. Run `permutation_null.py` in both modes with that `--min_mutations`. The gap
+6. Decide whether to fold, from the twelve-versus-six spectrum comparison
+   `profile_tree.py` prints. Folding changes the degrees of freedom and the
+   scale of the statistic, so decide this *before* calibrating and pass the same
+   `--fold` to `permutation_null.py` and `spectrumSplits.py`.
+7. Run `permutation_null.py` in both modes with that `--min_mutations`. The gap
    between `types` and `sites` is your residual clumping; set `--min_chi` above
    the worst `sites` replicate, with a margin. If one node recurs across `sites`
    replicates, a localized hotspot is setting your threshold — find and fix it
    before accepting the number.
-7. Run `spectrumSplits.py` once with a permissive `--min_chi`, logging every
+8. Run `spectrumSplits.py` once with a permissive `--min_chi`, logging every
    split's chi-squared from stderr, and check where the splits-versus-threshold
    curve bends.
-8. Confirm the surviving splits with `--bootstrap_splits`.
-9. Inspect each split's per-class drivers and effect size in proportion terms
+9. Confirm the surviving splits with `--bootstrap_splits`.
+10. Inspect each split's per-class drivers and effect size in proportion terms
    before believing it. A split driven almost entirely by one mutation class is
    usually an artifact or a single over-mutated site.

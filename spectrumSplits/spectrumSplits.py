@@ -9,6 +9,65 @@ from multiprocessing import Process
 from collections import defaultdict
 from scipy.stats import chi2_contingency
 
+### The twelve possible single-nucleotide substitution classes, in the order
+### used for the chi-squared contingency table.
+MUTATION_TYPES = ["AC","AG","AT","CA","CG","CT","GA","GC","GT","TA","TC","TG"]
+
+COMPLEMENT = {"A": "T", "C": "G", "G": "C", "T": "A"}
+
+def folded_label( mutation_type ) :
+    """Label for the strand-complementary pair a mutation class belongs to.
+
+    A mutation observed as C>T on the reference strand is the same event as
+    G>A observed on the other strand.  For a double-stranded genome with no
+    strand-asymmetric replication process, the two carry the same information,
+    so they are reported as one class labelled "CT|GA" (pyrimidine reference
+    first)."""
+    ref, alt = mutation_type[0], mutation_type[1]
+    reverse = COMPLEMENT[ref] + COMPLEMENT[alt]
+    if ref in ("C", "T") :
+        return mutation_type + "|" + reverse
+    return reverse + "|" + mutation_type
+
+### The six strand-folded classes, in a stable order.
+FOLDED_TYPES = []
+for _mutation_type in MUTATION_TYPES :
+    _label = folded_label( _mutation_type )
+    if _label not in FOLDED_TYPES :
+        FOLDED_TYPES.append( _label )
+
+def spectrum_counts( spectrum, fold=False ) :
+    """Counts for the chi-squared table: twelve classes, or six if folding.
+
+    Uses .get() so that querying a missing class does not insert a zero key
+    into the caller's defaultdict."""
+    if not fold :
+        return [ spectrum.get( mutation_type, 0 ) for mutation_type in MUTATION_TYPES ]
+    totals = { label: 0 for label in FOLDED_TYPES }
+    for mutation_type in MUTATION_TYPES :
+        totals[ folded_label( mutation_type ) ] += spectrum.get( mutation_type, 0 )
+    return [ totals[ label ] for label in FOLDED_TYPES ]
+
+def contingency_chi2( below_counts, above_counts ) :
+    """Chi-squared for the 2 x k table, skipping classes absent from both rows.
+
+    scipy raises when an expected frequency is zero, which happens whenever a
+    mutation class is missing from the entire subtree being split.  Such a
+    column contributes nothing to the statistic, so dropping it returns the
+    value the test would have given.  Returns 0 when fewer than two classes
+    remain, since there is then nothing to compare."""
+    below = []
+    above = []
+    for below_count, above_count in zip( below_counts, above_counts ) :
+        if below_count == 0 and above_count == 0 :
+            continue
+        below.append( below_count )
+        above.append( above_count )
+    if len( below ) < 2 or sum( below ) == 0 or sum( above ) == 0 :
+        return 0
+    chi, p, dof, expected = chi2_contingency( [ below, above ] )
+    return chi
+
 # Command-line argument parsing
 def parse_args():
     parser = argparse.ArgumentParser(description="Process a phylogenetic tree to find splits, compute spectra, and get representative tips.")
@@ -21,6 +80,7 @@ def parse_args():
     parser.add_argument("--bootstrap_spectra", type=int, default=0, help="Number of bootstrap replicates to attempt in defining spectra")
     parser.add_argument("--nthreads", type=int, default=1, help="Number of threads for concurrent bootstrapping")
     parser.add_argument("--max_branch_length", type=int, default=100000, help="Maximum branch length to include in spectrum calculations")
+    parser.add_argument("--fold", action="store_true", help="Collapse the twelve mutation classes onto the six strand-complementary pairs (C>T with G>A, and so on) for the chi-squared test. Appropriate for a double-stranded genome with no strand-asymmetric replication process; gives 5 degrees of freedom instead of 11 and doubles the count in every cell. Changes the scale of the statistic, so --min_chi must be recalibrated.")
     return parser.parse_args()
 
 ### mutation positions 
@@ -98,25 +158,33 @@ def get_spectra(finalized_splits, max_branch_length, weights=None):
         final_spectra[split_root] = compute_mutation_spectrum(split_root, finalized_splits, spectrum_dict, weights, max_branch_length)
     return final_spectra
 
-def write_spectra_to_tsv(spectra_dict, filename, ntips):
+def write_spectra_to_tsv(spectra_dict, filename, ntips, fold=False):
     all_keys = set()
     for spectrum in spectra_dict.values():
         all_keys.update(spectrum.keys())
     sorted_keys = sorted(all_keys)
+    ### When folding, report the six folded proportions as extra columns.  The
+    ### twelve unfolded columns are kept so that strand symmetry stays visible
+    ### per split: a clade with a genuinely strand-asymmetric process would
+    ### show up there and nowhere else.
+    folded_keys = FOLDED_TYPES if fold else []
     with open(filename, "w", newline="") as file:
         writer = csv.writer(file, delimiter='\t')
-        header = ["Node_ID"] + ["Total_Mutations"] + ["Number_Tips"] + ["Mutations:Tips"]+ sorted_keys + ["Exemplar tips"]
+        header = ["Node_ID"] + ["Total_Mutations"] + ["Number_Tips"] + ["Mutations:Tips"]+ sorted_keys + folded_keys + ["Exemplar tips"]
         writer.writerow(header)
         for node, spectrum in spectra_dict.items():
             tips = get_tips( spectra_dict.keys(), node )
+            total_mutations = sum(spectrum.values())
+            normalized_spectrum = normalize_spectrum(spectrum)
+            folded_values = []
+            if fold :
+                folded_counts = spectrum_counts( spectrum, fold=True )
+                folded_total = sum( folded_counts )
+                folded_values = [ count / folded_total if folded_total else 0 for count in folded_counts ]
+            row = [node.id] + [total_mutations] + [len(tips)] + [float(total_mutations)/float(len(tips))] + [normalized_spectrum.get(key, 0) for key in sorted_keys] + folded_values
             if ntips > 0 :
-                normalized_spectrum = normalize_spectrum(spectrum)
-                row = [node.id] + [sum(spectrum.values())] + [len(tips)] + [float(sum(spectrum.values()))/float(len(tips))] + [normalized_spectrum.get(key, 0) for key in sorted_keys] + [write_tips( tips, ntips )] 
-                writer.writerow(row)
-            else:
-                normalized_spectrum = normalize_spectrum(spectrum)
-                row = [node.id] + [sum(spectrum.values())] + [len(tips)] + [float(sum(spectrum.values()))/float(len(tips))] + [normalized_spectrum.get(key, 0) for key in sorted_keys]
-                writer.writerow(row)
+                row = row + [write_tips( tips, ntips )]
+            writer.writerow(row)
     print(f"Spectra written to {filename}", file=sys.stderr)
 
 def get_tips(splits, node):
@@ -140,7 +208,7 @@ def write_tips(tips, ntips):
     else:
         return ','.join(random.sample(tips, ntips))
 
-def find_splits(node, min_chi, min_mutations, max_branch_length, weights=None ):
+def find_splits(node, min_chi, min_mutations, max_branch_length, weights=None, fold=False ):
     accepted_splits = set({node})
     finalized_splits = set()
     while len(accepted_splits) > len(finalized_splits):
@@ -162,23 +230,14 @@ def find_splits(node, min_chi, min_mutations, max_branch_length, weights=None ):
                 if sum(split_root_spectrum.values()) - sum(spectrum_dict[node].values()) < min_mutations:
                     continue
                 
-                splitroot_spectrum_list = []
-                above_spectrum_list = [] 
-                for mutation in ["AC","AG","AT","CA","CG","CT","GA","GC","GT","TA","TC","TG"] :
-                    if mutation in spectrum_dict[node].keys():
-                        splitroot_spectrum_list.append(spectrum_dict[node][mutation])
-                    else:
-                        # Append 0 if the mutation is missing from the spectrum
-                        splitroot_spectrum_list.append(0)
-                    
-                    if mutation in split_root_spectrum.keys():
-                        # Calculate the difference, but handle cases where mutation is missing from node
-                        above_spectrum_list.append(split_root_spectrum[mutation] - spectrum_dict[node].get(mutation, 0))
-                    else:
-                        # Append 0 if the mutation is missing from the split_root_spectrum
-                        above_spectrum_list.append(0)
+                ### Compare this subtree's spectrum against the rest of the
+                ### current split.  With --fold the twelve classes collapse
+                ### onto the six strand-complementary pairs first.
+                below_counts = spectrum_counts( spectrum_dict[node], fold )
+                root_counts = spectrum_counts( split_root_spectrum, fold )
+                above_counts = [ root_count - below_count for root_count, below_count in zip( root_counts, below_counts ) ]
 
-                chi, p, dof, expected = chi2_contingency([splitroot_spectrum_list,above_spectrum_list])
+                chi = contingency_chi2( below_counts, above_counts )
 
                 '''
                 node_spectrum_difference = compute_spectrum_difference(
@@ -205,21 +264,21 @@ def find_splits(node, min_chi, min_mutations, max_branch_length, weights=None ):
         print(f"End of iteration: {len(new_split)} new splits added, {len(accepted_splits) -1} total accepted splits", file=sys.stderr)
     return finalized_splits
 
-def bootstrap_replicate ( tree, replicate, min_chi, min_mutations, ntips, max_branch_length ) :
+def bootstrap_replicate ( tree, replicate, min_chi, min_mutations, ntips, max_branch_length, fold=False ) :
     print(f"Begining bootstrap no: {replicate}", file=sys.stderr)
     positions = get_positions( tree.root )
     bootstrap_weights = create_bootstrap( positions )
-    finalized_splits_bootstrap = find_splits(tree.root, min_chi, min_mutations, max_branch_length, bootstrap_weights)
+    finalized_splits_bootstrap = find_splits(tree.root, min_chi, min_mutations, max_branch_length, bootstrap_weights, fold)
     bootstrap_spectra = get_spectra(finalized_splits_bootstrap, max_branch_length, bootstrap_weights)
     bootstrap_output_file = f"bootstrap_{replicate}_splits_output.tsv"
-    write_spectra_to_tsv(bootstrap_spectra, bootstrap_output_file, ntips)
+    write_spectra_to_tsv(bootstrap_spectra, bootstrap_output_file, ntips, fold)
 
 # Define the run_bootstrap function using explicit process creation
-def run_bootstrap(tree, nbootstraps, nthreads, min_chi, min_mutations, max_branch_length):
+def run_bootstrap(tree, nbootstraps, nthreads, min_chi, min_mutations, max_branch_length, fold=False):
     processes = []
     # Create and start a process for each bootstrap replicate
     for replicate in range(1, nbootstraps + 1):
-        p = Process(target=bootstrap_replicate, args=(tree, replicate, min_chi, min_mutations, 0, max_branch_length))
+        p = Process(target=bootstrap_replicate, args=(tree, replicate, min_chi, min_mutations, 0, max_branch_length, fold))
         processes.append(p)
         p.start()
         # If we have reached the maximum number of threads, wait for them to finish
@@ -233,20 +292,20 @@ def run_bootstrap(tree, nbootstraps, nthreads, min_chi, min_mutations, max_branc
 
     print(f"Bootstrap completed with {nbootstraps} replicates using {nthreads} threads.")
 
-def bootstrap_spectrum_replicate( tree, replicate, splits, max_branch_lengths):
+def bootstrap_spectrum_replicate( tree, replicate, splits, max_branch_lengths, fold=False):
     print(f"Begining bootstrap no: {replicate}", file=sys.stderr)
     positions = get_positions( tree.root )
     bootstrap_weights = create_bootstrap( positions )
     bootstrap_spectra = get_spectra( splits, max_branch_lengths, bootstrap_weights)
     bootstrap_output_file = f"bootstrap_{replicate}_spectra_output.tsv"
-    write_spectra_to_tsv(bootstrap_spectra, bootstrap_output_file, 0)
+    write_spectra_to_tsv(bootstrap_spectra, bootstrap_output_file, 0, fold)
 
 ### ok, botostrap by spectrum
-def run_bootstrap_spectra( tree, nbootstraps, nthreads, splits, max_branch_lengths ) :
+def run_bootstrap_spectra( tree, nbootstraps, nthreads, splits, max_branch_lengths, fold=False ) :
     processes = []
     # Create and start a process for each bootstrap replicate
     for replicate in range(1, nbootstraps + 1):
-        p = Process(target=bootstrap_spectrum_replicate, args=(tree, replicate, splits, max_branch_lengths))
+        p = Process(target=bootstrap_spectrum_replicate, args=(tree, replicate, splits, max_branch_lengths, fold))
         processes.append(p)
         p.start()
         # If we have reached the maximum number of threads, wait for them to finish
@@ -265,20 +324,24 @@ def main():
     args = parse_args()
     tree = bte.MATree(args.input_tree)
 
+    if args.fold :
+        print(f"Folding the twelve mutation classes onto six strand-complementary pairs: {', '.join(FOLDED_TYPES)}", file=sys.stderr)
+        print("Note: --min_chi must be calibrated for folded classes; a threshold chosen for twelve classes does not carry over.", file=sys.stderr)
+
     ### go through and do the real run without weighting mutations 
-    finalized_splits = find_splits(tree.root, args.min_chi, args.min_mutations, args.max_branch_length )
+    finalized_splits = find_splits(tree.root, args.min_chi, args.min_mutations, args.max_branch_length, None, args.fold )
     spectra = get_spectra(finalized_splits, args.max_branch_length )
-    write_spectra_to_tsv(spectra, args.output_spectrum, args.ntips)
+    write_spectra_to_tsv(spectra, args.output_spectrum, args.ntips, args.fold)
 
     ### get bootstrap splits if requested
     if ( args.bootstrap_splits > 0 ) :
         print(f"Bootstrapping splits with {args.bootstrap_splits} replicates using {args.nthreads} threads.", file=sys.stderr)
-        run_bootstrap( tree, args.bootstrap_splits, args.nthreads, args.min_chi, args.min_mutations, args.max_branch_length )
+        run_bootstrap( tree, args.bootstrap_splits, args.nthreads, args.min_chi, args.min_mutations, args.max_branch_length, args.fold )
 
     ### bootstrap spectrum requested:
     if ( args.bootstrap_spectra > 0 ) :
         print(f"Bootstrapping spectra with {args.bootstrap_spectra} replicates using {args.nthreads} threads.", file=sys.stderr)
-        run_bootstrap_spectra( tree, args.bootstrap_spectra, args.nthreads, finalized_splits, args.max_branch_length )
+        run_bootstrap_spectra( tree, args.bootstrap_spectra, args.nthreads, finalized_splits, args.max_branch_length, args.fold )
 
 if __name__ == "__main__":
     main()
