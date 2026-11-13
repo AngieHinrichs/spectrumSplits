@@ -29,12 +29,20 @@ def folded_label( mutation_type ) :
         return mutation_type + "|" + reverse
     return reverse + "|" + mutation_type
 
-### The six strand-folded classes, in a stable order.
-FOLDED_TYPES = []
-for _mutation_type in MUTATION_TYPES :
-    _label = folded_label( _mutation_type )
-    if _label not in FOLDED_TYPES :
-        FOLDED_TYPES.append( _label )
+MUTATION_TYPE_SET = set( MUTATION_TYPES )
+
+### The six strand-folded classes, sorted so that the column order matches
+### tuning/profile_tree.py and tuning/permutation_null.py.  The chi-squared
+### statistic does not depend on the order, but the output columns do, and
+### three scripts disagreeing about it invites a misreading.
+FOLDED_TYPES = sorted( { folded_label( _mutation_type ) for _mutation_type in MUTATION_TYPES } )
+
+### How many mutation classes may be absent from a subtree before the test is
+### worth a warning.  A class missing from the whole subtree contributes
+### nothing and is dropped from the table; losing one or two rare classes in a
+### small subtree is unremarkable, but losing more means the subtree is too
+### small or too skewed for the statistic to rest on.
+MAX_MISSING_CLASSES = 2
 
 def spectrum_counts( spectrum, fold=False ) :
     """Counts for the chi-squared table: twelve classes, or six if folding.
@@ -65,7 +73,11 @@ def contingency_chi2( below_counts, above_counts ) :
         above.append( above_count )
     if len( below ) < 2 or sum( below ) == 0 or sum( above ) == 0 :
         return 0
-    chi, p, dof, expected = chi2_contingency( [ below, above ] )
+    ### correction=False: scipy applies the Yates continuity correction to
+    ### 2 x 2 tables only, so without this the statistic would quietly change
+    ### convention whenever dropped columns leave exactly two classes, and
+    ### would then disagree with tuning/permutation_null.py.
+    chi, p, dof, expected = chi2_contingency( [ below, above ], correction=False )
     return chi
 
 # Command-line argument parsing
@@ -120,6 +132,19 @@ def compute_mutation_spectrum(node, stop_nodes, spectrum_dict, weights=None, max
             char1 = mutation[0]
             char2 = mutation[-1]
             mutation_type = char1 + char2
+
+            ### UShER imputes an unambiguous [ACGT] base wherever an input
+            ### sequence had an ambiguous one, so a mutation-annotated tree it
+            ### produced cannot carry a mutation outside the twelve classes.
+            ### Anything else means this is not the kind of tree the script
+            ### expects, and the spectra would be wrong rather than merely
+            ### incomplete, so stop rather than carry on.
+            if mutation_type not in MUTATION_TYPE_SET :
+                raise ValueError(
+                    f"unexpected mutation class {mutation_type} from mutation {mutation} "
+                    f"on node {node.id}: expected one of {','.join(MUTATION_TYPES)}. "
+                    f"UShER imputes an unambiguous base for every ambiguous input base, "
+                    f"so this indicates a malformed or non-UShER input tree." )
             pos = int(mutation[1:-1])
             
             # Assign weight 1 if weights is None; otherwise, check if pos is in weights dict and it gets that weigth or 0 otherwise
@@ -178,9 +203,10 @@ def write_spectra_to_tsv(spectra_dict, filename, ntips, fold=False):
             normalized_spectrum = normalize_spectrum(spectrum)
             folded_values = []
             if fold :
+                ### Normalised by the same total as the unfolded columns, so a
+                ### folded column always equals the sum of its pair.
                 folded_counts = spectrum_counts( spectrum, fold=True )
-                folded_total = sum( folded_counts )
-                folded_values = [ count / folded_total if folded_total else 0 for count in folded_counts ]
+                folded_values = [ count / total_mutations if total_mutations else 0 for count in folded_counts ]
             row = [node.id] + [total_mutations] + [len(tips)] + [float(total_mutations)/float(len(tips))] + [normalized_spectrum.get(key, 0) for key in sorted_keys] + folded_values
             if ntips > 0 :
                 row = row + [write_tips( tips, ntips )]
@@ -222,6 +248,19 @@ def find_splits(node, min_chi, min_mutations, max_branch_length, weights=None, f
             spectrum_dict = {}
             split_root_spectrum = compute_mutation_spectrum(splitRoot, accepted_splits, spectrum_dict, weights, max_branch_length)
             print(f"Computing distances between splits in (sub)tree {splitRoot.id}", file=sys.stderr)
+
+            ### Classes absent from this whole subtree are dropped from every
+            ### table built below, which is correct but silently narrows the
+            ### test, so report it once per subtree rather than per candidate.
+            expected_classes = FOLDED_TYPES if fold else MUTATION_TYPES
+            subtree_counts = spectrum_counts( split_root_spectrum, fold )
+            missing_classes = [ label for label, count in zip( expected_classes, subtree_counts ) if count == 0 ]
+            if len( missing_classes ) > MAX_MISSING_CLASSES :
+                print(f"WARNING: {len(missing_classes)} of {len(expected_classes)} mutation classes are absent "
+                      f"from the subtree at {splitRoot.id} ({sum(subtree_counts)} mutations): "
+                      f"{','.join(missing_classes)}. Those classes are dropped from the test, which will "
+                      f"therefore compare only {len(expected_classes) - len(missing_classes)} classes. "
+                      f"Consider raising --min_mutations.", file=sys.stderr)
             max_chi = 0
             max_chi_node = None
             for node in spectrum_dict:

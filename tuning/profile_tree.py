@@ -212,6 +212,11 @@ def main():
     print(f"  internal: {n_nodes - n_leaves}", file=out)
     print(f"  usable SNVs (ACGT->ACGT): {total_mutations}", file=out)
     print(f"  skipped mutation strings: {total_skipped}", file=out)
+    if total_skipped:
+        print("  WARNING: every mutation on an UShER tree should be an unambiguous", file=out)
+        print("  [ACGT]->[ACGT] substitution, because UShER imputes a base for each", file=out)
+        print("  ambiguous input base. A non-zero count here means the tree is not", file=out)
+        print("  what spectrumSplits.py expects; investigate before going further.", file=out)
     if skipped:
         print("  most common skipped patterns:", file=out)
         for pat, c in skipped.most_common(5):

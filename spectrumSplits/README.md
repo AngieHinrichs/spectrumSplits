@@ -76,3 +76,24 @@ there and nowhere else.
 statistic changes scale and the null changes shape, so a threshold calibrated
 one way is meaningless the other. Recalibrate with
 `tuning/permutation_null.py --fold`.
+
+## Input expectations
+
+**Every mutation must be an unambiguous `[ACGT]` to `[ACGT]` substitution.**
+UShER imputes an unambiguous base wherever an input sequence carried an
+ambiguous one, so a mutation-annotated tree it produced cannot contain anything
+else. A mutation outside the twelve classes therefore means the tree is not what
+this script expects, and the resulting spectra would be wrong rather than merely
+incomplete -- so it raises an error naming the mutation and the node rather than
+carrying on. `tuning/profile_tree.py` reports the same condition as a warning
+before you ever start a run.
+
+**A class absent from an entire subtree is dropped from that subtree's tests.**
+Such a class contributes nothing to the statistic, and the test cannot be
+computed with a zero expected frequency, so the column is skipped. This is
+correct but it silently narrows the comparison, so when more than
+`MAX_MISSING_CLASSES` (2) classes are absent the script warns once for that
+subtree, naming them and saying how many classes remain. Hitting this generally
+means `--min_mutations` is too low for the subtrees the search is reaching: a
+statistic computed on three of twelve classes is not measuring what the name
+suggests.

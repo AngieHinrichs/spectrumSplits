@@ -59,19 +59,24 @@ MUT_INDEX = {m: i for i, m in enumerate(MUT_TYPES)}
 COMPLEMENT = {"A": "T", "C": "G", "G": "C", "T": "A"}
 
 
+def folded_label(mut_type):
+    """Label for the strand-complementary pair a mutation class belongs to."""
+    ref, alt = mut_type[0], mut_type[1]
+    reverse = COMPLEMENT[ref] + COMPLEMENT[alt]
+    if ref in ("C", "T"):
+        return mut_type + "|" + reverse
+    return reverse + "|" + mut_type
+
+
 def folded_index():
-    """Map each of the 12 type indices onto one of 6 strand-folded indices."""
-    labels = []
-    mapping = [0] * 12
-    for i, mut_type in enumerate(MUT_TYPES):
-        ref, alt = mut_type[0], mut_type[1]
-        if ref in ("C", "T"):
-            label = ref + alt + "|" + COMPLEMENT[ref] + COMPLEMENT[alt]
-        else:
-            label = COMPLEMENT[ref] + COMPLEMENT[alt] + "|" + ref + alt
-        if label not in labels:
-            labels.append(label)
-        mapping[i] = labels.index(label)
+    """Map each of the 12 type indices onto one of 6 strand-folded indices.
+
+    Labels are sorted so the category order matches profile_tree.py and
+    spectrumSplits.py; the statistic is order-independent but the reported
+    order should not differ between the tools.
+    """
+    labels = sorted({folded_label(m) for m in MUT_TYPES})
+    mapping = [labels.index(folded_label(m)) for m in MUT_TYPES]
     return mapping, labels
 
 
