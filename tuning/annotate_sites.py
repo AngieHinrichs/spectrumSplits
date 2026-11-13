@@ -119,6 +119,10 @@ def parse_args():
                      help="Write merged mask intervals as BED (0-based half-open)")
     msk.add_argument("--mask_positions", type=str, default=None,
                      help="Write every masked position, one 1-based position per line")
+    msk.add_argument("--mask_matutils", type=str, default=None,
+                     help="Write the mask in the form 'matUtils mask -m' expects: one "
+                          "line per masked position, N<position>N. Feed it straight to "
+                          "matUtils mask -i tree.pb.gz -m <this file> -o masked.pb.gz")
 
     p.add_argument("--flank", type=int, default=200,
                    help="For an intergenic site, call it a promoter site if it is "
@@ -849,9 +853,15 @@ def main():
                     for p in range(s, e + 1):
                         fh.write(f"{p}\n")
             print(f"  position list (1-based) -> {args.mask_positions}", file=sys.stderr)
-        if not args.mask_bed and not args.mask_positions:
-            print("  (pass --mask_bed or --mask_positions to write it out)",
-                  file=sys.stderr)
+        if args.mask_matutils:
+            with open(args.mask_matutils, "w") as fh:
+                for s, e in intervals:
+                    for p in range(s, e + 1):
+                        fh.write(f"N{p}N\n")
+            print(f"  matUtils mask file -> {args.mask_matutils}", file=sys.stderr)
+        if not args.mask_bed and not args.mask_positions and not args.mask_matutils:
+            print("  (pass --mask_bed, --mask_positions or --mask_matutils to write "
+                  "it out)", file=sys.stderr)
 
     if not did_something:
         print("Nothing to do: pass sites (--sites / --positions / --from_profile) "
