@@ -155,6 +155,30 @@ genomic coordinates and is what you should cite. Cross-check against
 TB-Profiler's database too. This script does not predict drug resistance; for
 resistance calls use TB-Profiler or Mykrobe.
 
+### The other gene list: `tb_repair_genes.txt`
+
+`tb_repair_genes.txt` lists DNA repair, replication-fidelity and dNTP-pool
+genes, and exists for the opposite purpose. **Do not mask these.** A
+repair-gene mutation is the *explanation* you want when a clade turns out to
+have a distinct spectrum: a lineage that lost or altered a repair function is
+what a real mutational-spectrum split looks like. Masking them destroys the
+signal.
+
+Use it with `--highlight`, which flags matching sites in a `highlight` column
+and counts them, changing nothing else:
+
+```
+annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \
+    --positions <mutations on the clade's defining branch> \
+    --highlight tb_repair_genes.txt
+```
+
+This list carries gene names and **no locus tags at all** — the Rv numbers are
+in comments as hints to check. A name missing from your annotation is reported
+as NOT FOUND, which is harmless, whereas a misremembered locus tag would resolve
+to the wrong gene and mislead you silently. Verify any you rely on against
+Mycobrowser or the NCBI H37Rv annotation.
+
 ## Suggested order
 
 1. Run `profile_tree.py` on the raw tree.

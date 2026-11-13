@@ -123,6 +123,12 @@ def parse_args():
     p.add_argument("--flank", type=int, default=200,
                    help="For an intergenic site, call it a promoter site if it is "
                         "within this many bases upstream of a feature")
+    p.add_argument("--highlight", type=str, default=None,
+                   help="File of gene names or locus tags (one per line, # comments "
+                        "allowed); sites in those genes are flagged in a 'highlight' "
+                        "column and counted. Annotation only -- nothing is masked. "
+                        "Use it to ask whether a clade's defining mutations land in "
+                        "genes of interest, e.g. tb_repair_genes.txt")
     p.add_argument("--output", type=str, default=None,
                    help="Annotated sites TSV (default: stdout)")
     p.add_argument("--selftest", action="store_true",
@@ -642,6 +648,19 @@ def main():
         if seq:
             print(f"  reference length {len(seq)} bp", file=sys.stderr)
 
+    ### Names to flag in the output.  Purely annotation: unlike --regions these
+    ### are never masked, because a mutation in one of them is usually the
+    ### explanation being looked for rather than something to remove.
+    highlight_names = set()
+    if args.highlight:
+        with smart_open(args.highlight) as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    highlight_names.add(line.split()[0].lower())
+        print(f"Highlighting sites in {len(highlight_names)} named genes from "
+              f"{args.highlight}", file=sys.stderr)
+
     did_something = False
 
     # ---- annotate sites -------------------------------------------------
@@ -662,12 +681,15 @@ def main():
         out = open(args.output, "w") if args.output else sys.stdout
         header = ["position", "count", "mutation", "context", "feature_type",
                   "gene", "locus_tag", "strand", "codon", "codon_pos",
-                  "ref_codon", "ref_aa", "aa_change", "distance", "product"]
+                  "ref_codon", "ref_aa", "aa_change", "distance", "product",
+                  "highlight"]
         out.write("\t".join(header) + "\n")
 
         n_coding = 0
         n_promoter = 0
         n_intergenic = 0
+        n_highlighted = 0
+        highlight_hits = defaultdict(int)
         per_gene = defaultdict(int)
 
         for pos, count, mutation in sites:
@@ -750,6 +772,13 @@ def main():
                                   if context == "promoter" else ""),
                     "product": f.product or "",
                 })
+            if highlight_names:
+                for key in (row["gene"], row["locus_tag"]):
+                    if key and str(key).lower() in highlight_names:
+                        row["highlight"] = key
+                        highlight_hits[key] += 1
+                        n_highlighted += 1
+                        break
             out.write("\t".join(str(row[k]) for k in header) + "\n")
 
         if args.output:
@@ -757,6 +786,15 @@ def main():
             print(f"Annotated {len(sites)} sites -> {args.output}", file=sys.stderr)
         print(f"  CDS: {n_coding}   promoter (within {args.flank} bp): {n_promoter}   "
               f"intergenic: {n_intergenic}", file=sys.stderr)
+        if highlight_names:
+            if n_highlighted:
+                print(f"  HIGHLIGHTED: {n_highlighted} site(s) in named genes: "
+                      + ", ".join(f"{g}={n}" for g, n in
+                                  sorted(highlight_hits.items(), key=lambda x: -x[1])),
+                      file=sys.stderr)
+            else:
+                print("  highlighted: none of these sites fall in the named genes",
+                      file=sys.stderr)
         if per_gene:
             print("  sites per feature: " + ", ".join(
                 f"{g}={n}" for g, n in sorted(per_gene.items(), key=lambda x: -x[1])),

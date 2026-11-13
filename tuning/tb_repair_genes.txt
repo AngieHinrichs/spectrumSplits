@@ -1,0 +1,118 @@
+# M. tuberculosis DNA repair, replication-fidelity and dNTP-pool genes.
+#
+# ---------------------------------------------------------------------------
+# DO NOT MASK THESE.
+#
+# This list is the opposite of tb_resistance_genes.txt in purpose.  Resistance
+# loci are masked because recurrent selected mutations there corrupt the
+# spectrum.  Repair-gene mutations are the EXPLANATION you are looking for when
+# a clade turns out to have a distinct spectrum: a lineage that lost or altered
+# a repair function is exactly what a real mutational-spectrum split looks like.
+# Masking these would destroy the signal.
+#
+# Use this list with annotate_sites.py --highlight, which flags sites falling in
+# any of these genes without changing anything else:
+#
+#   annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \
+#       --positions <the mutations on your clade's defining branch> \
+#       --highlight tb_repair_genes.txt
+#
+# ---------------------------------------------------------------------------
+# GENE NAMES ONLY -- NO COORDINATES, AND DELIBERATELY ALMOST NO LOCUS TAGS.
+#
+# Names resolve against the annotation you supply.  A name that is not in your
+# annotation is reported as NOT FOUND, which is harmless; a locus tag I
+# misremembered would instead resolve to the wrong gene and quietly mislead you.
+# So the Rv numbers below are in comments, as hints to check, not as entries.
+# Verify any you rely on against Mycobrowser or the NCBI H37Rv annotation.
+# ---------------------------------------------------------------------------
+
+# --- primary suspects: documented or suspected mutator phenotypes in MTBC ---
+# mutT2 ~ Rv1160, mutT4 ~ Rv3908, ogt ~ Rv1316c, dnaE2 ~ Rv3370c,
+# mutY ~ Rv3589, ung ~ Rv2976c, udgB ~ Rv1259
+# The Beijing / lineage 2 background carries mutT2, mutT4 and ogt
+# polymorphisms; check lineage before concluding anything from those.
+mutT1
+mutT2
+mutT3
+mutT4
+mazG
+ogt
+mutY
+ung
+udgB
+dnaE2
+
+# --- mismatch repair surrogate ------------------------------------------------
+# Mycobacteria lack MutS/MutL and use NucS (EndoMS) instead; loss of NucS gives
+# a strong hypermutator phenotype, so this is a high-value candidate.
+nucS
+endMS
+
+# --- oxidative and alkylation damage -----------------------------------------
+ada
+adaA
+alkA
+alkB
+tag
+
+# --- base excision repair: glycosylases and AP endonucleases ------------------
+nth
+nei
+fpg
+fpg1
+fpg2
+mutM
+xthA
+nfo
+end
+
+# --- nucleotide excision repair ----------------------------------------------
+uvrA
+uvrB
+uvrC
+uvrD1
+uvrD2
+mfd
+
+# --- replicative and translesion polymerases ---------------------------------
+dnaE1
+dnaN
+dinB
+dinP
+polA
+dnaQ
+
+# --- recombination and the SOS response --------------------------------------
+recA
+recB
+recC
+recD
+recF
+recG
+recN
+recO
+recR
+ruvA
+ruvB
+ruvC
+radA
+lexA
+sbcB
+sbcC
+sbcD
+
+# --- ligases and end joining -------------------------------------------------
+ligA
+ligB
+ligC
+ligD
+ku
+
+# --- dNTP pool sanitation ----------------------------------------------------
+# An imbalanced or damaged dNTP pool shifts the spectrum without any change to
+# the repair machinery itself.
+dut
+nudC
+rnhA
+rnhB
