@@ -1,0 +1,826 @@
+#!/usr/bin/env python3
+"""Annotate genome positions against a reference annotation, and build mask regions.
+
+Written for the Mycobacterium tuberculosis use case: profile_tree.py reports the
+most recurrently mutated sites, and those sites need to be identified before you
+can decide what to mask.  Recurrent sites violate the chi-squared test's
+independence assumption, and in MTBC the worst offenders are drug-resistance
+loci under convergent selection.
+
+This script does NOT predict drug resistance.  It reports, for each position,
+which feature it falls in and which codon it hits, using coordinates taken from
+an annotation file YOU supply.  Nothing here is hardcoded from memory, so the
+answers are only as good as your annotation.  For actual resistance calls use
+TB-Profiler or Mykrobe, and cite the WHO mutation catalogue.
+
+Two jobs:
+
+  1. Annotate sites.  Given positions (and optionally mutation strings such as
+     C2155168T), report feature type, gene, locus tag, strand, codon number,
+     codon position, reference codon and amino acid, and the amino-acid change.
+     Without an explicit alternate base, all three possible changes at that
+     position are listed.
+
+  2. Emit mask regions.  Given a list of gene names or locus tags, resolve them
+     against the annotation and write a merged BED (or a flat position list) for
+     masking whole loci.  Per-site masking of a top-N list is whack-a-mole: the
+     adjacent base in the same codon just surfaces next.  Masking the locus is
+     the fix.
+
+Inputs:
+  --annotation   GFF3 or GenBank, optionally gzipped (GFF3 preferred)
+  --reference    FASTA of the reference genome (optional; needed for codons
+                 and amino acids)
+
+Examples:
+  # identify the recurrent sites profile_tree.py reported
+  annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
+      --from_profile mtb_profile.txt --output annotated_sites.tsv
+
+  # build a mask covering known resistance loci plus their promoters
+  annotate_sites.py --annotation NC_000962.3.gff3.gz \\
+      --regions tb_resistance_genes.txt --promoter_flank 200 \\
+      --mask_bed resistance_loci.bed
+
+  # also mask the PE/PPE families, which are repetitive and alignment-prone
+  annotate_sites.py --annotation NC_000962.3.gff3.gz \\
+      --mask_pattern '^(PE|PPE)' --mask_bed pe_ppe.bed
+
+  # check the codon arithmetic, including reverse-strand genes
+  annotate_sites.py --selftest
+"""
+
+import argparse
+import bisect
+import gzip
+import io
+import re
+import sys
+from collections import defaultdict
+
+CODON_TABLE = {
+    "TTT": "F", "TTC": "F", "TTA": "L", "TTG": "L",
+    "CTT": "L", "CTC": "L", "CTA": "L", "CTG": "L",
+    "ATT": "I", "ATC": "I", "ATA": "I", "ATG": "M",
+    "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V",
+    "TCT": "S", "TCC": "S", "TCA": "S", "TCG": "S",
+    "CCT": "P", "CCC": "P", "CCA": "P", "CCG": "P",
+    "ACT": "T", "ACC": "T", "ACA": "T", "ACG": "T",
+    "GCT": "A", "GCC": "A", "GCA": "A", "GCG": "A",
+    "TAT": "Y", "TAC": "Y", "TAA": "*", "TAG": "*",
+    "CAT": "H", "CAC": "H", "CAA": "Q", "CAG": "Q",
+    "AAT": "N", "AAC": "N", "AAA": "K", "AAG": "K",
+    "GAT": "D", "GAC": "D", "GAA": "E", "GAG": "E",
+    "TGT": "C", "TGC": "C", "TGA": "*", "TGG": "W",
+    "CGT": "R", "CGC": "R", "CGA": "R", "CGG": "R",
+    "AGT": "S", "AGC": "S", "AGA": "R", "AGG": "R",
+    "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G",
+}
+COMPLEMENT = {"A": "T", "C": "G", "G": "C", "T": "A", "N": "N"}
+
+# Feature types we care about, in priority order when a position falls in
+# several overlapping features.
+TYPE_PRIORITY = ["CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene", "region"]
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Annotate genome positions against a reference annotation, "
+                    "and build mask regions.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--annotation", type=str,
+                   help="GFF3 or GenBank annotation, optionally gzipped")
+    p.add_argument("--reference", type=str, default=None,
+                   help="Reference FASTA; required for codon and amino-acid output")
+    p.add_argument("--seqid", type=str, default=None,
+                   help="Restrict to this sequence id / accession (default: all)")
+
+    src = p.add_argument_group("site input (choose one)")
+    src.add_argument("--sites", type=str, default=None,
+                     help="File whose first column is a position; an optional "
+                          "second column is a count, and a token like C2155168T "
+                          "anywhere in the row is used as the mutation")
+    src.add_argument("--positions", type=str, default=None,
+                     help="Comma-separated positions")
+    src.add_argument("--from_profile", type=str, default=None,
+                     help="profile_tree.py output; reads its SITE RECURRENCE table")
+
+    msk = p.add_argument_group("mask output")
+    msk.add_argument("--regions", type=str, default=None,
+                     help="File of gene names or locus tags (one per line, # comments "
+                          "allowed) to resolve into mask intervals")
+    msk.add_argument("--mask_pattern", type=str, default=None,
+                     help="Regex on gene name or locus tag; matching features are "
+                          "added to the mask (e.g. '^(PE|PPE)')")
+    msk.add_argument("--promoter_flank", type=int, default=0,
+                     help="Bases to extend each masked feature upstream (5') to cover "
+                          "promoter mutations; strand aware")
+    msk.add_argument("--mask_bed", type=str, default=None,
+                     help="Write merged mask intervals as BED (0-based half-open)")
+    msk.add_argument("--mask_positions", type=str, default=None,
+                     help="Write every masked position, one 1-based position per line")
+
+    p.add_argument("--flank", type=int, default=200,
+                   help="For an intergenic site, call it a promoter site if it is "
+                        "within this many bases upstream of a feature")
+    p.add_argument("--output", type=str, default=None,
+                   help="Annotated sites TSV (default: stdout)")
+    p.add_argument("--selftest", action="store_true",
+                   help="Check codon arithmetic and translation, then exit")
+    return p.parse_args()
+
+
+def smart_open(path):
+    if path.endswith(".gz"):
+        return io.TextIOWrapper(gzip.open(path, "rb"), encoding="utf-8", errors="replace")
+    return open(path, "r", encoding="utf-8", errors="replace")
+
+
+# --------------------------------------------------------------------------
+# annotation parsing
+# --------------------------------------------------------------------------
+
+class Feature(object):
+    __slots__ = ("seqid", "ftype", "start", "end", "strand", "gene", "locus_tag", "product")
+
+    def __init__(self, seqid, ftype, start, end, strand, gene, locus_tag, product):
+        self.seqid = seqid
+        self.ftype = ftype
+        self.start = start          # 1-based inclusive
+        self.end = end              # 1-based inclusive
+        self.strand = strand        # +1 / -1
+        self.gene = gene
+        self.locus_tag = locus_tag
+        self.product = product
+
+    def label(self):
+        return self.gene or self.locus_tag or "?"
+
+    def __repr__(self):
+        return (f"Feature({self.label()} {self.ftype} {self.start}-{self.end} "
+                f"{'+' if self.strand > 0 else '-'})")
+
+
+def unescape_gff(value):
+    out = []
+    i = 0
+    while i < len(value):
+        if value[i] == "%" and i + 2 < len(value):
+            try:
+                out.append(chr(int(value[i + 1:i + 3], 16)))
+                i += 3
+                continue
+            except ValueError:
+                pass
+        out.append(value[i])
+        i += 1
+    return "".join(out)
+
+
+def parse_gff3(path, seqid_filter=None):
+    features = []
+    with smart_open(path) as fh:
+        for line in fh:
+            if not line or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+            seqid, _src, ftype, start, end, _score, strand, _phase, attrs = parts[:9]
+            if seqid_filter and seqid != seqid_filter:
+                continue
+            if ftype not in TYPE_PRIORITY:
+                continue
+            try:
+                start_i = int(start)
+                end_i = int(end)
+            except ValueError:
+                continue
+            kv = {}
+            for field in attrs.split(";"):
+                if "=" not in field:
+                    continue
+                k, v = field.split("=", 1)
+                kv[k.strip()] = unescape_gff(v.strip())
+            gene = kv.get("gene") or kv.get("Name") or kv.get("gene_synonym")
+            locus_tag = kv.get("locus_tag") or kv.get("old_locus_tag")
+            features.append(Feature(seqid, ftype, start_i, end_i,
+                                    -1 if strand == "-" else 1,
+                                    gene, locus_tag, kv.get("product")))
+    return features
+
+
+GB_LOC = re.compile(r"(complement\()?\s*<?(\d+)\s*\.\.\s*>?(\d+)")
+
+
+def parse_genbank(path, seqid_filter=None):
+    """Minimal GenBank feature-table parser: simple and complement() locations."""
+    features = []
+    seqid = None
+    in_features = False
+    cur = None
+
+    def flush(cur):
+        if not cur:
+            return
+        ftype, loc, quals = cur
+        if ftype not in TYPE_PRIORITY:
+            return
+        m = GB_LOC.search(loc)
+        if not m:
+            return
+        strand = -1 if (m.group(1) or "join" in loc and "complement" in loc) else 1
+        start_i, end_i = int(m.group(2)), int(m.group(3))
+        if seqid_filter and seqid and seqid != seqid_filter:
+            return
+        features.append(Feature(seqid, ftype, start_i, end_i, strand,
+                                quals.get("gene"), quals.get("locus_tag"),
+                                quals.get("product")))
+
+    with smart_open(path) as fh:
+        for line in fh:
+            if line.startswith("VERSION") or line.startswith("ACCESSION"):
+                tok = line.split()
+                if len(tok) > 1 and seqid is None:
+                    seqid = tok[1]
+                continue
+            if line.startswith("FEATURES"):
+                in_features = True
+                continue
+            if line.startswith("ORIGIN") or line.startswith("//"):
+                flush(cur)
+                cur = None
+                in_features = False
+                continue
+            if not in_features:
+                continue
+            if len(line) > 5 and line[5] != " " and not line[:5].strip():
+                # new feature: key starts at column 6
+                flush(cur)
+                ftype = line[5:20].strip()
+                cur = [ftype, line[20:].strip(), {}]
+            elif cur is not None:
+                body = line[21:].rstrip("\n") if len(line) > 21 else ""
+                stripped = body.strip()
+                if stripped.startswith("/"):
+                    if "=" in stripped:
+                        k, v = stripped[1:].split("=", 1)
+                        cur[2][k.strip()] = v.strip().strip('"')
+                    else:
+                        cur[2][stripped[1:].strip()] = "true"
+                elif stripped and not cur[2]:
+                    cur[1] += stripped
+    flush(cur)
+    return features
+
+
+def load_annotation(path, seqid_filter=None):
+    low = path.lower()
+    if low.endswith(".gz"):
+        low = low[:-3]
+    if low.endswith((".gff", ".gff3")):
+        return parse_gff3(path, seqid_filter)
+    if low.endswith((".gbk", ".gb", ".gbff", ".genbank")):
+        return parse_genbank(path, seqid_filter)
+    # sniff
+    with smart_open(path) as fh:
+        head = fh.read(4096)
+    if head.lstrip().startswith(("LOCUS", "GBFF")):
+        return parse_genbank(path, seqid_filter)
+    return parse_gff3(path, seqid_filter)
+
+
+def load_fasta(path):
+    seqs = {}
+    name = None
+    chunks = []
+    with smart_open(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if name is not None:
+                    seqs[name] = "".join(chunks)
+                name = line[1:].split()[0]
+                chunks = []
+            else:
+                chunks.append(line.strip().upper())
+    if name is not None:
+        seqs[name] = "".join(chunks)
+    return seqs
+
+
+# --------------------------------------------------------------------------
+# lookup
+# --------------------------------------------------------------------------
+
+class FeatureIndex(object):
+    def __init__(self, features):
+        self.features = sorted(features, key=lambda f: (f.start, f.end))
+        self.starts = [f.start for f in self.features]
+        self.max_len = max((f.end - f.start + 1) for f in self.features) if features else 0
+
+    def at(self, pos):
+        """All features containing pos, highest priority type first."""
+        lo = bisect.bisect_left(self.starts, pos - self.max_len)
+        hits = []
+        for f in self.features[lo:]:
+            if f.start > pos:
+                break
+            if f.start <= pos <= f.end:
+                hits.append(f)
+        hits.sort(key=lambda f: TYPE_PRIORITY.index(f.ftype)
+                  if f.ftype in TYPE_PRIORITY else len(TYPE_PRIORITY))
+        return hits
+
+    def nearest(self, pos):
+        """(feature, signed_distance) for the closest feature; negative = upstream of it."""
+        best = None
+        best_d = None
+        for f in self.features:
+            if f.start <= pos <= f.end:
+                d = 0
+            elif pos < f.start:
+                d = pos - f.start          # negative
+            else:
+                d = pos - f.end            # positive
+            ad = abs(d)
+            if best_d is None or ad < best_d:
+                best, best_d = f, ad
+                if ad == 0:
+                    break
+        return best, (0 if best_d == 0 else (pos - best.start if pos < best.start
+                                             else pos - best.end))
+
+
+def codon_for(feature, pos, seq):
+    """Codon number, position in codon, and the codon bases for a CDS hit.
+
+    Forward strand: codon n covers start+3(n-1) .. start+3(n-1)+2.
+    Reverse strand: translation runs from `end` downwards, so codon n covers
+    end-3(n-1) down to end-3(n-1)-2, and the bases are reverse complemented.
+    """
+    if feature.strand > 0:
+        off = pos - feature.start
+        codon_no = off // 3 + 1
+        codon_pos = off % 3 + 1
+        c_start = feature.start + 3 * (codon_no - 1)
+        bases = None
+        if seq is not None and 1 <= c_start and c_start + 2 <= len(seq):
+            bases = seq[c_start - 1:c_start + 2]
+    else:
+        off = feature.end - pos
+        codon_no = off // 3 + 1
+        codon_pos = off % 3 + 1
+        c_end = feature.end - 3 * (codon_no - 1)
+        bases = None
+        if seq is not None and c_end - 2 >= 1 and c_end <= len(seq):
+            fwd = seq[c_end - 3:c_end]
+            bases = "".join(COMPLEMENT.get(b, "N") for b in reversed(fwd))
+    return codon_no, codon_pos, bases
+
+
+def substitute(codon, codon_pos, alt_base, strand):
+    """Apply an alternate genomic base to a codon, honouring strand."""
+    if codon is None:
+        return None
+    b = alt_base.upper()
+    if strand < 0:
+        b = COMPLEMENT.get(b, "N")
+    chars = list(codon)
+    chars[codon_pos - 1] = b
+    return "".join(chars)
+
+
+def translate(codon):
+    if not codon or len(codon) != 3:
+        return None
+    return CODON_TABLE.get(codon.upper())
+
+
+# --------------------------------------------------------------------------
+# site input
+# --------------------------------------------------------------------------
+
+MUT_RE = re.compile(r"^([ACGT])(\d+)([ACGT])$", re.IGNORECASE)
+
+
+def read_sites_file(path):
+    sites = []
+    with smart_open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            toks = re.split(r"[\s,]+", line)
+            pos = None
+            count = None
+            mutation = None
+            for tok in toks:
+                m = MUT_RE.match(tok)
+                if m:
+                    mutation = tok.upper()
+                    pos = int(m.group(2))
+                    break
+            if pos is None:
+                try:
+                    pos = int(toks[0])
+                except (ValueError, IndexError):
+                    continue
+                if len(toks) > 1:
+                    try:
+                        count = int(toks[1])
+                    except ValueError:
+                        count = None
+            sites.append((pos, count, mutation))
+    return sites
+
+
+def read_profile_sites(path):
+    """Pull the SITE RECURRENCE table out of profile_tree.py output."""
+    sites = []
+    with smart_open(path) as fh:
+        lines = fh.read().splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if "position" in low and "mutations" in low and "pct_of_total" in low:
+            start = i + 1
+            break
+    if start is None:
+        print("error: could not find the SITE RECURRENCE table "
+              "(a header line with position / mutations / pct_of_total)", file=sys.stderr)
+        return sites
+    for line in lines[start:]:
+        toks = line.split()
+        if len(toks) < 2:
+            break
+        try:
+            pos = int(toks[0])
+            count = int(toks[1])
+        except ValueError:
+            break
+        sites.append((pos, count, None))
+    return sites
+
+
+# --------------------------------------------------------------------------
+# mask building
+# --------------------------------------------------------------------------
+
+def resolve_region_names(features, names):
+    """Match requested gene names / locus tags against the annotation."""
+    by_key = defaultdict(list)
+    for f in features:
+        if f.ftype not in ("CDS", "rRNA", "tRNA", "ncRNA", "gene"):
+            continue
+        for key in (f.gene, f.locus_tag):
+            if key:
+                by_key[key.lower()].append(f)
+    matched = {}
+    missing = []
+    for name in names:
+        hits = by_key.get(name.lower())
+        if hits:
+            matched[name] = hits
+        else:
+            missing.append(name)
+    return matched, missing
+
+
+def merge_intervals(intervals):
+    """Merge 1-based inclusive intervals."""
+    if not intervals:
+        return []
+    out = []
+    for s, e in sorted(intervals):
+        if out and s <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [(s, e) for s, e in out]
+
+
+def feature_interval(f, promoter_flank):
+    s, e = f.start, f.end
+    if promoter_flank > 0:
+        if f.strand > 0:
+            s = max(1, s - promoter_flank)
+        else:
+            e = e + promoter_flank
+    return s, e
+
+
+# --------------------------------------------------------------------------
+# self-test
+# --------------------------------------------------------------------------
+
+def selftest():
+    """Verify codon arithmetic on both strands against hand-computed cases."""
+    failures = 0
+
+    # A synthetic 60 bp genome.  Forward gene at 10..27, reverse gene at 31..48.
+    seq = ("A" * 9 +                      # 1-9 filler
+           "ATGAAACCCGGGTTTTAA" +         # 10-27 forward CDS: M K P G F *
+           "AAA" +                        # 28-30 filler
+           "TTAAAACCCGGGTTTCAT" +         # 31-48 reverse CDS
+           "A" * 12)                      # 49-60 filler
+    assert len(seq) == 60, len(seq)
+
+    fwd = Feature("t", "CDS", 10, 27, 1, "fwdGene", "T0001", None)
+    rev = Feature("t", "CDS", 31, 48, -1, "revGene", "T0002", None)
+
+    # forward gene: codon 1 = positions 10,11,12 = ATG = M
+    cases = [
+        (fwd, 10, 1, 1, "ATG", "M"),
+        (fwd, 12, 1, 3, "ATG", "M"),
+        (fwd, 13, 2, 1, "AAA", "K"),
+        (fwd, 17, 3, 2, "CCC", "P"),
+        (fwd, 27, 6, 3, "TAA", "*"),
+    ]
+    # reverse gene: translation starts at 48 going down.
+    # genome 46..48 = "CAT"; revcomp = "ATG" = M
+    cases += [
+        (rev, 48, 1, 1, "ATG", "M"),
+        (rev, 46, 1, 3, "ATG", "M"),
+        (rev, 45, 2, 1, "AAA", "K"),
+        (rev, 41, 3, 2, "CCC", "P"),
+        (rev, 31, 6, 3, "TAA", "*"),
+    ]
+    for feat, pos, want_codon, want_cpos, want_bases, want_aa in cases:
+        codon_no, codon_pos, bases = codon_for(feat, pos, seq)
+        aa = translate(bases)
+        ok = (codon_no == want_codon and codon_pos == want_cpos
+              and bases == want_bases and aa == want_aa)
+        if not ok:
+            failures += 1
+            print(f"FAIL {feat.label()} pos {pos}: got codon {codon_no} pos {codon_pos} "
+                  f"{bases} {aa}; want codon {want_codon} pos {want_cpos} "
+                  f"{want_bases} {want_aa}", file=sys.stderr)
+    if failures == 0:
+        print(f"ok: codon arithmetic correct on {len(cases)} cases "
+              "(forward and reverse strand)")
+
+    # substitution, forward: codon 2 AAA, change position 1 to G -> GAA = E
+    got = translate(substitute("AAA", 1, "G", 1))
+    if got != "E":
+        failures += 1
+        print(f"FAIL forward substitution: got {got}, want E", file=sys.stderr)
+    # substitution, reverse: genomic C on a reverse gene enters the codon as G
+    got = translate(substitute("AAA", 1, "C", -1))
+    if got != "E":
+        failures += 1
+        print(f"FAIL reverse substitution: got {got}, want E", file=sys.stderr)
+    if failures == 0:
+        print("ok: substitutions complement correctly on the reverse strand")
+
+    # translation table sanity
+    if len(CODON_TABLE) != 64:
+        failures += 1
+        print(f"FAIL codon table has {len(CODON_TABLE)} entries, want 64", file=sys.stderr)
+    stops = [c for c, a in CODON_TABLE.items() if a == "*"]
+    if sorted(stops) != ["TAA", "TAG", "TGA"]:
+        failures += 1
+        print(f"FAIL stop codons: {sorted(stops)}", file=sys.stderr)
+    if failures == 0:
+        print("ok: 64-codon table with the three standard stops")
+
+    # interval merging and promoter flanks
+    if merge_intervals([(10, 20), (15, 25), (30, 40), (41, 50)]) != [(10, 25), (30, 50)]:
+        failures += 1
+        print("FAIL interval merge", file=sys.stderr)
+    if feature_interval(fwd, 5) != (5, 27):
+        failures += 1
+        print("FAIL forward promoter flank", file=sys.stderr)
+    if feature_interval(rev, 5) != (31, 53):
+        failures += 1
+        print("FAIL reverse promoter flank", file=sys.stderr)
+    if failures == 0:
+        print("ok: interval merging and strand-aware promoter flanks")
+
+    print("FAILED" if failures else "all self-tests passed")
+    return 1 if failures else 0
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+def main():
+    args = parse_args()
+
+    if args.selftest:
+        return selftest()
+
+    if not args.annotation:
+        print("error: --annotation is required (or use --selftest)", file=sys.stderr)
+        return 2
+
+    print(f"Reading annotation {args.annotation} ...", file=sys.stderr)
+    features = load_annotation(args.annotation, args.seqid)
+    if not features:
+        print("error: no usable features parsed; check the file format and --seqid",
+              file=sys.stderr)
+        return 1
+    by_type = defaultdict(int)
+    for f in features:
+        by_type[f.ftype] += 1
+    print("  features: " + ", ".join(f"{k}={v}" for k, v in sorted(by_type.items())),
+          file=sys.stderr)
+
+    seq = None
+    if args.reference:
+        print(f"Reading reference {args.reference} ...", file=sys.stderr)
+        seqs = load_fasta(args.reference)
+        if args.seqid and args.seqid in seqs:
+            seq = seqs[args.seqid]
+        elif len(seqs) == 1:
+            seq = next(iter(seqs.values()))
+        elif seqs:
+            name = sorted(seqs, key=lambda k: -len(seqs[k]))[0]
+            seq = seqs[name]
+            print(f"  warning: {len(seqs)} sequences present; using the longest "
+                  f"({name}, {len(seq)} bp). Pass --seqid to choose.", file=sys.stderr)
+        if seq:
+            print(f"  reference length {len(seq)} bp", file=sys.stderr)
+
+    did_something = False
+
+    # ---- annotate sites -------------------------------------------------
+    sites = []
+    if args.from_profile:
+        sites = read_profile_sites(args.from_profile)
+    elif args.sites:
+        sites = read_sites_file(args.sites)
+    elif args.positions:
+        for tok in args.positions.split(","):
+            tok = tok.strip()
+            if tok:
+                sites.append((int(tok), None, None))
+
+    if sites:
+        did_something = True
+        index = FeatureIndex(features)
+        out = open(args.output, "w") if args.output else sys.stdout
+        header = ["position", "count", "mutation", "context", "feature_type",
+                  "gene", "locus_tag", "strand", "codon", "codon_pos",
+                  "ref_codon", "ref_aa", "aa_change", "distance", "product"]
+        out.write("\t".join(header) + "\n")
+
+        n_coding = 0
+        n_promoter = 0
+        n_intergenic = 0
+        per_gene = defaultdict(int)
+
+        for pos, count, mutation in sites:
+            hits = index.at(pos)
+            coding = [f for f in hits if f.ftype == "CDS"]
+            rna = [f for f in hits if f.ftype in ("rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA")]
+            row = {k: "" for k in header}
+            row["position"] = pos
+            row["count"] = count if count is not None else ""
+            row["mutation"] = mutation or ""
+
+            if coding:
+                f = coding[0]
+                n_coding += 1
+                per_gene[f.label()] += 1
+                codon_no, codon_pos, bases = codon_for(f, pos, seq)
+                ref_aa = translate(bases)
+                row.update({
+                    "context": "CDS", "feature_type": f.ftype, "gene": f.gene or "",
+                    "locus_tag": f.locus_tag or "",
+                    "strand": "+" if f.strand > 0 else "-",
+                    "codon": codon_no, "codon_pos": codon_pos,
+                    "ref_codon": bases or "", "ref_aa": ref_aa or "",
+                    "distance": 0, "product": f.product or "",
+                })
+                if bases and ref_aa:
+                    ref_genomic = bases[codon_pos - 1] if f.strand > 0 else \
+                        COMPLEMENT.get(bases[codon_pos - 1], "N")
+                    if mutation:
+                        m = MUT_RE.match(mutation)
+                        alt = m.group(3).upper()
+                        new = translate(substitute(bases, codon_pos, alt, f.strand))
+                        kind = "syn" if new == ref_aa else "nonsyn"
+                        row["aa_change"] = f"{ref_aa}{codon_no}{new} ({kind})"
+                    else:
+                        opts = []
+                        for alt in "ACGT":
+                            if alt == ref_genomic:
+                                continue
+                            new = translate(substitute(bases, codon_pos, alt, f.strand))
+                            opts.append(f"{ref_genomic}>{alt}:{ref_aa}{codon_no}{new}")
+                        row["aa_change"] = ";".join(opts)
+            elif rna:
+                f = rna[0]
+                per_gene[f.label()] += 1
+                offset = (pos - f.start + 1) if f.strand > 0 else (f.end - pos + 1)
+                row.update({
+                    "context": f.ftype, "feature_type": f.ftype, "gene": f.gene or "",
+                    "locus_tag": f.locus_tag or "",
+                    "strand": "+" if f.strand > 0 else "-",
+                    "codon": "", "codon_pos": "",
+                    "aa_change": f"{f.label()} position {offset}",
+                    "distance": 0, "product": f.product or "",
+                })
+            elif hits:
+                f = hits[0]
+                per_gene[f.label()] += 1
+                row.update({
+                    "context": f.ftype, "feature_type": f.ftype, "gene": f.gene or "",
+                    "locus_tag": f.locus_tag or "",
+                    "strand": "+" if f.strand > 0 else "-",
+                    "distance": 0, "product": f.product or "",
+                })
+            else:
+                f, dist = index.nearest(pos)
+                upstream = (f.strand > 0 and dist < 0) or (f.strand < 0 and dist > 0)
+                if upstream and abs(dist) <= args.flank:
+                    n_promoter += 1
+                    context = "promoter"
+                    per_gene[f.label()] += 1
+                else:
+                    n_intergenic += 1
+                    context = "intergenic"
+                row.update({
+                    "context": context, "feature_type": f.ftype, "gene": f.gene or "",
+                    "locus_tag": f.locus_tag or "",
+                    "strand": "+" if f.strand > 0 else "-",
+                    "distance": -abs(dist) if upstream else abs(dist),
+                    "aa_change": (f"{f.label()} promoter {-abs(dist)}"
+                                  if context == "promoter" else ""),
+                    "product": f.product or "",
+                })
+            out.write("\t".join(str(row[k]) for k in header) + "\n")
+
+        if args.output:
+            out.close()
+            print(f"Annotated {len(sites)} sites -> {args.output}", file=sys.stderr)
+        print(f"  CDS: {n_coding}   promoter (within {args.flank} bp): {n_promoter}   "
+              f"intergenic: {n_intergenic}", file=sys.stderr)
+        if per_gene:
+            print("  sites per feature: " + ", ".join(
+                f"{g}={n}" for g, n in sorted(per_gene.items(), key=lambda x: -x[1])),
+                file=sys.stderr)
+
+    # ---- build mask -----------------------------------------------------
+    mask_features = []
+    if args.regions:
+        names = []
+        with smart_open(args.regions) as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    names.append(line.split()[0])
+        matched, missing = resolve_region_names(features, names)
+        for name, hits in matched.items():
+            mask_features.extend(hits)
+        print(f"Resolved {len(matched)} of {len(names)} requested names from "
+              f"{args.regions}", file=sys.stderr)
+        if missing:
+            print("  NOT FOUND in the annotation (check spelling or use locus tags): "
+                  + ", ".join(missing), file=sys.stderr)
+
+    if args.mask_pattern:
+        rx = re.compile(args.mask_pattern)
+        hits = [f for f in features
+                if f.ftype in ("CDS", "rRNA", "tRNA", "ncRNA", "gene")
+                and ((f.gene and rx.search(f.gene)) or
+                     (f.locus_tag and rx.search(f.locus_tag)))]
+        print(f"Pattern {args.mask_pattern!r} matched {len(hits)} features",
+              file=sys.stderr)
+        mask_features.extend(hits)
+
+    if mask_features:
+        did_something = True
+        intervals = merge_intervals([feature_interval(f, args.promoter_flank)
+                                     for f in mask_features])
+        total = sum(e - s + 1 for s, e in intervals)
+        print(f"Mask: {len(mask_features)} features -> {len(intervals)} merged "
+              f"intervals, {total} bp", file=sys.stderr)
+        if seq:
+            print(f"  {100.0 * total / len(seq):.3f}% of the reference", file=sys.stderr)
+        if args.mask_bed:
+            seqid = args.seqid or mask_features[0].seqid or "chr"
+            with open(args.mask_bed, "w") as fh:
+                for s, e in intervals:
+                    fh.write(f"{seqid}\t{s - 1}\t{e}\n")
+            print(f"  BED (0-based half-open) -> {args.mask_bed}", file=sys.stderr)
+        if args.mask_positions:
+            with open(args.mask_positions, "w") as fh:
+                for s, e in intervals:
+                    for p in range(s, e + 1):
+                        fh.write(f"{p}\n")
+            print(f"  position list (1-based) -> {args.mask_positions}", file=sys.stderr)
+        if not args.mask_bed and not args.mask_positions:
+            print("  (pass --mask_bed or --mask_positions to write it out)",
+                  file=sys.stderr)
+
+    if not did_something:
+        print("Nothing to do: pass sites (--sites / --positions / --from_profile) "
+              "and/or mask options (--regions / --mask_pattern).", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

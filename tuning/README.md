@@ -98,19 +98,84 @@ per-call overhead. It matches `chi2_contingency` exactly for tables larger than
 2 x 2 (no continuity correction); columns whose total is zero are skipped, where
 scipy would raise.
 
+## 3. `annotate_sites.py` — identify recurrent sites, and build mask regions
+
+`profile_tree.py` tells you *which* sites mutate repeatedly; this tells you
+*what they are*, so you can decide what to mask. It does two jobs.
+
+**Identify sites.** Reads positions straight out of a profile report:
+
+```
+annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \
+    --from_profile mtb_profile.txt --output annotated_sites.tsv
+```
+
+Reports feature type, gene, locus tag, strand, codon number, codon position,
+reference codon and amino acid for each site. Given a bare position it lists all
+three possible amino-acid changes; given a mutation string such as `C1057G` it
+reports the specific change and whether it is synonymous. Reverse-strand genes
+are handled (codon numbering runs from the feature's `end` downwards and bases
+are reverse-complemented) — `--selftest` checks that arithmetic on both strands,
+and it is worth running once.
+
+**Build mask regions.** Masking a top-N list of individual sites does not
+converge: mask `rpoB` codon 445 position 1 and position 2 of the same codon
+surfaces in the next profile. Mask the locus instead:
+
+```
+annotate_sites.py --annotation NC_000962.3.gff3.gz \
+    --regions tb_resistance_genes.txt --promoter_flank 200 \
+    --mask_bed resistance_loci.bed
+```
+
+`--promoter_flank` extends each feature upstream in a strand-aware way, which
+matters because several important mutations are promoter mutations
+(`inhA`/`fabG1` −15, `embA` −16, `pncA` −11). `--mask_pattern '^(PE|PPE)'` adds
+features by name, for the repetitive families where alignment artifacts
+accumulate. Output is a merged BED, or `--mask_positions` for a flat 1-based
+position list (expect tens of thousands of lines).
+
+Names that don't resolve against your annotation are reported as NOT FOUND
+rather than silently dropped.
+
+### A caution about the gene list
+
+`tb_resistance_genes.txt` holds gene **names and locus tags only — no
+coordinates**. Every interval is resolved from the annotation *you* supply, so
+the coordinates come from your reference rather than from this repository. That
+is deliberate: a name you can check beats a coordinate you cannot.
+
+The list is a starting point and is not authoritative. The authoritative source
+is the WHO *Catalogue of mutations in Mycobacterium tuberculosis complex and
+their association with drug resistance*, 2nd edition (2023), which publishes
+genomic coordinates and is what you should cite. Cross-check against
+TB-Profiler's database too. This script does not predict drug resistance; for
+resistance calls use TB-Profiler or Mykrobe.
+
 ## Suggested order
 
 1. Run `profile_tree.py` on the raw tree.
-2. Run the `qc/` scripts, inspecting what each one removes.
-3. Run `profile_tree.py` again on the cleaned tree; pick `--min_mutations` from
-   the rarest-class floor and the precision you need, sanity-checked against how
-   many nodes stay eligible.
-4. Run `permutation_null.py` with that `--min_mutations`; set `--min_chi` above
-   the worst null replicate, with a margin.
-5. Run `spectrumSplits.py` once with a permissive `--min_chi`, logging every
+2. Run `qc/prune_mutation_sample_ratio.py` with an explicit `--threshold` chosen
+   from the ratio tail, not the auto-threshold, which assumes a tighter
+   distribution than a sparsely sampled tree has.
+3. Build a region mask with `annotate_sites.py --regions ... --promoter_flank 200`
+   and apply it, rather than masking the top N sites by hand.
+4. Run `profile_tree.py` again on the cleaned tree. Feed its new top sites back
+   through `annotate_sites.py --from_profile` to see what survived; if they are
+   still resistance loci, widen the mask instead of masking site by site.
+5. Pick `--min_mutations` from the rarest-class floor and the precision you need,
+   sanity-checked against how many nodes stay eligible and against the
+   `smallest_eligible_subtree_tips` column — a value that admits 1-tip clades
+   lets a single bad genome become a "split".
+6. Run `permutation_null.py` in both modes with that `--min_mutations`. The gap
+   between `types` and `sites` is your residual clumping; set `--min_chi` above
+   the worst `sites` replicate, with a margin. If one node recurs across `sites`
+   replicates, a localized hotspot is setting your threshold — find and fix it
+   before accepting the number.
+7. Run `spectrumSplits.py` once with a permissive `--min_chi`, logging every
    split's chi-squared from stderr, and check where the splits-versus-threshold
    curve bends.
-6. Confirm the surviving splits with `--bootstrap_splits`.
-7. Inspect each split's per-class drivers and effect size in proportion terms
+8. Confirm the surviving splits with `--bootstrap_splits`.
+9. Inspect each split's per-class drivers and effect size in proportion terms
    before believing it. A split driven almost entirely by one mutation class is
    usually an artifact or a single over-mutated site.

@@ -1,0 +1,110 @@
+# Candidate M. tuberculosis complex drug-resistance loci to mask before
+# running spectrumSplits.py.
+#
+# ---------------------------------------------------------------------------
+# THIS LIST IS A STARTING POINT, NOT AN AUTHORITY.  VERIFY IT.
+#
+# These are gene NAMES and locus TAGS only -- deliberately no coordinates.
+# annotate_sites.py resolves each one against the annotation file you supply,
+# so the intervals come from your reference, not from this file.  That is the
+# whole point: a name you can check beats a coordinate you cannot.
+#
+# The authoritative source is:
+#   WHO, "Catalogue of mutations in Mycobacterium tuberculosis complex and
+#   their association with drug resistance", 2nd edition, 2023.
+#   Downloadable with genomic coordinates; cite this, not this file.
+#
+# Cross-check with TB-Profiler's database (which tracks the catalogue) before
+# relying on the list.  Names absent from your annotation are reported by
+# annotate_sites.py as NOT FOUND -- several genes below are commonly annotated
+# only by locus tag, so both forms are listed where I know them.
+# ---------------------------------------------------------------------------
+#
+# Masking whole loci rather than individual sites is the point of this list.
+# Per-site masking of a top-N list does not converge: mask rpoB codon 445
+# position 1 and position 2 of the same codon surfaces next.
+#
+# Use --promoter_flank (e.g. 200) so promoter mutations are covered too; several
+# important ones (inhA/fabG1 -15, embA -16, pncA -11) are upstream of the CDS.
+
+# --- rifampicin -------------------------------------------------------------
+rpoB
+rpoC
+rpoA
+
+# --- isoniazid --------------------------------------------------------------
+katG
+inhA
+fabG1
+mabA
+ahpC
+kasA
+ndh
+
+# --- ethambutol -------------------------------------------------------------
+embA
+embB
+embC
+embR
+aftB
+ubiA
+
+# --- pyrazinamide -----------------------------------------------------------
+pncA
+rpsA
+panD
+clpC1
+clpC
+
+# --- streptomycin and other aminoglycosides ---------------------------------
+rpsL
+rrs
+gid
+gidB
+eis
+tlyA
+whiB7
+
+# --- fluoroquinolones -------------------------------------------------------
+gyrA
+gyrB
+
+# --- ethionamide ------------------------------------------------------------
+ethA
+ethR
+mshA
+
+# --- bedaquiline and clofazimine -------------------------------------------
+atpE
+pepQ
+mmpL5
+mmpS5
+Rv0678
+mmpR5
+Rv1979c
+
+# --- linezolid --------------------------------------------------------------
+rplC
+rrl
+
+# --- delamanid and pretomanid ----------------------------------------------
+ddn
+fgd1
+fbiA
+fbiB
+fbiC
+fbiD
+Rv2983
+
+# --- para-aminosalicylic acid ----------------------------------------------
+thyA
+thyX
+dfrA
+folC
+ribD
+
+# --- cycloserine ------------------------------------------------------------
+alr
+ald
+ddl
+cycA
