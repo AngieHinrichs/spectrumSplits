@@ -80,7 +80,17 @@ COMPLEMENT = {"A": "T", "C": "G", "G": "C", "T": "A", "N": "N"}
 
 # Feature types we care about, in priority order when a position falls in
 # several overlapping features.
-TYPE_PRIORITY = ["CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene", "region"]
+TYPE_PRIORITY = ["CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene"]
+
+### Feature types that describe the sequence itself rather than anything on it.
+### NCBI GFF3 opens each record with a "region" line spanning the whole
+### chromosome, and GenBank uses "source" the same way, so EVERY position falls
+### inside one.  Left in the index they swallow every intergenic site, which is
+### reported as a hit on a nameless feature at distance 0 instead of as
+### intergenic with its nearest gene.  They are also excluded from --regions and
+### --mask_pattern matching, where one of them would mask the entire genome.
+LANDMARK_TYPES = {"region", "source", "biological_region", "chromosome",
+                  "scaffold", "contig", "supercontig", "assembly"}
 
 
 def parse_args():
@@ -109,12 +119,28 @@ def parse_args():
     msk.add_argument("--regions", type=str, default=None,
                      help="File of gene names or locus tags (one per line, # comments "
                           "allowed) to resolve into mask intervals")
+    msk.add_argument("--mask_product_pattern", type=str, default=None,
+                     help="Regex matched against each feature's product description, "
+                          "for masking by function rather than by name: "
+                          "'(?i)(transposase|integrase|insertion element)' finds "
+                          "mobile elements whatever they are called. Matching is "
+                          "case sensitive, like --mask_pattern, so prefix (?i) to "
+                          "ignore case. Only CDS and RNA features carry products, so "
+                          "this will not match bare gene features")
     msk.add_argument("--mask_pattern", type=str, default=None,
                      help="Regex on gene name or locus tag; matching features are "
                           "added to the mask (e.g. '^(PE|PPE)')")
     msk.add_argument("--promoter_flank", type=int, default=0,
                      help="Bases to extend each masked feature upstream (5') to cover "
                           "promoter mutations; strand aware")
+    msk.add_argument("--mask_pad", type=int, default=0,
+                     help="Bases to extend each masked feature on BOTH sides, for "
+                          "alignment artifacts that spill past a feature's boundary "
+                          "rather than sitting in its promoter. Independent of and "
+                          "additive with --promoter_flank, which extends upstream "
+                          "only; use this for paralogous families, repeats and "
+                          "prophages, where recurrent miscalls land just outside the "
+                          "annotated edges")
     msk.add_argument("--mask_bed", type=str, default=None,
                      help="Write merged mask intervals as BED (0-based half-open)")
     msk.add_argument("--mask_positions", type=str, default=None,
@@ -151,17 +177,33 @@ def smart_open(path):
 # --------------------------------------------------------------------------
 
 class Feature(object):
-    __slots__ = ("seqid", "ftype", "start", "end", "strand", "gene", "locus_tag", "product")
+    __slots__ = ("seqid", "ftype", "start", "end", "strand", "gene", "locus_tag",
+                 "product", "aliases")
 
-    def __init__(self, seqid, ftype, start, end, strand, gene, locus_tag, product):
+    def __init__(self, seqid, ftype, start, end, strand, gene, locus_tag, product,
+                 aliases=()):
         self.seqid = seqid
         self.ftype = ftype
         self.start = start          # 1-based inclusive
         self.end = end              # 1-based inclusive
         self.strand = strand        # +1 / -1
-        self.gene = gene
+        self.gene = gene            # preferred display name
         self.locus_tag = locus_tag
         self.product = product
+        ### Every other name this feature is known by: gene_synonym,
+        ### old_locus_tag, and whichever of gene/Name did not become `gene`.
+        ### Annotations disagree about which field carries the name a person
+        ### would look a gene up by, so a name request is matched against all
+        ### of them rather than just the two displayed.
+        self.aliases = tuple(a for a in aliases if a)
+
+    def names(self):
+        """Every name this feature can be requested by, lowercased."""
+        out = set()
+        for n in (self.gene, self.locus_tag) + self.aliases:
+            if n:
+                out.add(n.lower())
+        return out
 
     def label(self):
         return self.gene or self.locus_tag or "?"
@@ -199,7 +241,7 @@ def parse_gff3(path, seqid_filter=None):
             seqid, _src, ftype, start, end, _score, strand, _phase, attrs = parts[:9]
             if seqid_filter and seqid != seqid_filter:
                 continue
-            if ftype not in TYPE_PRIORITY:
+            if ftype not in TYPE_PRIORITY and ftype not in LANDMARK_TYPES:
                 continue
             try:
                 start_i = int(start)
@@ -214,9 +256,20 @@ def parse_gff3(path, seqid_filter=None):
                 kv[k.strip()] = unescape_gff(v.strip())
             gene = kv.get("gene") or kv.get("Name") or kv.get("gene_synonym")
             locus_tag = kv.get("locus_tag") or kv.get("old_locus_tag")
+            ### gene_synonym is a comma-separated list, and NCBI puts the name
+            ### most people know a gene by there (mabA for Rv1482c, gidB for
+            ### Rv3919c) while Name holds the locus tag.  Taking only the first
+            ### populated field, as `gene` does for display, makes those
+            ### unsearchable.
+            aliases = [kv.get("gene"), kv.get("Name"), kv.get("locus_tag"),
+                       kv.get("old_locus_tag")]
+            for field in ("gene_synonym", "Alias"):
+                if kv.get(field):
+                    aliases.extend(part.strip() for part in kv[field].split(","))
             features.append(Feature(seqid, ftype, start_i, end_i,
                                     -1 if strand == "-" else 1,
-                                    gene, locus_tag, kv.get("product")))
+                                    gene, locus_tag, kv.get("product"),
+                                    aliases))
     return features
 
 
@@ -234,7 +287,7 @@ def parse_genbank(path, seqid_filter=None):
         if not cur:
             return
         ftype, loc, quals = cur
-        if ftype not in TYPE_PRIORITY:
+        if ftype not in TYPE_PRIORITY and ftype not in LANDMARK_TYPES:
             return
         m = GB_LOC.search(loc)
         if not m:
@@ -243,9 +296,13 @@ def parse_genbank(path, seqid_filter=None):
         start_i, end_i = int(m.group(2)), int(m.group(3))
         if seqid_filter and seqid and seqid != seqid_filter:
             return
+        aliases = [quals.get("gene"), quals.get("locus_tag"),
+                   quals.get("old_locus_tag")]
+        if quals.get("gene_synonym"):
+            aliases.extend(p.strip() for p in quals["gene_synonym"].split(";"))
         features.append(Feature(seqid, ftype, start_i, end_i, strand,
                                 quals.get("gene"), quals.get("locus_tag"),
-                                quals.get("product")))
+                                quals.get("product"), aliases))
 
     with smart_open(path) as fh:
         for line in fh:
@@ -480,11 +537,10 @@ def resolve_region_names(features, names):
     """Match requested gene names / locus tags against the annotation."""
     by_key = defaultdict(list)
     for f in features:
-        if f.ftype not in ("CDS", "rRNA", "tRNA", "ncRNA", "gene"):
+        if f.ftype not in MASKABLE_TYPES:
             continue
-        for key in (f.gene, f.locus_tag):
-            if key:
-                by_key[key.lower()].append(f)
+        for key in f.names():
+            by_key[key].append(f)
     matched = {}
     missing = []
     for name in names:
@@ -509,14 +565,50 @@ def merge_intervals(intervals):
     return [(s, e) for s, e in out]
 
 
-def feature_interval(f, promoter_flank):
+### Feature types that can be masked.  A "gene" feature and its CDS cover
+### nearly the same interval, so matching both and merging is harmless.
+MASKABLE_TYPES = ("CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene")
+
+
+def features_matching(features, pattern, on_product=False):
+    """Maskable features whose name/locus tag -- or product -- matches pattern.
+
+    Name matching looks at both `gene` and `locus_tag`, because annotations
+    disagree about which one carries the readable name.  Product matching looks
+    only at `product`, which bare `gene` features do not have; the CDS of the
+    same locus does, and covers essentially the same interval.
+    """
+    rx = re.compile(pattern)
+    hits = []
+    for f in features:
+        if f.ftype not in MASKABLE_TYPES:
+            continue
+        fields = (f.product,) if on_product else (f.gene, f.locus_tag)
+        if any(v and rx.search(v) for v in fields):
+            hits.append(f)
+    return hits
+
+
+def feature_interval(f, promoter_flank, pad=0):
+    """Masked interval for one feature, 1-based inclusive.
+
+    promoter_flank extends the 5' side only, which is strand dependent: a
+    forward feature's promoter lies below `start`, a reverse feature's above
+    `end`.  pad extends both sides equally and so is strand independent; it is
+    for artifacts that spill past a feature's annotated edges in either
+    direction.  The two are additive, so the upstream side of a feature given
+    both grows by their sum.
+    """
     s, e = f.start, f.end
     if promoter_flank > 0:
         if f.strand > 0:
-            s = max(1, s - promoter_flank)
+            s = s - promoter_flank
         else:
             e = e + promoter_flank
-    return s, e
+    if pad > 0:
+        s = s - pad
+        e = e + pad
+    return max(1, s), e
 
 
 # --------------------------------------------------------------------------
@@ -603,8 +695,130 @@ def selftest():
     if feature_interval(rev, 5) != (31, 53):
         failures += 1
         print("FAIL reverse promoter flank", file=sys.stderr)
+    ### --mask_pad is symmetric, so it gives the same widening on either strand.
+    if feature_interval(fwd, 0, 5) != (5, 32):
+        failures += 1
+        print(f"FAIL forward pad: {feature_interval(fwd, 0, 5)}, want (5, 32)",
+              file=sys.stderr)
+    if feature_interval(rev, 0, 5) != (26, 53):
+        failures += 1
+        print(f"FAIL reverse pad: {feature_interval(rev, 0, 5)}, want (26, 53)",
+              file=sys.stderr)
+    ### Additive: the forward feature's upstream side grows by flank + pad.
+    if feature_interval(fwd, 5, 3) != (2, 30):
+        failures += 1
+        print(f"FAIL flank+pad: {feature_interval(fwd, 5, 3)}, want (2, 30)",
+              file=sys.stderr)
+    ### Never runs off the start of the sequence.
+    if feature_interval(fwd, 0, 100)[0] != 1:
+        failures += 1
+        print("FAIL pad clamped at position 1", file=sys.stderr)
     if failures == 0:
         print("ok: interval merging and strand-aware promoter flanks")
+
+    ### Landmark handling: a whole-sequence "region" record must not turn an
+    ### intergenic position into a hit at distance 0.
+    landmark = Feature("t", "region", 1, 60, 1, None, None, None)
+    if landmark.ftype not in LANDMARK_TYPES:
+        failures += 1
+        print("FAIL 'region' is not treated as a landmark type", file=sys.stderr)
+    if "region" in TYPE_PRIORITY:
+        failures += 1
+        print("FAIL 'region' still carries a matching priority", file=sys.stderr)
+
+    ### Landmarks survive parsing (so the feature counts report them) and are
+    ### dropped in main(), which is what this models.
+    kept = [f for f in [landmark, fwd, rev] if f.ftype not in LANDMARK_TYPES]
+    if kept != [fwd, rev]:
+        failures += 1
+        print(f"FAIL landmark filter kept {len(kept)} of 2 features", file=sys.stderr)
+
+    ### Position 29 sits between the two genes: 2 bp past the forward gene's end
+    ### and 2 bp before the reverse gene's start.
+    unfiltered = FeatureIndex([landmark, fwd, rev])
+    if not unfiltered.at(29):
+        failures += 1
+        print("FAIL expected the unfiltered index to match the landmark",
+              file=sys.stderr)
+    filtered = FeatureIndex(kept)
+    if filtered.at(29):
+        failures += 1
+        print(f"FAIL position 29 should be intergenic, got "
+              f"{[f.ftype for f in filtered.at(29)]}", file=sys.stderr)
+    near, dist = filtered.nearest(29)
+    if near is not fwd or dist != 2:
+        failures += 1
+        print(f"FAIL nearest feature to 29: got "
+              f"{near.gene if near else None} at {dist}, want fwdGene at 2",
+              file=sys.stderr)
+    if failures == 0:
+        print("ok: whole-sequence landmark records do not mask intergenic sites")
+
+    ### Pattern matching: names and products are separate fields, and a
+    ### product pattern must not be silently matched against a name.
+    mobile = Feature("t", "CDS", 100, 200, 1, None, "Rv2646", "integrase")
+    plain = Feature("t", "CDS", 300, 400, 1, "geneX", "Rv0001", "widget protein")
+    pool = [mobile, plain, landmark]
+
+    by_name = features_matching(pool, "^Rv2646$")
+    if by_name != [mobile]:
+        failures += 1
+        print(f"FAIL name match on locus tag: {len(by_name)} hits", file=sys.stderr)
+    if features_matching(pool, "integrase") != []:
+        failures += 1
+        print("FAIL 'integrase' matched a name; products are a separate field",
+              file=sys.stderr)
+    by_product = features_matching(pool, "integrase", on_product=True)
+    if by_product != [mobile]:
+        failures += 1
+        print(f"FAIL product match: {len(by_product)} hits", file=sys.stderr)
+    if features_matching(pool, "Rv2646", on_product=True) != []:
+        failures += 1
+        print("FAIL a locus tag matched as a product", file=sys.stderr)
+    if features_matching(pool, "(?i)INTEGRASE", on_product=True) != [mobile]:
+        failures += 1
+        print("FAIL (?i) did not make the product match case insensitive",
+              file=sys.stderr)
+    ### A landmark carries no name or product, so no pattern reaches it.
+    if features_matching(pool, ".", on_product=True) != [mobile, plain]:
+        failures += 1
+        print("FAIL '.' should match both products and nothing else",
+              file=sys.stderr)
+    if failures == 0:
+        print("ok: name and product patterns match their own fields only")
+
+    ### Synonyms must be searchable.  NCBI puts the name people look a gene up
+    ### by in gene_synonym while Name holds the locus tag, so matching only the
+    ### displayed name makes those genes unreachable.
+    syn = Feature("t", "CDS", 100, 200, -1, "NP_215998.1", "Rv1482c",
+                  "reductase", ["NP_215998.1", "Rv1482c", "mabA", "fabG1"])
+    if syn.names() != {"np_215998.1", "rv1482c", "maba", "fabg1"}:
+        failures += 1
+        print(f"FAIL alias set: {sorted(syn.names())}", file=sys.stderr)
+    if syn.gene != "NP_215998.1":
+        failures += 1
+        print("FAIL aliases changed the displayed gene name", file=sys.stderr)
+
+    pool2 = [syn, plain]
+    for want in ("mabA", "MABA", "fabG1", "Rv1482c"):
+        matched, missing = resolve_region_names(pool2, [want])
+        if missing or matched.get(want) != [syn]:
+            failures += 1
+            print(f"FAIL resolving {want!r}: matched={bool(matched)} "
+                  f"missing={missing}", file=sys.stderr)
+    matched, missing = resolve_region_names(pool2, ["nosuchgene"])
+    if matched or missing != ["nosuchgene"]:
+        failures += 1
+        print("FAIL an unknown name should be reported missing", file=sys.stderr)
+    ### A feature reached by two of its own names is still one feature.
+    matched, _ = resolve_region_names(pool2, ["mabA", "Rv1482c"])
+    reached = {id(f) for hits in matched.values() for f in hits}
+    if len(reached) != 1:
+        failures += 1
+        print(f"FAIL two names for one feature reached {len(reached)} features",
+              file=sys.stderr)
+    if failures == 0:
+        print("ok: gene synonyms and locus tags resolve to the same feature")
 
     print("FAILED" if failures else "all self-tests passed")
     return 1 if failures else 0
@@ -636,6 +850,20 @@ def main():
     print("  features: " + ", ".join(f"{k}={v}" for k, v in sorted(by_type.items())),
           file=sys.stderr)
 
+    ### Landmark records span the whole sequence, so drop them before anything
+    ### looks a position up or resolves a name to an interval.
+    landmarks = [f for f in features if f.ftype in LANDMARK_TYPES]
+    if landmarks:
+        features = [f for f in features if f.ftype not in LANDMARK_TYPES]
+        print(f"  ignoring {len(landmarks)} whole-sequence landmark feature(s) "
+              f"({', '.join(sorted({f.ftype for f in landmarks}))}): they contain "
+              f"every position, so a site inside one is intergenic, not a hit",
+              file=sys.stderr)
+    if not features:
+        print("error: the annotation has no features other than whole-sequence "
+              "landmarks; check the file format and --seqid", file=sys.stderr)
+        return 1
+
     seq = None
     if args.reference:
         print(f"Reading reference {args.reference} ...", file=sys.stderr)
@@ -651,17 +879,29 @@ def main():
                   f"({name}, {len(seq)} bp). Pass --seqid to choose.", file=sys.stderr)
         if seq:
             print(f"  reference length {len(seq)} bp", file=sys.stderr)
+            ### An untyped landmark would do the same damage silently.
+            hogs = [f for f in features
+                    if (f.end - f.start + 1) >= 0.99 * len(seq)]
+            if hogs:
+                print(f"  warning: {len(hogs)} feature(s) span 99% or more of the "
+                      f"reference and will match every position, e.g. "
+                      f"{hogs[0].ftype} {hogs[0].gene or hogs[0].locus_tag or '?'}. "
+                      f"If that is a landmark record, add its type to "
+                      f"LANDMARK_TYPES.", file=sys.stderr)
 
     ### Names to flag in the output.  Purely annotation: unlike --regions these
     ### are never masked, because a mutation in one of them is usually the
     ### explanation being looked for rather than something to remove.
-    highlight_names = set()
+    ### lowercased name -> the spelling the user asked for, so a hit reports
+    ### their name rather than a case-folded one.
+    highlight_names = {}
     if args.highlight:
         with smart_open(args.highlight) as fh:
             for line in fh:
                 line = line.split("#", 1)[0].strip()
                 if line:
-                    highlight_names.add(line.split()[0].lower())
+                    want = line.split()[0]
+                    highlight_names.setdefault(want.lower(), want)
         print(f"Highlighting sites in {len(highlight_names)} named genes from "
               f"{args.highlight}", file=sys.stderr)
 
@@ -776,13 +1016,15 @@ def main():
                                   if context == "promoter" else ""),
                     "product": f.product or "",
                 })
-            if highlight_names:
-                for key in (row["gene"], row["locus_tag"]):
-                    if key and str(key).lower() in highlight_names:
-                        row["highlight"] = key
-                        highlight_hits[key] += 1
-                        n_highlighted += 1
-                        break
+            if highlight_names and f is not None:
+                ### Report the requested name, not the annotation's display
+                ### name, so a hit on a synonym says which name matched.
+                hit = sorted(f.names() & set(highlight_names))
+                if hit:
+                    name = highlight_names[hit[0]]
+                    row["highlight"] = name
+                    highlight_hits[name] += 1
+                    n_highlighted += 1
             out.write("\t".join(str(row[k]) for k in header) + "\n")
 
         if args.output:
@@ -823,22 +1065,51 @@ def main():
                   + ", ".join(missing), file=sys.stderr)
 
     if args.mask_pattern:
-        rx = re.compile(args.mask_pattern)
-        hits = [f for f in features
-                if f.ftype in ("CDS", "rRNA", "tRNA", "ncRNA", "gene")
-                and ((f.gene and rx.search(f.gene)) or
-                     (f.locus_tag and rx.search(f.locus_tag)))]
-        print(f"Pattern {args.mask_pattern!r} matched {len(hits)} features",
+        hits = features_matching(features, args.mask_pattern)
+        print(f"Name pattern {args.mask_pattern!r} matched {len(hits)} features",
               file=sys.stderr)
+        if not hits:
+            print("  (it matches gene names and locus tags, not products; use "
+                  "--mask_product_pattern for those)", file=sys.stderr)
+        mask_features.extend(hits)
+
+    if args.mask_product_pattern:
+        hits = features_matching(features, args.mask_product_pattern,
+                                 on_product=True)
+        loci = sorted({f.locus_tag or f.gene or "?" for f in hits})
+        print(f"Product pattern {args.mask_product_pattern!r} matched "
+              f"{len(hits)} features in {len(loci)} loci", file=sys.stderr)
+        if loci:
+            shown = ", ".join(loci[:20]) + (" ..." if len(loci) > 20 else "")
+            print(f"  {shown}", file=sys.stderr)
         mask_features.extend(hits)
 
     if mask_features:
         did_something = True
-        intervals = merge_intervals([feature_interval(f, args.promoter_flank)
+        ### One feature can be reached by several requested names (a gene and
+        ### its synonym, a name and its locus tag) and by both --regions and a
+        ### pattern.  Count it once; merge_intervals would collapse the
+        ### duplicates anyway, but the reported feature count should be honest.
+        seen_ids = set()
+        deduped = []
+        for f in mask_features:
+            if id(f) not in seen_ids:
+                seen_ids.add(id(f))
+                deduped.append(f)
+        mask_features = deduped
+        intervals = merge_intervals([feature_interval(f, args.promoter_flank,
+                                                      args.mask_pad)
                                      for f in mask_features])
         total = sum(e - s + 1 for s, e in intervals)
-        print(f"Mask: {len(mask_features)} features -> {len(intervals)} merged "
-              f"intervals, {total} bp", file=sys.stderr)
+        widening = []
+        if args.promoter_flank:
+            widening.append(f"{args.promoter_flank} bp upstream")
+        if args.mask_pad:
+            widening.append(f"{args.mask_pad} bp both sides")
+        print(f"Mask: {len(mask_features)} features"
+              + (f" widened by {' and '.join(widening)}" if widening else "")
+              + f" -> {len(intervals)} merged intervals, {total} bp",
+              file=sys.stderr)
         if seq:
             print(f"  {100.0 * total / len(seq):.3f}% of the reference", file=sys.stderr)
         if args.mask_bed:
@@ -865,7 +1136,8 @@ def main():
 
     if not did_something:
         print("Nothing to do: pass sites (--sites / --positions / --from_profile) "
-              "and/or mask options (--regions / --mask_pattern).", file=sys.stderr)
+              "and/or mask options (--regions / --mask_pattern / "
+              "--mask_product_pattern).", file=sys.stderr)
         return 2
     return 0
 

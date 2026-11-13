@@ -1,0 +1,249 @@
+# M. tuberculosis loci where recurrent variant calls are usually alignment
+# artifacts rather than mutations.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A SEPARATE LIST FROM tb_resistance_genes.txt
+#
+# Both lists get masked, but for different reasons, and keeping them apart
+# keeps each one auditable.
+#
+#   tb_resistance_genes.txt  masks loci under convergent SELECTION.  The
+#                            variants there are real; they recur because the
+#                            same mutation is selected over and over.
+#
+#   this list                masks loci where the variants are largely NOT
+#                            real.  They recur because short reads cannot be
+#                            placed unambiguously: paralogous gene families,
+#                            repeats, prophages.
+#
+# Mixing them would hide which rationale applies to which gene, and the two
+# need different masking parameters (see below).
+#
+# tb_repair_genes.txt is the opposite of both: DO NOT mask those.
+#
+# ---------------------------------------------------------------------------
+# USE A SYMMETRIC PAD, NOT A PROMOTER FLANK
+#
+# Artifacts spill past a feature's annotated edges in BOTH directions, so
+# --promoter_flank (upstream only) does not contain them.  Use --mask_pad:
+#
+#   annotate_sites.py --annotation NC_000962.3.gff3.gz \
+#       --regions tb_alignment_loci.txt \
+#       --mask_pattern '^(PE|PPE|esx)' \
+#       --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
+#       --mask_pad 100 --mask_matutils matUtils_mask.txt
+#
+# On a 129k-sample MTBC tree, nine of the twenty most recurrent surviving sites
+# sat 1-56 bp OUTSIDE a feature, seven of them downstream, where a promoter
+# flank reaches nothing.  100 bp of symmetric pad covered all nine.
+#
+# The two lists can go in one mask, but they want different widening, so
+# resolve them separately and concatenate the BED files:
+#
+#   ... --regions tb_resistance_genes.txt --promoter_flank 200 --mask_bed a.bed
+#   ... --regions tb_alignment_loci.txt   --mask_pad 100       --mask_bed b.bed
+#
+# ---------------------------------------------------------------------------
+# GENE NAMES AND LOCUS TAGS, NO COORDINATES.  Every interval is resolved from
+# the annotation you supply.  A name that is not in your annotation is reported
+# as NOT FOUND, which is harmless.  Verify anything you rely on against
+# Mycobrowser or the NCBI H37Rv annotation; the Rv ranges in comments below are
+# the parts most worth checking, because a range I have misremembered would
+# mask the wrong sequence silently.
+#
+# Prefer --mask_pattern for the big families (it matches names, so it picks up
+# members this file has not listed) and use the entries here for the specific
+# genes and the prophages.
+# ---------------------------------------------------------------------------
+
+# --- PE / PPE / PE_PGRS families ---------------------------------------------
+# ~170 genes, GC-rich and highly repetitive; the canonical alignment-hostile
+# families in MTBC.  Many variant-calling pipelines exclude them already, so
+# check whether yours did before assuming a mask will remove anything.
+#
+# Reach these with a pattern rather than by name:
+#     --mask_pattern '^(PE|PPE)'
+#
+# Listed here only as the individual members seen to recur anyway:
+PE_PGRS4
+PE_PGRS33
+PPE8
+
+# --- esx / ESAT-6-like family ------------------------------------------------
+# ~23 near-identical members (esxA..esxW) in several genomic islands.  Reads
+# cross-map freely between copies.
+#     --mask_pattern '^esx'
+esxA
+esxB
+esxJ
+esxK
+esxL
+esxM
+esxN
+esxO
+esxP
+esxV
+esxW
+# esxM is NOT FOUND in NC_000962.3 -- the esx letters are not contiguous there.
+# Harmless: --mask_pattern '^esx' reaches every member that does exist, which is
+# why the pattern is the primary mechanism and these entries are only a backstop.
+
+# --- adenylate cyclase cluster -----------------------------------------------
+# Rv1318c, Rv1319c, Rv1320c and Rv3645 share extensive similarity.  Rv1319c
+# carried two of the twenty most recurrent sites on the tree described above,
+# both at third codon positions where EVERY possible substitution is
+# synonymous -- selection cannot produce that, so it is miscalling.
+Rv1318c
+Rv1319c
+Rv1320c
+Rv3645
+
+# --- lactate dehydrogenase paralogs ------------------------------------------
+# lldD1 (Rv0694) and lldD2 (Rv1872c).  lldD2 carried three recurrent sites,
+# one of them synonymous for all three alternates.
+#
+# lldD1 is NOT FOUND in NC_000962.3: that annotation carries lldD2 but no
+# lldD1, so the paralog it cross-maps with is unmasked.  Find what covers it
+# and add the locus tag:
+#
+#   awk -F'\t' '$3=="CDS"' NC_000962.3.gff | grep -i 'lactate dehydrogenase'
+#
+# Rv1873 is deliberately NOT listed.  The recurrent site 5 bp upstream of it
+# sits in the 22 bp divergent promoter it shares with lldD2, so masking lldD2
+# with --mask_pad 100 already covers it; listing Rv1873 would mask a whole
+# further gene for nothing.
+lldD1
+lldD2
+
+# --- prophages ---------------------------------------------------------------
+# phiRv2 ~ Rv2650c-Rv2659c: VERIFIED against the NC_000962.3 products, which
+# run "prophage protein" from Rv2650c to "prophage integrase" at Rv2659c, with
+# a toxin/antitoxin pair at Rv2653c/Rv2654c.  A recurrent-site cluster sat at
+# the Rv2652c/Rv2653c junction.
+#
+# phiRv1 ~ Rv1573-Rv1586c: NOT yet verified.  Check it the same way before
+# relying on it, since a range misremembered here masks the wrong sequence
+# silently:
+#
+#   awk -F'\t' '$3=="CDS"' NC_000962.3.gff \
+#     | grep -E 'locus_tag=Rv15(7[0-9]|8[0-9]|9[0-5])c?' \
+#     | sed -E 's/.*locus_tag=([^;]*).*product=([^;]*).*/\1\t\2/'
+#
+# Expect phage proteins and an integrase at the boundary; Rv1586c is the
+# reported integrase, so a listing that ends there confirms the range.  A
+# product grep of NC_000962.3 does return Rv1586c among its integrases, which
+# corroborates that endpoint, though not the start of the range.
+#
+# Rv2648 and Rv2649 are NOT listed.  They are sometimes described as H37Rv's
+# IS6110 transposase genes, but a product grep of NC_000962.3 does not return
+# them and a CDS listing of their neighbours skips them, so that description
+# does not hold for this annotation.  Do not add them without checking what
+# they actually are.
+Rv1573
+Rv1574
+Rv1575
+Rv1576c
+Rv1577c
+Rv1578c
+Rv1579c
+Rv1580c
+Rv1581c
+Rv1582c
+Rv1583c
+Rv1584c
+Rv1585c
+Rv1586c
+Rv2650c
+Rv2651c
+Rv2652c
+Rv2653c
+Rv2654c
+Rv2655c
+Rv2656c
+Rv2657c
+Rv2658c
+Rv2659c
+
+# --- insertion sequences, transposases and integrases ------------------------
+# IS6110 is present in 1-25 copies depending on the strain, so its reads have
+# nowhere unambiguous to go.  IS1081 and the IS21/IS256 families likewise.
+#
+# Reach these by PRODUCT rather than by name -- named members vary between
+# annotations, and the H37Rv listing above turned up an integrase at Rv2646,
+# well outside either prophage, that no name-based list would have caught:
+#     --mask_pattern '(transposase|integrase|IS[0-9]+|insertion element)'
+#
+# --mask_pattern matches gene names and locus tags, NOT products, so use
+# --mask_product_pattern for these.  That is the point of it: a transposase
+# annotated only as Rv2648 cannot be reached by any name-based pattern, and the
+# loci most worth masking for alignment reasons are exactly the ones with
+# uninformative names.
+#
+# Nothing needs to be listed here as a result -- the pattern finds them all,
+# including members this file has never heard of.
+#
+# If you save a product-pattern run's locus list to a file and then feed that
+# file back in with --regions, the flag becomes redundant: the names already
+# cover the same loci and the mask does not change.  On NC_000962.3 the pattern
+# matched 40 loci and a saved 40-name list reproduced the mask exactly, to the
+# base.  Keep passing the flag anyway -- the saved names are specific to one
+# annotation, the pattern is what carries over to the next one.  Rv2646 is kept only as a
+# worked check: an integrase outside either prophage, which name matching
+# missed and product matching found.
+Rv2646
+
+# --- 13E12 repeat family -----------------------------------------------------
+# Rv1754c, Rv2167c, Rv2814c, Rv3185, Rv3344c and relatives: a repeated family
+# often confused with PE/PPE in mapping.
+#
+# In NC_000962.3 only Rv1754c and Rv3344c resolve.  Rv2167c, Rv2814c and
+# Rv3185 are NOT FOUND -- a locus tag that is absent is more suspect than an
+# absent gene name, because it means either that annotation dropped the gene
+# or that the tag here is wrong.  Check before replacing them:
+#
+#   awk -F'\t' '$3=="CDS"' NC_000962.3.gff \
+#     | grep -E 'locus_tag=Rv(216[5-9]|281[2-6]|318[3-7])c?'
+#
+# The 13E12 members that do resolve are also reachable by product, so run with
+# --mask_product_pattern before concluding these three leave a hole.
+Rv1754c
+Rv2167c
+Rv2814c
+Rv3185
+Rv3344c
+
+# --- maturase / mobile-element-adjacent --------------------------------------
+# Both are NOT FOUND in NC_000962.3.  Same caveat as the 13E12 tags above:
+# verify what occupies those coordinates rather than trusting these tags.
+Rv1764
+Rv2105
+
+# --- specific recurrent sites seen on a 129k-sample MTBC tree -----------------
+# Not members of a known repeat family, but each carried hundreds of events
+# after resistance loci were masked.  Listed so the mask is reproducible, NOT
+# because the mechanism is established: ponA1 631, hsdM 306 and Rv2024c 507 are
+# nonsynonymous at every alternate and so are as likely to be convergent
+# selection as artifacts.  Either way they break the chi-squared test's
+# independence assumption and belong in a mask -- but if you are hunting for
+# the biology, look at them before you mask them.
+#
+# Note what these entries cost.  Several were reached from a hotspot that is
+# INTERGENIC, 1-56 bp outside the gene, so masking the gene removes a few
+# thousand bases of real coding sequence to remove a few hundred artifactual
+# events.  That is usually the right trade for a chi-squared test that assumes
+# independence, but it is a trade, and masking the position alone does not
+# work: the next profile surfaces its neighbour.
+#
+# Rv1041c and Rv3798 were in this group until a product grep of NC_000962.3
+# turned them up among its 40 transposase/integrase/insertion-element loci.
+# They are mobile elements, which explains their recurrence (1,188 and 960
+# events, each at a site just outside the gene) and means they need no entry
+# here: --mask_product_pattern reaches them.  The remaining names below have no
+# such explanation.
+ponA1
+hsdM
+Rv2024c
+Rv0063
+Rv1179c
+Rv0036c
+mapB

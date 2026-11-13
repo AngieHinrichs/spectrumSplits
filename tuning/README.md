@@ -153,8 +153,48 @@ position list (expect tens of thousands of lines).
 which is the format `matUtils mask -m` reads, so the mask can go straight into
 `matUtils mask` with no conversion step.
 
+`--mask_product_pattern` masks by **function** instead of by name, matching
+each feature's product description: `'(?i)(transposase|integrase|insertion
+element)'` finds mobile elements whatever they happen to be called. This is not
+a convenience — `--mask_pattern` matches gene names and locus tags only, so a
+transposase annotated as `Rv2648` is unreachable by name, and the genes most
+worth masking for alignment reasons are exactly the ones with uninformative
+names. Matching is case sensitive, like `--mask_pattern`, so prefix `(?i)`;
+only CDS and RNA features carry products, so bare `gene` features never match
+(their CDS does, over essentially the same interval). The run prints the loci
+it matched.
+
+`--mask_pad` widens every masked feature on **both** sides, which
+`--promoter_flank` does not: a promoter flank is upstream-only by definition,
+so it reaches nothing downstream of a feature. Use it for alignment artifacts,
+which spill past a feature's annotated edges in either direction. On a
+129k-sample MTBC tree, nine of the twenty most recurrent sites left after
+masking the resistance loci sat 1-56 bp *outside* a feature, seven of them
+downstream; `--mask_pad 100` covered all nine. The two options are additive, so
+a feature given both grows by their sum on its upstream side.
+
 Names that don't resolve against your annotation are reported as NOT FOUND
-rather than silently dropped.
+rather than silently dropped. Matching is case-insensitive and covers every
+name a feature carries — `gene`, `Name`, `locus_tag`, `old_locus_tag`,
+`gene_synonym` and `Alias` — not just the one displayed in the output. That
+matters more than it sounds: NCBI GFF3 often puts the locus tag in `Name` and
+the name people actually look a gene up by in `gene_synonym`, so `mabA` and
+`gidB` resolve to `Rv1482c` and `Rv3919c` even though neither is the displayed
+name.
+
+A NOT FOUND line is still worth reading rather than ignoring, because it has
+three quite different causes: the annotation genuinely lacks that name (pair
+the entry with its locus tag), the name is wrong (`clpC` where the genome has
+`clpC1` and `clpC2`), or the gene is absent. Only the first is harmless, and
+only if the locus is covered by another entry.
+
+A position in no feature is reported as `intergenic`, with the nearest gene and
+a signed distance to it (negative = upstream). Whole-sequence landmark records
+are ignored for this: an NCBI GFF3 opens with a `region` line spanning the
+whole chromosome, and GenBank uses `source` the same way, so every position
+falls inside one. Counted as a hit, they would turn every intergenic site into
+a nameless feature at distance 0 — and let `--mask_pattern` mask the entire
+genome. They are still listed in the feature counts, then dropped with a note.
 
 ### A caution about the gene list
 
@@ -193,6 +233,43 @@ in comments as hints to check. A name missing from your annotation is reported
 as NOT FOUND, which is harmless, whereas a misremembered locus tag would resolve
 to the wrong gene and mislead you silently. Verify any you rely on against
 Mycobrowser or the NCBI H37Rv annotation.
+
+### The third gene list: `tb_alignment_loci.txt`
+
+`tb_alignment_loci.txt` is also masked, but for the opposite reason to
+`tb_resistance_genes.txt`. Resistance loci recur because the same mutation is
+selected repeatedly — the variants are real. These loci recur because short
+reads cannot be placed unambiguously: paralogous families (PE/PPE, `esx`, the
+`Rv1318c`-`Rv1320c` adenylate cyclases, `lldD1`/`lldD2`), repeats (IS6110, the
+13E12 family) and prophages (phiRv1, phiRv2). There the variants are largely
+not real at all.
+
+Keeping the two lists apart keeps each auditable, and they want different
+widening, so resolve them separately and concatenate:
+
+```
+annotate_sites.py --annotation NC_012345.1.gff3.gz \
+    --regions tb_resistance_genes.txt --promoter_flank 200 \
+    --mask_bed selection_loci.bed
+
+annotate_sites.py --annotation NC_012345.1.gff3.gz \
+    --regions tb_alignment_loci.txt --mask_pattern '^(PE|PPE|esx)' \
+    --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
+    --mask_pad 100 --mask_bed alignment_loci.bed
+```
+
+The strongest signal that a site belongs in this list rather than the
+resistance list is in `annotate_sites.py`'s `aa_change` column: if every
+possible substitution at a position is synonymous, or a third codon position
+recurs hundreds of times, selection cannot be the cause.
+
+Two cautions. The list carries a handful of genes whose recurrence has **no
+established mechanism** — `ponA1`, `hsdM` and `Rv2024c` are nonsynonymous at
+every alternate, so they may well be convergent selection rather than
+miscalling. They are listed because they break the independence assumption
+either way, but if you are looking for the biology, look at them before you
+mask them. And prefer `--mask_pattern` for the large families: it matches names,
+so it picks up members the file does not list.
 
 ## Node IDs are not stable across trees
 
@@ -237,8 +314,14 @@ rather than carried over.
 
 A new tree, start to finish. File names are generic: `tree.pb.gz` is the
 starting tree, `NC_012345.1.gff3.gz` and `NC_012345.1.fna` the reference
-annotation and sequence, `resistance_genes.txt` a list of loci to mask. The
-numbers in the worked examples are illustrative, not recommendations.
+annotation and sequence, `resistance_genes.txt` a list of loci to mask.
+
+The worked examples are measurements from a real *M. tuberculosis* tree
+(129,314 samples, 4.4 Mb reference), not invented figures, so the reasoning
+can be checked against the reports it came from. They are not
+recommendations: another species, or another sampling scheme, will give
+different numbers and sometimes different decisions. Step 8's figures are
+marked hypothetical because that run has not been done.
 
 ### 1. Profile the raw tree
 
@@ -258,23 +341,41 @@ qc/prune_mutation_sample_ratio.py --input_tree tree.pb.gz \
 Choose `--threshold` from the MUTATIONS:TIPS section rather than accepting the
 auto-threshold.
 
-*Worked example.* The report shows mean 4.4, p99 15, p99.9 22, max 310, and an
-auto-threshold (mean + 2 SD) of 11.1 with 2,400 nodes at or above it. Pruning
-2,400 nodes for exceeding 11 would discard a lot of real divergence on a
-sparsely sampled tree. A threshold of 25 sits above p99.9, catches the max-310
-outlier and its neighbours, and leaves the rest alone.
+*Worked example.* The report shows mean 18.6, median 7, p90 54, p99 114,
+p99.9 192, max 909, and an auto-threshold (mean + 2 SD) of 71.7 with 10,930
+nodes at or above it. Taking the auto-threshold would prune 10,930 nodes — 5%
+of the tree — on a species where a high ratio is often real divergence. A
+threshold well above p99.9 removed only 60 samples here and still cut the
+worst terminal branch from 909 mutations to 234, which is the whole point: the
+absurd genomes go, the diverged ones stay.
+
+Read the distribution before choosing. A median of 7 with a p90 of 54 is not a
+tight distribution with outliers, it is a broad one, and mean + 2 SD on a broad
+distribution cuts into the bulk.
 
 ### 3. Build and apply a region mask
 
 ```
 annotate_sites.py --annotation NC_012345.1.gff3.gz \
     --regions resistance_genes.txt --promoter_flank 200 \
-    --mask_pattern '^(PE|PPE)' \
-    --mask_bed mask.bed --mask_matutils matUtils_mask.txt
+    --mask_bed selection_loci.bed --mask_positions selection_pos.txt
+
+annotate_sites.py --annotation NC_012345.1.gff3.gz \
+    --regions alignment_loci.txt --mask_pattern '^(PE|PPE|esx)' \
+    --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
+    --mask_pad 100 \
+    --mask_bed alignment_loci.bed --mask_positions alignment_pos.txt
+
+sort -un selection_pos.txt alignment_pos.txt \
+    | awk '{ print "N" $1 "N" }' > matUtils_mask.txt
 ```
 
-`--mask_matutils` writes the mask in the form `matUtils mask -m` expects — one
-line per masked position, `N<position>N` — so it needs no conversion:
+Two passes, because the two lists want different widening: upstream-only for
+promoter mutations at selected loci, symmetric for artifacts that spill past a
+feature's edges. The `sort -un` merges and deduplicates the two position lists,
+and the `awk` puts them in the `N<position>N` form `matUtils mask -m` reads.
+With one pass, `--mask_matutils` writes that form directly and the `awk` is
+unnecessary.
 
 ```
 matUtils mask -i tree.pruned.pb.gz -m matUtils_mask.txt \
@@ -284,10 +385,14 @@ matUtils mask -i tree.pruned.pb.gz -m matUtils_mask.txt \
 Expect this to take a while: `matUtils mask` traverses the tree once per masked
 position.
 
-*Worked example.* The resistance loci resolve to 41 intervals over 81 kb and
-the PE/PPE families to 151 intervals over 266 kb — 348 kb in all, about 8% of a
-4.4 Mb genome. Bases removed is not the number that matters, though; the next
-step has it.
+*Worked example.* The first pass resolved 41 intervals over 81 kb from the
+resistance list; the PE/PPE pattern gave 151 intervals over 266 kb — 348 kb in
+all, 7.9% of the 4,411,532 bp reference. The alignment list and `--mask_pad`
+came later, after the first re-profile showed what had survived, which is the
+normal way round: you cannot write that list until you have seen which sites
+recur.
+
+Bases removed is not the number that matters, though; the next step has it.
 
 ### 4. Re-profile, and check what the mask bought
 
@@ -298,43 +403,91 @@ annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
     --from_profile profile_masked.txt --output surviving_sites.tsv
 ```
 
-*Worked example.* Usable SNVs fall from 4.1M to 3.3M — 20% of the mutations
-gone for 8% of the genome, a 2.5x enrichment that says the mask was well aimed.
-Had it taken 8% of the mutations as well, the mask was spectrum-neutral and the
-recurrence problem lives somewhere you have not looked. If the new top sites in
-`surviving_sites.tsv` still annotate to resistance loci, widen
-`resistance_genes.txt` instead of masking those sites one by one.
+*Worked example.* Judge the mask by recurrence, not by total count:
+
+| | raw | pruned + masked |
+| --- | --- | --- |
+| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) |
+| distinct mutated sites | 1,988,164 | 1,865,580 |
+| mutations per site (mean) | 1.634 | 1.593 |
+| worst single site | 6,102 | 1,989 |
+| top 20 sites' share | 1.24% | 0.50% |
+
+Masking 7.9% of the genome removed 8.5% of the mutations, so by total count it
+looks like it bought nothing. It bought a great deal: 13 of the raw top 20
+sites are gone, including all seven largest, and the worst hotspot fell by
+two thirds. Those are the sites that break the independence assumption.
+
+The reason the total barely moved is worth knowing, because it is easy to
+misread. Only 122,584 of the ~348,000 masked positions had ever mutated — 35%,
+against 45% genome-wide — because the upstream variant caller had already
+excluded most of the PE/PPE families, which were 76% of the mask. So the
+masked regions were below average in how many positions varied at all, and far
+above average in how often those positions recurred.
+
+If the new top sites in `surviving_sites.tsv` still annotate to resistance
+loci, widen `resistance_genes.txt` instead of masking those sites one by one.
+Watch in particular for a site where every possible substitution is
+synonymous, or where a third codon position recurs hundreds of times:
+selection cannot produce that, so it is a mapping artifact, and paralogous
+gene families are the usual source.
 
 Node IDs changed when the tree was masked, so compare clades between the two
 profiles by sample membership, not by ID.
 
 ### 5. Decide whether to fold
 
-*Worked example.* The 12-type spectrum gives C>T 0.184 against G>A 0.202, C>A
-0.055 against G>T 0.064, and so on down the six pairs: every complementary pair
-agrees to within about 4%. There is no strand-asymmetric process to preserve,
-so fold — the folded classes double every cell count and take the degrees of
-freedom from 11 to 5. If one pair disagreed two-fold, folding would average
-away a real asymmetry and should be skipped.
+*Worked example.* The 12-type spectrum gives C>T 0.2538 against G>A 0.2521,
+C>A 0.0604 against G>T 0.0604, A>G 0.0794 against T>C 0.0788, and so on: every
+complementary pair agrees to within 1.2%. There is no strand-asymmetric
+process to preserve, so fold — the folded classes double every cell count and
+take the degrees of freedom from 11 to 5. If one pair disagreed two-fold,
+folding would average away a real asymmetry and should be skipped.
 
 Settle this now: it changes both the floor in step 6 and the null in step 7.
 
 ### 6. Pick `--min_mutations` and `--max_branch_length`
 
 *`--min_mutations`.* The masked profile reports a rarest 12-type class at
-p = 0.0085 (floor 590) and a rarest folded class at p = 0.0175 (floor 286).
-Folding, so the binding floor is 286. SPLIT CANDIDATE AVAILABILITY shows 2,500
-leaving 140 eligible nodes with `smallest_eligible_subtree_tips` 410, and 5,000
-leaving 60 nodes. Take 2,500: it clears the floor nearly nine times over, keeps
-enough candidates for a real search, and no 410-tip clade can be a single bad
-genome.
+p = 0.00796 (floor 629) and a rarest folded class at p = 0.01608 (floor 311).
+Folding, so the binding floor is 311. But the floor is not the binding
+constraint here — `smallest_eligible_subtree_tips` is:
 
-*`--max_branch_length`.* Branch counts run median 3, p99 16, p99.9 29, max 950,
-and the cap table shows a cap of 50 excluding 3 branches and 0.4% of mutations
-while a cap of 10 excludes 66 branches and 37%. Cap at 50: it removes the few
-genuinely implausible branches at almost no cost. A cap of 10 would discard a
-third of the data, which on a diverged tree is real divergence rather than
-noise.
+| `--min_mutations` | eligible nodes | smallest eligible subtree |
+| --- | --- | --- |
+| 2,500 | 2,510 | 17 tips |
+| 5,000 | 1,411 | 62 tips |
+| 10,000 | 840 | 130 tips |
+
+A 17-tip clade reaching 2,500 mutations is running 147 mutations per tip
+against a tree-wide 23: that is a divergence outlier, not a clade, and
+`--min_mutations 2500` would let it be scored as a "split". Take 10,000. It
+still leaves 840 candidates, far more than any real analysis needs, clears the
+folded floor 32 times over, and puts a 130-tip minimum under every candidate.
+Nothing worth finding is near the boundary — the strongest split on this tree
+scored 20,568 on an 11,468-tip clade.
+
+*`--max_branch_length`.* Branch counts run median 4, p90 44, p99 106,
+p99.9 177, max 886, and the cap table reads:
+
+| cap | branches excluded | mutations excluded |
+| --- | --- | --- |
+| 50 | 16,811 | 43.72% |
+| 100 | 2,577 | 11.24% |
+| 250 | 17 | 0.22% |
+| 500 | 3 | 0.08% |
+
+There is no knee in that curve: the distribution is broad rather than
+bulk-plus-outliers, so any cap that removes a meaningful number of branches
+removes a meaningful fraction of the data. Cap at 250, which deletes 17 absurd
+branches and nothing else. A cap of 50 would discard 44% of the tree's
+mutations, which on a diverged, sparsely sampled species is real divergence.
+
+Note that 63% of all mutations sit on terminal branches here, with a terminal
+p90 of 49. That much private variation is more likely per-genome mapping error
+than biology, and error has its own spectrum. It will not manufacture a
+clade-shaped split, but it dilutes every real one, so read effect sizes with it
+in mind.
 
 ### 7. Calibrate `--min_chi`
 
@@ -351,12 +504,19 @@ permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
 Pass the same `--fold`, `--min_mutations` and `--max_branch_length` you settled
 above; a threshold calibrated under different settings does not transfer.
 
-*Worked example.* `types` tops out at 48, `sites` at 394, and the observed tree
-scores 20,568. The 8x gap between the two nulls is the residual recurrent-site
-clumping. Set `--min_chi` above the worse null with margin, so 800 — and note
-the observed maximum is 52x that, which is not a close call. If one node were
-the maximum in most `sites` replicates, a single hotspot would be setting your
-threshold: find and mask it rather than paying for it forever.
+*Worked example.* On an earlier masking of this tree, scored unfolded,
+`types` topped out at 48.3, `sites` at 394.0, and the observed tree at
+20,568.4. The 8x gap between the two nulls is the residual recurrent-site
+clumping. Setting `--min_chi` above the worse null with margin gave 800, and
+the observed maximum was 52x that, which is not a close call.
+
+Those figures do not carry over to the tree described in the steps above: they
+were measured unfolded, at a different `--min_mutations`, on a differently
+masked tree. That is exactly the point of recalibrating — and the reason this
+example is the only place in this walkthrough where a number from one
+configuration is quoted next to another. If one node is the maximum in most
+`sites` replicates, a single hotspot is setting your threshold: find and mask
+it rather than paying for it forever.
 
 ### 8. Run the search and find where it saturates
 
@@ -366,11 +526,14 @@ spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
     --output_spectrum spectra.tsv 2> splits.log
 ```
 
-*Worked example.* `splits.log` records each accepted split's chi-squared:
-20568, 9100, 4400, 2050, 1180, 940, 860, 815. The run is still finding splits
-just above the threshold, so the curve has not bent yet — either raise
-`--min_chi` to 2000 and keep the four splits that clear it, or keep the rest
-and label them marginal.
+*Worked example (hypothetical — this run has not been done).* Suppose
+`splits.log` records each accepted split's chi-squared as 20568, 9100, 4400,
+2050, 1180, 940, 860, 815. The run is still finding splits just above the
+threshold, so the curve has not bent yet — either raise `--min_chi` to 2000
+and keep the four splits that clear it, or keep the rest and label them
+marginal. A run that instead stopped at 20568, 9100, 4400 with nothing under
+3000 has found its own ceiling, and the threshold is not what is limiting
+it.
 
 ### 9. Confirm, then interpret
 

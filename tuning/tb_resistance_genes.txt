@@ -15,9 +15,23 @@
 #   Downloadable with genomic coordinates; cite this, not this file.
 #
 # Cross-check with TB-Profiler's database (which tracks the catalogue) before
-# relying on the list.  Names absent from your annotation are reported by
-# annotate_sites.py as NOT FOUND -- several genes below are commonly annotated
-# only by locus tag, so both forms are listed where I know them.
+# relying on the list.
+#
+# NAMES ARE ANNOTATION-DEPENDENT, so every locus is listed twice where it can
+# be: once by the name people use, once by its locus tag.  A name can report
+# NOT FOUND for three different reasons, and only the third is a mistake in
+# this file:
+#
+#   - it is a gene_synonym rather than the Name (gidB for Rv3919c, mabA for
+#     fabG1).  annotate_sites.py searches synonyms, so these resolve.
+#   - the annotation does not carry it at all (mmpR5, fbiD in NC_000962.3).
+#     The locus tag entry covers the locus; the name stays because it is what
+#     the WHO Catalogue calls it.
+#   - the name is wrong: there is no clpC, only clpC1 and clpC2, and no ddl,
+#     only ddlA.  Those are corrected rather than paired.
+#
+# So read a NOT FOUND line rather than ignoring it: check whether another
+# entry covers the locus before assuming it was masked.
 # ---------------------------------------------------------------------------
 #
 # Masking whole loci rather than individual sites is the point of this list.
@@ -36,7 +50,19 @@ rpoA
 katG
 inhA
 fabG1
-mabA
+Rv1483
+# Rv1483 is the locus tag for fabG1, listed alongside the name as everything
+# here is.  mabA, the familiar synonym, is NOT listed: it resolves to the same
+# features fabG1 already matches, so it added nothing.  (Dropping mabA and
+# adding Rv1483 left the mask byte-identical -- 107 features, 83,873 bp -- which
+# is how that was established.  An earlier version of this comment claimed mabA
+# resolved to Rv1482c/fabD next door; that was wrong, and the unchanged totals
+# are what disproved it.)
+#
+# What is worth checking in your own annotation is the promoter.  fabG1 with
+# --promoter_flank 200 reaches 1,673,240, which covers the canonical inhA -15
+# site at 1,673,425 (fabG1 start 1,673,440 minus 15).  That site carried 2,249
+# events on a 129k-sample tree, so confirm your mask covers it.
 ahpC
 kasA
 ndh
@@ -54,13 +80,13 @@ pncA
 rpsA
 panD
 clpC1
-clpC
 
 # --- streptomycin and other aminoglycosides ---------------------------------
 rpsL
 rrs
 gid
 gidB
+Rv3919c
 eis
 tlyA
 whiB7
@@ -82,6 +108,9 @@ mmpS5
 Rv0678
 mmpR5
 Rv1979c
+# mmpR5 is the WHO Catalogue's name for Rv0678 but is absent from the
+# NC_000962.3 annotation, so it reports NOT FOUND; the locus tag above covers
+# the locus.  Same for fbiD / Rv2983 below.
 
 # --- linezolid --------------------------------------------------------------
 rplC
@@ -106,5 +135,6 @@ ribD
 # --- cycloserine ------------------------------------------------------------
 alr
 ald
-ddl
+ddlA
+Rv2981c
 cycA
