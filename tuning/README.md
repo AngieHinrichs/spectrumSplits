@@ -705,3 +705,36 @@ A single clade can also settle it informally, if one exists with high
 divergence per tip but a spectrum resembling its low-divergence parent rather
 than the other high-divergence clades. That is one clade rather than a
 pattern, so treat it as a reason to run this step, not a substitute for it.
+
+*Worked example*, the 30 splits from the run above. The correlations with
+divergence per tip are the same on both branch classes:
+
+| class | internal r | terminal r | internal rho | terminal rho |
+|---|---|---|---|---|
+| `CA\|GT` | 0.429 | 0.461 | 0.450 | 0.347 |
+| `CG\|GC` | -0.327 | -0.378 | -0.253 | -0.274 |
+| `CT\|GA` | **0.644** | **0.643** | 0.646 | 0.636 |
+| `TA\|AT` | -0.040 | -0.132 | -0.252 | -0.289 |
+| `TC\|AG` | **-0.523** | **-0.524** | -0.644 | -0.648 |
+| `TG\|AC` | **-0.691** | **-0.712** | -0.674 | -0.709 |
+
+Within each clade, internal and terminal spectra differ by a median of 0.1 to
+0.4 percentage points per class, with a single maximum of 2.28. So the
+spectrum is a property of the clade and not of the branch class: terminal
+branches are not carrying a distinct artifact spectrum, even though they hold
+63% of the mutations. The quality explanation is ruled out for this tree.
+
+The between-clade separation therefore stands on internal branches alone,
+where per-genome error cannot reach: `TC|AG` runs 0.131 to 0.273 across
+clades, a 2.08x spread on counts of 4,000 to 63,000 internal mutations each.
+And the clade that broke the divergence correlation holds up — at a
+divergence ratio of 46.3, close to the 54.3 of the most extreme clade, its
+internal-only `TC|AG` of 0.230 matches its low-divergence parent's 0.246
+rather than that clade's 0.142.
+
+Note what this step does *not* establish. It rules out per-genome artifacts,
+not shared ones: a repeat that misaligns the same way in every genome of a
+lineage places its mutations on internal branches too. Masking is what
+addresses those, which is why it comes first. A clean result here means the
+splits are not a sequencing-quality gradient; it does not by itself make them
+biology.
