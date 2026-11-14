@@ -493,54 +493,94 @@ in mind.
 
 ```
 permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_mutations 2500 --mode types --replicates 20 \
-    --include_observed --nthreads 8 > null_types.tsv
+    --min_mutations 10000 --max_branch_length 250 --mode types \
+    --replicates 20 --include_observed --seed 1 --nthreads 8 \
+    --output null_types.tsv
 
 permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_mutations 2500 --mode sites --replicates 20 \
-    --include_observed --nthreads 8 > null_sites.tsv
+    --min_mutations 10000 --max_branch_length 250 --mode sites \
+    --replicates 20 --include_observed --seed 1 --nthreads 8 \
+    --output null_sites.tsv
 ```
 
-Pass the same `--fold`, `--min_mutations` and `--max_branch_length` you settled
-above; a threshold calibrated under different settings does not transfer.
+Use `--output` for the per-split TSV; the summary goes to stdout, so
+redirecting stdout saves the summary and silently discards the table. Pass the
+same `--fold`, `--min_mutations` and `--max_branch_length` you settled above —
+a threshold calibrated under different settings does not transfer — and the
+same `--seed` in both, so the replicates are paired and the only difference
+between the runs is the null model. `--include_observed` matters: it scores the
+real tree through the identical code path, so the comparison is not against a
+number from a different pass.
 
-*Worked example.* On an earlier masking of this tree, scored unfolded,
-`types` topped out at 48.3, `sites` at 394.0, and the observed tree at
-20,568.4. The 8x gap between the two nulls is the residual recurrent-site
-clumping. Setting `--min_chi` above the worse null with margin gave 800, and
-the observed maximum was 52x that, which is not a close call.
+*Worked example*, the same masked tree as the steps above, folded, at
+`--min_mutations 10000` and `--max_branch_length 250`:
 
-Those figures do not carry over to the tree described in the steps above: they
-were measured unfolded, at a different `--min_mutations`, on a differently
-masked tree. That is exactly the point of recalibrating — and the reason this
-example is the only place in this walkthrough where a number from one
-configuration is quoted next to another. If one node is the maximum in most
-`sites` replicates, a single hotspot is setting your threshold: find and mask
-it rather than paying for it forever.
+| | min | median | max |
+|---|---|---|---|
+| `types` | 15.2 | 19.7 | 23.9 |
+| `sites` | 17.0 | 26.3 | 62.7 |
+
+Observed: **18,283.3**, at `node_5045`, splitting 592,967 mutations below from
+2,287,262 above.
+
+Three things to read off that.
+
+**Which null to believe.** `sites` tops out 2.6x higher than `types`, and 11 of
+its 20 replicates exceed the *entire* `types` maximum. A threshold taken from
+the `types` null would be exceeded by chance more than half the time on this
+tree. Calibrate against `sites`.
+
+**Whether to keep masking.** The 38.8-unit gap between the nulls is what
+residual recurrent-site clumping costs. That is the number to weigh against
+another round of masking — and here it is immaterial, because the observed
+maximum is 291x the `sites` maximum. Masking further could move the threshold
+from 63 to perhaps 40, which changes nothing. Stop masking when the gap
+between the nulls is small compared with the observed value, not when the
+recurrence table looks tidy.
+
+**The threshold.** A 2x margin on the `sites` maximum gives `--min_chi 126`,
+and the observed maximum is still 146x that. When the headroom is this large
+the exact choice does not matter; when it is not, prefer the larger margin.
+
+One caveat on transferring this number: it was calibrated with the default
+`--max_splits 1`, so it is the threshold the *first* split must beat. Deeper
+splits in the greedy cascade are scored on smaller subtrees, where both the
+observed chi-squared and the null are smaller. Re-run with `--max_splits 25`
+before trusting one threshold to govern the whole cascade.
+
+If one node is the maximum in most `sites` replicates, a single hotspot is
+setting your threshold: find and mask it rather than paying for it forever.
+Here no node repeats more than twice across the 20 replicates, which is what
+an absence of such a hotspot looks like.
 
 ### 8. Run the search and find where it saturates
 
 ```
 spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_chi 800 --min_mutations 2500 \
+    --min_chi 126 --min_mutations 10000 --max_branch_length 250 \
     --output_spectrum spectra.tsv 2> splits.log
 ```
 
 *Worked example (hypothetical — this run has not been done).* Suppose
-`splits.log` records each accepted split's chi-squared as 20568, 9100, 4400,
-2050, 1180, 940, 860, 815. The run is still finding splits just above the
-threshold, so the curve has not bent yet — either raise `--min_chi` to 2000
-and keep the four splits that clear it, or keep the rest and label them
-marginal. A run that instead stopped at 20568, 9100, 4400 with nothing under
-3000 has found its own ceiling, and the threshold is not what is limiting
-it.
+`splits.log` records each accepted split's chi-squared as 18283, 4100, 1900,
+640, 310, 180, 140, 129. The run is still finding splits just above the
+threshold, so the curve has not bent yet — either raise `--min_chi` and keep
+the splits that clear the higher bar, or keep the rest and label them
+marginal. A run that instead stopped at 18283, 4100, 1900 with nothing under
+1000 has found its own ceiling, and the threshold is not what is limiting it.
+
+Note that `--min_chi` governs every split, while step 7 calibrated it against
+the first one. The deeper splits in a list like that are scored on smaller
+subtrees, so a threshold that is strict for the root can be loose by the
+fourth split. The `--max_splits 25` null run is what settles whether one
+number serves the whole cascade.
 
 ### 9. Confirm, then interpret
 
 ```
 spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_chi 2000 --min_mutations 2500 --bootstrap_splits 100 \
-    --nthreads 8 --output_spectrum spectra.tsv
+    --min_chi 126 --min_mutations 10000 --max_branch_length 250 \
+    --bootstrap_splits 100 --nthreads 8 --output_spectrum spectra.tsv
 ```
 
 Then read each split's per-class proportions out of `spectra.tsv`. A split
@@ -549,3 +589,13 @@ over-mutated site; one spread across several classes that survives the
 bootstrap is the thing worth explaining. Running `annotate_sites.py --highlight
 repair_genes.txt` on the mutations of the split's defining branch is the first
 place to look for a mechanism.
+
+Extract the split's samples before doing anything else to the tree. Node IDs
+are assigned at read time, so the first mask, prune or collapse renumbers
+every node and the ID in `splits.log` stops meaning anything (see "Node IDs
+are not stable across trees" above). The sample set is the only durable
+handle:
+
+```
+matUtils extract -i tree.pruned.masked.pb.gz -c node_5045 -u split_samples.txt
+```
