@@ -548,6 +548,60 @@ splits in the greedy cascade are scored on smaller subtrees, where both the
 observed chi-squared and the null are smaller. Re-run with `--max_splits 25`
 before trusting one threshold to govern the whole cascade.
 
+#### The threshold should scale with subtree size
+
+That caveat turns out to matter more than a caveat usually does, so do this
+run rather than skipping it. Score the cascade null with a permissive
+threshold, since here `--min_chi` exists only to stop the search and setting
+it high would truncate the null at exactly the depth being measured:
+
+```
+permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
+    --min_mutations 10000 --max_branch_length 250 --mode sites \
+    --max_splits 25 --min_chi 1 --replicates 20 --include_observed \
+    --seed 1 --nthreads 8 --output null_sites_cascade.tsv
+```
+
+The printed summary will not answer the question: it reports the maximum
+per replicate, which with `--max_splits 25` is still each replicate's first
+split, so it comes back close to the `--max_splits 1` run. The answer is in
+the TSV. Group the null splits by the size of the subtree each was carved
+from (`mutations_below + mutations_above`) and compare each observed split
+against nulls from subtrees within, say, 2x its size.
+
+*Worked example*, same tree and parameters as above, 500 null splits:
+
+| parent subtree | null max chi-squared |
+|---|---|
+| 2.88M (whole tree) | 62.7 |
+| 470-590k | 18.0-25.8 |
+| 120-180k | 14.0-17.5 |
+| 57-92k | 12.4-15.5 |
+
+The ceiling falls by roughly 4x from the root to a 90k subtree, because
+chi-squared scales with the counts in the table. A single `--min_chi`
+calibrated on the first split is therefore far too strict everywhere below
+it: 126 against a real ceiling of about 12 is an order of magnitude.
+
+That cost real splits on this tree. Because `--min_chi 1` scores everything,
+the cascade run also reveals what the production run was rejecting — six
+splits between 54.7 and 111.1 that each clear their size-matched null by
+3.1x to 8.9x, the largest being `node_10` at 111.1 against a ceiling of
+12.4. Only one scored split genuinely failed, at 8.7 against 15.5.
+
+Two ways to use this. The simple one is to set `--min_chi` from the
+*smallest* subtree you intend to split rather than from the root, which on
+this tree means something nearer 40 than 126. The better one is for the
+threshold to scale with the candidate subtree's mutation count, which is a
+change to `spectrumSplits.py` rather than a tuning choice; until it exists,
+a fixed threshold is a known limitation and worth stating alongside results.
+
+Two caveats on the size-matching itself. The 2x windows overlap, so the
+ceilings for nearby sizes are not independent estimates. And the null
+subtrees are the permuted tree's own, which do not correspond one-to-one
+with the observed subtrees being compared against them — the matching is on
+size, not identity.
+
 If one node is the maximum in most `sites` replicates, a single hotspot is
 setting your threshold: find and mask it rather than paying for it forever.
 Here no node repeats more than twice across the 20 replicates, which is what
@@ -572,8 +626,10 @@ marginal. A run that instead stopped at 18283, 4100, 1900 with nothing under
 Note that `--min_chi` governs every split, while step 7 calibrated it against
 the first one. The deeper splits in a list like that are scored on smaller
 subtrees, so a threshold that is strict for the root can be loose by the
-fourth split. The `--max_splits 25` null run is what settles whether one
-number serves the whole cascade.
+fourth split. The `--max_splits 25` null run settles that, and on this tree
+the answer was no: see "The threshold should scale with subtree size" above.
+A run that stops with its last split a fraction above the threshold has not
+saturated — it has hit the bar, and splits below it are going unexamined.
 
 ### 9. Confirm, then interpret
 
