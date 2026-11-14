@@ -84,7 +84,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Calibrate spectrumSplits.py --min_chi against a permutation null."
     )
-    parser.add_argument("--input_tree", type=str, required=True,
+    parser.add_argument("--input_tree", type=str, default=None,
                         help="Input tree file (protobuf format)")
     parser.add_argument("--output", type=str, default="permutation_null.tsv",
                         help="Output TSV of every split scored, per replicate")
@@ -459,6 +459,12 @@ def main():
 
     if args.selftest:
         return selftest()
+
+    ### Not enforced by argparse so that --selftest runs without a tree.
+    if not args.input_tree:
+        print("error: --input_tree is required (or pass --selftest)",
+              file=sys.stderr)
+        return 2
 
     fold_map, fold_labels = folded_index()
     if args.fold:

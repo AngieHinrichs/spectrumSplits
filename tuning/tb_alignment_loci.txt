@@ -173,6 +173,12 @@ Rv2659c
 # well outside either prophage, that no name-based list would have caught:
 #     --mask_pattern '(transposase|integrase|IS[0-9]+|insertion element)'
 #
+# ADD maturase to that pattern.  Rv0071 is annotated "maturase", carried 224
+# events after the first full mask, and no name or product pattern above
+# reaches it.  The two maturase locus tags this file guessed (Rv1764, Rv2105)
+# are NOT FOUND in NC_000962.3, so the product is the only reliable route:
+#     --mask_product_pattern '(?i)(transposase|integrase|insertion element|maturase)'
+#
 # --mask_pattern matches gene names and locus tags, NOT products, so use
 # --mask_product_pattern for these.  That is the point of it: a transposase
 # annotated only as Rv2648 cannot be reached by any name-based pattern, and the
@@ -247,3 +253,51 @@ Rv0063
 Rv1179c
 Rv0036c
 mapB
+
+# ---------------------------------------------------------------------------
+# SECOND ROUND: what survived the full mask on a 129k-sample MTBC tree
+#
+# After masking both lists (469 kb union), the worst site fell from 6,102
+# events to 318 and the top 20 from 1.24% of all mutations to 0.16%.  These
+# are the loci still holding the top 20.  They are NOT in the mask above; add
+# them only if the permutation null (--mode sites vs --mode types) shows the
+# remaining recurrence still inflates chi-squared.  Masking has diminishing
+# returns and every entry costs real sequence.
+#
+# Five are certain artifacts: EVERY possible substitution at the site is
+# synonymous, so no selective pressure can produce the recurrence.
+#   Rv2082   codon 68  pos 3  (300 events)   all three alternates R68R
+#   pknH     codon 248 pos 3  (278 events)   all three alternates A248A
+#   espK     codon 206 pos 3  (263 events)   all three alternates T206T
+#   lpqM     codon 494 pos 3  (228 events)   all three alternates A494A
+#   Rv2081c  codon 77  pos 3  (194 events)   all three alternates T77T
+#
+# Three clusters, which is the signature of a mismapped region rather than
+# independent recurrence:
+#   Rv2081c/Rv2082  four sites in ~700 bp, 1,056 events together
+#   Rv2019          three sites within 5 bp, 100-105 bp outside the gene,
+#                   589 events -- just past a 100 bp pad, so widen to 150
+#   whiB6           CDS codon 53 plus promoter -75, 456 events
+#   Rv0794c         intergenic -367 plus promoter -138, 415 events
+#
+# Two have a known mechanism:
+#   Rv2820c  CRISPR type III Csm4 (318 events) -- the direct-repeat region is
+#            inherently repetitive, so reads have nowhere unambiguous to go
+#   espK     ESX-1 secretion-associated.  '^esx' does NOT match it; the ESX
+#            secretion-associated genes (esp*) need their own pattern.
+#
+# One is a mask artifact worth understanding: fadE35/Rv3797 carries a site
+# 12 bp outside the gene, immediately next to Rv3798, which IS masked as a
+# mobile element.  Masking a locus pushes its hotspot into the neighbour --
+# the same non-convergence seen with per-site masking, one scale up.
+#Rv2081c
+#Rv2082
+#Rv2019
+#Rv0794c
+#Rv3862c
+#Rv3879c
+#Rv2820c
+#Rv1266c
+#Rv0419
+#Rv3081
+#Rv3797
