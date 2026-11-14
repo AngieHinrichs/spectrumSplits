@@ -597,5 +597,9 @@ are not stable across trees" above). The sample set is the only durable
 handle:
 
 ```
-matUtils extract -i tree.pruned.masked.pb.gz -c node_5045 -u split_samples.txt
+matUtils extract -i tree.pruned.masked.pb.gz -I node_5045 -u split_samples.txt
 ```
+
+`-I` selects by internal node ID, which is what `splits.log` reports. `-c` is
+for annotated clades — the lineage labels stored as node annotations in a MAT,
+such as Pango names — and will not find a `node_N` ID.
