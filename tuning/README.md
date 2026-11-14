@@ -647,6 +647,51 @@ bootstrap is the thing worth explaining. Running `annotate_sites.py --highlight
 repair_genes.txt` on the mutations of the split's defining branch is the first
 place to look for a mechanism.
 
+**Check each split's lineage before reading a mechanism into it.** If the tree
+carries clade annotations, this is a few commands and it changes the
+interpretation completely:
+
+```
+matUtils summary -i tree.pruned.masked.pb.gz --sample-clades clades.txt
+matUtils extract -i tree.pruned.masked.pb.gz -I node_N -u node_N_samples.txt
+grep -Fwf node_N_samples.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
+```
+
+*Worked example.* The three largest splits on the tree above each turned out
+to be a recognised, deeply diverged group, and the tip counts matched the
+split sizes exactly:
+
+| split | clades | tips | share |
+|---|---|---|---|
+| `node_5045` | lineage 1 and sublineages | 11,468 | 8.9% |
+| `node_14473` | lineage 2.2.1 (Beijing) | 35,044 | 27.1% |
+| `node_6` | La1/La2/La3, the animal-adapted members | 8,729 | 6.8% |
+
+Two things follow, in opposite directions.
+
+The repair-gene reading collapses for `node_14473`. One of only five
+mutations on its defining branch is `mutT4` R48G, a 12x enrichment — and it
+is lineage 2.2.1, so that is the documented Beijing `mutT4` polymorphism. The
+variant and the spectrum are both properties of lineage 2, and a single
+branch cannot separate them. Any deep branch carries hundreds of
+lineage-defining mutations, so co-occurrence is guaranteed. What would be
+evidence is independent recurrence: the same gene disrupted on an unrelated
+branch with the same shift.
+
+The quality reading collapses too, more thoroughly than step 10 could show.
+The clade that broke the divergence correlation — high mutations per tip, but
+a spectrum matching its low-divergence parent — is `node_3616`, with 269
+tips. La3 also has exactly 269 samples, so that clade *is* La3, a distinct
+animal-adapted species. Its long branches are sparse sampling of a diverged
+species, and its spectrum matches its parent because it belongs to the
+animal-adapted group. The anomaly has a phylogenetic explanation, which is
+the strongest single sign that these spectra track lineage.
+
+One caveat on `node_6`: 336 of its 8,729 tips are `La1.2.BCG`, a
+laboratory-passaged vaccine strain. That is 3.9%, so it will not dominate,
+but serial passage is not natural evolution and it is worth excluding before
+making a quantitative claim about the animal-adapted spectrum.
+
 Extract the split's samples before doing anything else to the tree. Node IDs
 are assigned at read time, so the first mask, prune or collapse renumbers
 every node and the ID in `splits.log` stops meaning anything (see "Node IDs

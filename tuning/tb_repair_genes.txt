@@ -32,6 +32,24 @@
 # mutY ~ Rv3589, ung ~ Rv2976c, udgB ~ Rv1259
 # The Beijing / lineage 2 background carries mutT2, mutT4 and ogt
 # polymorphisms; check lineage before concluding anything from those.
+#
+# That warning earned itself on a 129k-sample MTBC tree.  The clade with the
+# most striking hit -- one of only FIVE mutations on its defining branch was
+# mutT4 R48G, a 12x enrichment -- turned out to be lineage2.2.1, i.e. Beijing.
+# So the hit is the documented lineage marker, and it says nothing about
+# whether mutT4 causes that clade's spectrum: the variant and the spectrum are
+# both properties of lineage 2, and one branch cannot separate them.
+#
+# Check the lineage FIRST, before reading a repair-gene hit as a mechanism:
+#
+#   matUtils summary -i tree.pb.gz --sample-clades clades.txt
+#   matUtils extract -i tree.pb.gz -I node_N -u node_N_samples.txt
+#   grep -Fwf node_N_samples.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
+#
+# What would actually be evidence is independent recurrence: the same repair
+# gene disrupted on an unrelated branch, with the same spectrum shift.  A
+# single deep branch carries hundreds of lineage-defining mutations, so any
+# one of them co-occurs with the spectrum by construction.
 mutT1
 mutT2
 mutT3
