@@ -9,6 +9,7 @@ tree, and all three need only `bte` and the Python standard library.
 | `profile_tree.py` | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
 | `permutation_null.py` | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
 | `annotate_sites.py` | What are the recurrent sites, and which regions should be masked before any of the above is trusted? |
+| `branch_class_spectra.py` | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -659,3 +660,48 @@ matUtils extract -i tree.pruned.masked.pb.gz -I node_5045 -u split_samples.txt
 `-I` selects by internal node ID, which is what `splits.log` reports. `-c` is
 for annotated clades — the lineage labels stored as node annotations in a MAT,
 such as Pango names — and will not find a `node_N` ID.
+
+### 10. Check the splits against sequencing quality
+
+A split can be real biology or it can be a quality gradient, and the two look
+identical in `spectra.tsv`. On a sparsely sampled tree most mutations sit on
+terminal branches — 63% on the tree described here — and a terminal branch
+carries everything wrong with one genome: mapping error in repeats,
+deamination damage, contamination, assembly artifacts. Those have their own
+spectrum, usually enriched for C>T and G>A. So a clade whose genomes are
+individually worse shows a shifted spectrum for reasons that have nothing to
+do with its mutational processes.
+
+Internal branches cannot carry per-genome error. A mutation is placed on an
+internal branch only because the samples below it share it, so one bad genome
+cannot reach there. Shared artifacts still can — a repeat that misaligns the
+same way in every genome of a lineage — which is why this comes after masking
+rather than instead of it.
+
+```
+branch_class_spectra.py --input_tree tree.pruned.masked.pb.gz \
+    --spectra spectra.tsv --fold --max_branch_length 250 \
+    --output branch_class.tsv
+```
+
+Pass the same `--fold` and `--max_branch_length` as the search, and the
+`spectra.tsv` from the run you are checking. Split roots are read from its
+`Node_ID` column, and each node's mutations are attributed to the nearest
+split root at or above it, which is how `spectrumSplits.py` reports spectra:
+once a child split is carved out, the parent's row covers only what is left.
+Because node IDs are assigned at read time, the `spectra.tsv` and the tree
+must be from the same file; the script warns rather than guessing if the IDs
+do not match.
+
+**What to read.** The between-split correlations are the test. If the spectrum
+tracks lineage, the ordering across splits survives on internal branches
+alone. If it tracks quality, it is strong on terminal branches and fades on
+internal ones. The within-split internal-versus-terminal chi-squared is *not*
+the test: terminal branches genuinely differ on any real tree, so a large
+value there is expected. It matters when it varies a lot between splits, which
+says the gradient is uneven across clades.
+
+A single clade can also settle it informally, if one exists with high
+divergence per tip but a spectrum resembling its low-divergence parent rather
+than the other high-divergence clades. That is one clade rather than a
+pattern, so treat it as a reason to run this step, not a substitute for it.
