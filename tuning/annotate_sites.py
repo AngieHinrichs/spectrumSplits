@@ -159,6 +159,10 @@ def parse_args():
                         "column and counted. Annotation only -- nothing is masked. "
                         "Use it to ask whether a clade's defining mutations land in "
                         "genes of interest, e.g. tb_repair_genes.txt")
+    p.add_argument("--highlight_flank", type=int, default=0,
+                   help="Also highlight sites within this many bp of a named "
+                        "gene, reported as name@+N. Default 0: only sites "
+                        "inside the gene are highlighted.")
     p.add_argument("--output", type=str, default=None,
                    help="Annotated sites TSV (default: stdout)")
     p.add_argument("--selftest", action="store_true",
@@ -820,6 +824,28 @@ def selftest():
     if failures == 0:
         print("ok: gene synonyms and locus tags resolve to the same feature")
 
+    ### --highlight must separate a site inside a named gene from one merely
+    ### near it.  The nearest feature to an intergenic site is reported, so
+    ### without a distance check a neighbouring gene is credited with a hit.
+    failures = 0
+    hl = Feature("c", "CDS", 1000, 2000, 1, "mutT2", "Rv1160", "mutator", ())
+    if "mutt2" not in hl.names() or "rv1160" not in hl.names():
+        failures += 1
+        print("FAIL a highlight name should match gene and locus tag",
+              file=sys.stderr)
+    ### Mirrors the production condition: inside means distance 0.
+    for dist, flank, want in ((0, 0, True), (140, 0, False),
+                              (140, 200, True), (140, 100, False),
+                              (-50, 100, True)):
+        inside = (dist == 0)
+        got = inside or abs(dist) <= flank
+        if got != want:
+            failures += 1
+            print(f"FAIL highlight at distance {dist} with flank {flank}: "
+                  f"got {got}, want {want}", file=sys.stderr)
+    if failures == 0:
+        print("ok: highlight separates a site inside a gene from one near it")
+
     print("FAILED" if failures else "all self-tests passed")
     return 1 if failures else 0
 
@@ -933,6 +959,7 @@ def main():
         n_promoter = 0
         n_intergenic = 0
         n_highlighted = 0
+        n_nearby = 0
         highlight_hits = defaultdict(int)
         per_gene = defaultdict(int)
 
@@ -1020,11 +1047,22 @@ def main():
                 ### Report the requested name, not the annotation's display
                 ### name, so a hit on a synonym says which name matched.
                 hit = sorted(f.names() & set(highlight_names))
-                if hit:
+                ### f is the NEAREST feature, which need not contain the site.
+                ### Only a site inside the gene counts as a hit on it; a site
+                ### merely near one is reported with its distance, and only
+                ### when the user asked for a flank.  Flagging a neighbour as
+                ### a hit overstates the evidence exactly where it is being
+                ### interpreted.
+                dist = row["distance"]
+                inside = (dist == 0)
+                if hit and (inside or abs(dist) <= args.highlight_flank):
                     name = highlight_names[hit[0]]
-                    row["highlight"] = name
+                    row["highlight"] = name if inside else f"{name}@{dist:+d}"
                     highlight_hits[name] += 1
-                    n_highlighted += 1
+                    if inside:
+                        n_highlighted += 1
+                    else:
+                        n_nearby += 1
             out.write("\t".join(str(row[k]) for k in header) + "\n")
 
         if args.output:
@@ -1033,6 +1071,11 @@ def main():
         print(f"  CDS: {n_coding}   promoter (within {args.flank} bp): {n_promoter}   "
               f"intergenic: {n_intergenic}", file=sys.stderr)
         if highlight_names:
+            if n_nearby:
+                print(f"  {n_nearby} further site(s) lie within "
+                      f"{args.highlight_flank} bp of a named gene but NOT in "
+                      f"one; they carry a signed distance in the highlight "
+                      f"column and are not counted as hits", file=sys.stderr)
             if n_highlighted:
                 print(f"  HIGHLIGHTED: {n_highlighted} site(s) in named genes: "
                       + ", ".join(f"{g}={n}" for g, n in
