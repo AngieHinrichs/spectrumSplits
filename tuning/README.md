@@ -1097,3 +1097,58 @@ in every later claim. Just do not expect it to move a spectrum.
 More generally: treat the top of the per-clade composition table as part of
 reading any split. A clade that is one named sublineage plus one named lab
 derivative is not a population.
+
+### 13. Replicate the search on a changed tree, and match by membership
+
+A mask round or a prune gives you a second, independent search over nearly the
+same data. That is the strongest check available on this pipeline, and it is
+free once you have the sample sets, because node IDs are gone and membership is
+all that carries across.
+
+```
+split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
+    --null null_sites_nobcg.tsv \
+    --bootstrap_replicates bootstrap_by_replicate_nobcg.tsv \
+    --clade_samples split_clade_samples_nobcg.tsv \
+    --output split_confidence_nobcg.tsv
+```
+
+Then match each old clade to its best new clade by Jaccard on the sample sets,
+after removing any samples the prune deleted so both are measured on the same
+universe. On the MTBC tree, the round-3 mask plus the BCG prune gave 59 splits
+against the previous 62, and **58 of the 62 matched at Jaccard 1.000** -- 56 of
+them exactly, two off by a handful of tips. Tier counts went 36/20/6 to
+33/22/4. That is the result that says the search is finding structure rather
+than fitting the artifact landscape, and no amount of null calibration or
+bootstrapping could have established it.
+
+#### What failed to replicate is what the tiering predicted
+
+Three of the four lost splits -- `node_74277`, `node_73308`, `node_73473` --
+were tier C, and were the three *lowest* margins in the entire old set (2.37x,
+2.41x, 2.83x). The three tier C splits that did survive came back tier C. So
+the tier was doing its job: it is a prediction about reproducibility, and here
+it was tested against an actual replication and held.
+
+#### The fourth loss was the `--min_mutations` floor, not the biology
+
+`node_10` was tier A at 8.9x margin and 100% support, and it is gone. The
+reason is arithmetic. Its residual held 10,190 mutations; pruning BCG removed
+535 of them, all necessarily inside it since BCG sits nowhere else; 9,655 is
+below `--min_mutations 10000`. The clade did not stop being different -- it
+stopped being *testable*.
+
+Watch what the search did instead, because it is the reason this is worth
+documenting rather than filing as a loss. It carved out the **complement**: a
+new 7,356-tip split (`node_286`) inside the same parent, leaving a 768-tip
+residual that contains all 577 surviving `node_10` samples and has `node_10`'s
+spectrum (`CA|GT` 0.0792 and `TC|AG` 0.2635, against the old 0.0776 and
+0.2682). `node_286` shares not one sample with `node_10`.
+
+So the signal is fully intact and has moved from a split to a residual. Two
+things follow. A clade dropping off the split list is not evidence it stopped
+being distinctive, and you cannot tell the difference by reading node IDs or
+split lists -- only by asking where its samples went. And a `--min_mutations`
+floor does not merely hide small clades, it can *relocate* a finding from the
+split you would report into a residual you might not think to look at.
+
