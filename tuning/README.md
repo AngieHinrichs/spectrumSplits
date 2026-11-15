@@ -821,16 +821,27 @@ whether the split depends on a handful of recurrent sites — which is exactly
 the artifact that survives masking. The two measures disagree usefully. A
 large margin with low support says the signal is real but rests on few
 positions. A small margin with high support says a consistent weak
-difference. On the MTBC tree the 62 splits came out 14 / 22 / 26 across the
-tiers, and the disagreements were the informative part: `node_14473`, the
-Beijing clade, scored 161x margin on 50% support.
+difference.
+
+On the MTBC tree the 62 splits came out 29 tier A, 26 tier B and 7 tier C
+once support was computed wobble-tolerantly. Scored on exact node IDs alone
+the same splits gave 14 / 22 / 26, so the placement wobble below is not a
+minor correction — it moved half the strong set.
 
 #### The placement wobble, and a trap
 
 Replicates often place a real split one node up or down, so counting exact
-node IDs understates support. Given `--bootstrap_replicates` the script asks,
-per replicate, whether *any* node within `--neighbourhood` was split, which
-is a fraction of replicates and cannot exceed 100%.
+node IDs understates support, sometimes drastically. Given
+`--bootstrap_replicates` the script asks, per replicate, whether *any* node
+within `--neighbourhood` was split, which is a fraction of replicates and
+cannot exceed 100%.
+
+How much this matters: `node_14473`, the Beijing clade, has a margin of 161x
+yet appears under its own ID in only 50% of replicates. Allowing +-10 in node
+number takes it to 100%. Half the replicates were splitting the same clade
+one node away, and on exact IDs alone it would have been filed as a
+large-margin, low-support split -- the artifact pattern -- when it is
+nothing of the kind.
 
 Do not get there by summing the per-node counts from the aggregate file. That
 double-counts any replicate which split two nearby nodes, and on the MTBC
@@ -846,14 +857,20 @@ for f in bootstrap_*_splits_output.tsv; do n=${f#bootstrap_}; n=${n%%_*};
 
 Two caveats on the neighbourhood number. Node-ID adjacency is a proxy for
 topological adjacency, not the same thing — usher assigns IDs in traversal
-order at read time, so neighbours are usually close but need not be. And a
-split with low exact support and *no* neighbour picking up the signal is not
-a wobble case at all: its support is genuinely low. On this tree
-`node_12148`, which had the most extreme `CT|GA` of any clade, sat at 46%
-with nothing in its window, meaning the split vanished outright in over half
-the position-resamples. That is the pattern a site-driven artifact makes, and
-it is the reason to compute support at all rather than trusting a margin of
-5.0x.
+order at read time, so neighbours are usually close but need not be. So read
+it as an upper estimate, and treat exact support as the floor.
+
+And a split with low exact support and *no* neighbour picking up the signal
+is not a wobble case at all: its support is genuinely low. On this tree
+`node_12148`, which had the most extreme `CT|GA` of any clade, scored 46% on
+both measures — the only split in the set where the neighbourhood window
+added nothing. The split vanished outright in over half the position
+resamples. That is the pattern a site-driven artifact makes, and since its
+margin was a respectable 5.0x, it is the reason to compute support at all.
+
+The 7 splits that stayed in tier C had neighbourhood support of 45% to 63% on
+margins of 2.3x to 4.9x, so they are weak on both axes rather than rescued or
+condemned by either.
 
 Note what this step does *not* establish. Both measures ask whether a split
 is statistically robust, not whether it is biology. A shared alignment
