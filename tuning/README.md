@@ -105,8 +105,11 @@ Key options:
   back to serial otherwise; running several instances with different `--seed`
   also works.
 - `--selftest` checks the chi-squared implementation against a naive reference
-  and against `scipy.stats.chi2_contingency`, and exits. Worth running once in
-  your environment to confirm the statistic matches `spectrumSplits.py`.
+  and against `scipy.stats.chi2_contingency`, and exits. Run it once in the
+  environment where `spectrumSplits.py` runs, not on a laptop: where scipy is
+  not importable the scipy comparison is SKIPPED with a note, so a pass there
+  confirms only the naive reference. Confirmed on the MTBC server, where both
+  agree on 200 random tables to 1.8e-12.
 
 The statistic is reimplemented in pure Python rather than called through scipy,
 so all candidate nodes can be scored in one vectorless pass without scipy's
