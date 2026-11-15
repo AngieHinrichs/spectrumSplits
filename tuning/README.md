@@ -1004,14 +1004,18 @@ The fix is to prune before the search, not to caveat afterwards — a spectrum
 computed over mixed material cannot be decomposed later:
 
 ```
-matUtils extract -i tree.pruned.masked.pb.gz --prune bcg_samples.txt \
+matUtils extract -i tree.pruned.masked.pb.gz -s bcg_samples.txt --prune \
     -o tree.pruned.masked.nobcg.pb.gz
 ```
 
-Confirm the flag against `matUtils extract --help`; `-I` selects internal node
-IDs and `-c` selects annotated clades, and those three are easy to confuse.
-Do this in the same pass as a re-mask if one is pending, since both renumber
-every node anyway and step "Node IDs are not stable across trees" applies.
+`--prune` takes no argument: the sample list still goes to `-s/--samples`, and
+`--prune` inverts that selection so the listed samples are the ones removed.
+Without it the same two arguments would keep *only* BCG, which is the opposite
+tree and will not announce itself -- so check the sample count of the output.
+(`-I` selects internal node IDs and `-c` annotated clades; all of these are
+easy to confuse.) Do this in the same pass as a re-mask if one is pending,
+since both renumber every node anyway and step "Node IDs are not stable across
+trees" applies.
 
 More generally: treat the top of the per-clade composition table as part of
 reading any split. A clade that is one named sublineage plus one named lab
