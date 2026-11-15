@@ -276,6 +276,27 @@ either way, but if you are looking for the biology, look at them before you
 mask them. And prefer `--mask_pattern` for the large families: it matches names,
 so it picks up members the file does not list.
 
+## Know how your tree was rooted
+
+Ask before you interpret anything near the root. The MTBC tree used here was
+built against NC_000962.3 as both reference and root, then rerooted to a node
+picked as basal-looking, with a new reference made by applying that node's
+substitutions to NC_000962.3. Coordinates stay H37Rv throughout, so nothing
+about masking or annotation changes.
+
+What it does change is that branch lengths around the root are a convention of
+the tree build rather than a measurement. Three consequences:
+
+- The root residual (`node_1` in the spectra output) is not a baseline for
+  anything. On this tree there is a second reason as well -- once the search
+  accepted its splits, `node_1`'s residual was down to 260 tips.
+- Any criterion that fires on a clade's stem can be decided by the rooting for
+  clades near the root. Step 2 has the worked case.
+- Claims about the deepest branches need the rooting's provenance attached.
+
+Splits well inside named lineages are unaffected, which on this tree is all of
+them that survived ranking.
+
 ## Node IDs are not stable across trees
 
 `matUtils` assigns node IDs when it reads a tree, so `node_5289` in one
