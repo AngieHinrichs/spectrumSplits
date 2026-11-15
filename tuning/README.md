@@ -10,6 +10,7 @@ tree, and all three need only `bte` and the Python standard library.
 | `permutation_null.py` | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
 | `annotate_sites.py` | What are the recurrent sites, and which regions should be masked before any of the above is trusted? |
 | `branch_class_spectra.py` | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
+| `split_confidence.py` | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -783,3 +784,78 @@ lineage places its mutations on internal branches too. Masking is what
 addresses those, which is why it comes first. A clean result here means the
 splits are not a sequencing-quality gradient; it does not by itself make them
 biology.
+
+### 11. Rank the splits before interpreting them
+
+`split_confidence.py` reads the files steps 7, 8 and 10 already produced and
+answers two questions that fail independently. It runs nothing on the tree.
+
+```
+split_confidence.py --splits_log splits_chi40.log --spectra spectra_chi40.tsv \
+    --null null_sites_cascade.tsv \
+    --bootstrap_replicates bootstrap_by_replicate.tsv \
+    --output split_confidence.tsv
+```
+
+**Margin** is the split's chi-squared over the highest chi-squared the
+permutation null reached on subtrees of comparable size. This is what makes it
+safe to run the search at a low `--min_chi` and filter afterwards, which is
+the right way round: a single threshold cannot serve both ends of the size
+range, because chi-squared scales with the counts in the table. On the 129k
+MTBC tree, `--min_chi 40` accepted 62 splits and *every one* cleared its
+size-matched ceiling. The weakest were the root-level tests, where the ceiling
+is 62.7 — `node_48220` at 1.54x and `node_44869` at 1.64x — while the deeper
+splits, matched against ceilings of 12 to 18, had 2.3x to 291x.
+
+The script needs the log, not just the TSV, because the TSV does not record
+which subtree each split was tested in. That parent is what sets the size the
+null must match, and the log gives it from the `(sub)tree node_P` lines that
+precede each `New split found at`. Note that the log also contains every
+bootstrap replicate's identical-looking output, since replicates print to the
+same stderr; the script stops reading at the bootstrap marker, and a parser
+that does not will invent splits the real tree never had.
+
+**Support** is the fraction of `--bootstrap_splits` replicates that recover
+the split. Those replicates resample alignment positions, so this asks
+whether the split depends on a handful of recurrent sites — which is exactly
+the artifact that survives masking. The two measures disagree usefully. A
+large margin with low support says the signal is real but rests on few
+positions. A small margin with high support says a consistent weak
+difference. On the MTBC tree the 62 splits came out 14 / 22 / 26 across the
+tiers, and the disagreements were the informative part: `node_14473`, the
+Beijing clade, scored 161x margin on 50% support.
+
+#### The placement wobble, and a trap
+
+Replicates often place a real split one node up or down, so counting exact
+node IDs understates support. Given `--bootstrap_replicates` the script asks,
+per replicate, whether *any* node within `--neighbourhood` was split, which
+is a fraction of replicates and cannot exceed 100%.
+
+Do not get there by summing the per-node counts from the aggregate file. That
+double-counts any replicate which split two nearby nodes, and on the MTBC
+tree those sums ran to 156% for `node_14473` and 132% for `node_36623` —
+which does demonstrate the wobble is real, but is an upper bound and not a
+support value. The aggregate `uniq -c` file is enough for exact support only;
+the per-replicate file is what the neighbourhood calculation needs:
+
+```
+for f in bootstrap_*_splits_output.tsv; do n=${f#bootstrap_}; n=${n%%_*};
+  cut -f1 "$f" | grep ^node_ | sed "s/^/$n\t/"; done > bootstrap_by_replicate.tsv
+```
+
+Two caveats on the neighbourhood number. Node-ID adjacency is a proxy for
+topological adjacency, not the same thing — usher assigns IDs in traversal
+order at read time, so neighbours are usually close but need not be. And a
+split with low exact support and *no* neighbour picking up the signal is not
+a wobble case at all: its support is genuinely low. On this tree
+`node_12148`, which had the most extreme `CT|GA` of any clade, sat at 46%
+with nothing in its window, meaning the split vanished outright in over half
+the position-resamples. That is the pattern a site-driven artifact makes, and
+it is the reason to compute support at all rather than trusting a margin of
+5.0x.
+
+Note what this step does *not* establish. Both measures ask whether a split
+is statistically robust, not whether it is biology. A shared alignment
+artifact spanning a whole lineage is present in most position-resamples and
+clears any size-matched null; steps 3 and 10 are what address it.
