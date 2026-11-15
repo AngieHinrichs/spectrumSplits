@@ -337,23 +337,78 @@ Every decision below is read off this report, so keep it.
 
 ```
 qc/prune_mutation_sample_ratio.py --input_tree tree.pb.gz \
-    --threshold 25 --output_tree tree.pruned.pb.gz
+    --threshold 250 --output_tree tree.pruned.pb.gz > pruned_report.txt
 ```
 
 Choose `--threshold` from the MUTATIONS:TIPS section rather than accepting the
-auto-threshold.
+auto-threshold, and keep stdout: the script prints one line per pruned node
+with the tips it took, which is the only record of what was removed. Note that
+it prunes the whole subtree at the first node that crosses the threshold and
+does not recurse into it, so one crossing can remove several samples.
 
 *Worked example.* The report shows mean 18.6, median 7, p90 54, p99 114,
 p99.9 192, max 909, and an auto-threshold (mean + 2 SD) of 71.7 with 10,930
 nodes at or above it. Taking the auto-threshold would prune 10,930 nodes — 5%
 of the tree — on a species where a high ratio is often real divergence. A
-threshold well above p99.9 removed only 60 samples here and still cut the
-worst terminal branch from 909 mutations to 234, which is the whole point: the
-absurd genomes go, the diverged ones stay.
+threshold of 250, well above p99.9, removed only 60 samples and still cut the
+worst terminal branch from 909 mutations to 234.
 
 Read the distribution before choosing. A median of 7 with a p90 of 54 is not a
 tight distribution with outliers, it is a broad one, and mean + 2 SD on a broad
 distribution cuts into the bulk.
+
+#### Check what it removed, by clade
+
+An absolute mutations:tips threshold is a divergence filter, not a quality
+filter, and on this tree the difference is measurable. Of the 60 samples
+pruned at 250:
+
+| clade | in tree | removed | rate | vs overall |
+|---|---|---|---|---|
+| lineage8 | 3 | 3 | 100% | — |
+| None | 868 | 14 | 1.6% | 35x |
+| lineage1 | 11,500 | 37 | 0.32% | 6.9x |
+| lineage4 | 56,543 | 3 | 0.005% | 0.1x |
+| lineage2 | 38,960 | 0 | 0 | — |
+| lineage3 | 11,187 | 0 | 0 | — |
+
+The overall rate was 0.046%. The reference is H37Rv, a lineage 4 genome, and
+what the threshold selected was distance from it: lineage 4 lost 3 of 56,543
+and lineages 2 and 3 lost none, while the early-branching clades lost samples
+at up to 7x the overall rate. Those genomes differ from the reference more
+because they diverged earlier, not because they are worse.
+
+The cost here was lineage 8 -- all three of its genomes, the most basal clade
+in the dataset -- so the divergence axis that later dominates every split was
+truncated at its most informative end before it was ever measured. The
+quantitative damage elsewhere was slight: 37 of 11,500 lineage 1 tips is 0.3%,
+far too few to shift a spectrum built on 164,489 mutations, and the bias runs
+against the eventual finding rather than for it, since dropping the most
+divergent tips of a clade lowers its `CT|GA`.
+
+So: run the check. The removed samples' clades come from the unpruned tree,
+since the pruned one no longer contains them:
+
+```
+matUtils summary -i tree.pb.gz -s samples_raw.txt
+matUtils summary -i tree.pruned.pb.gz -s samples_pruned.txt
+comm -23 <(cut -f1 samples_raw.txt | sort) <(cut -f1 samples_pruned.txt | sort) \
+    > pruned.txt
+matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
+grep -Fwf pruned.txt clades_raw.txt | cut -f2 | sort | uniq -c | sort -nr
+```
+
+A spread across unrelated clades at roughly the overall rate means the filter
+removed bad genomes. Concentration in the basal clades, or an entire small
+clade going at once, means it removed biology, and the threshold wants raising
+-- or replacing with a clade-relative criterion, flagging a tip only when it
+is an outlier against its own clade's divergence rather than against the whole
+tree. That would have kept lineage 8 while still catching the 909-mutation
+genome sitting among close relatives.
+
+Unlabelled samples deserve a look too. The 14 `None` here were removed at 35x
+the overall rate and cannot be placed from the clade file alone, so whether
+they were poor genomes or simply unclassified divergent ones is unresolved.
 
 ### 3. Build and apply a region mask
 
