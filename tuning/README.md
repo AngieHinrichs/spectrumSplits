@@ -375,19 +375,58 @@ pruned at 250:
 | lineage2 | 38,960 | 0 | 0 | — |
 | lineage3 | 11,187 | 0 | 0 | — |
 
-The overall rate was 0.046%. The reference is H37Rv, a lineage 4 genome, and
-what the threshold selected was distance from it: lineage 4 lost 3 of 56,543
-and lineages 2 and 3 lost none, while the early-branching clades lost samples
-at up to 7x the overall rate. Those genomes differ from the reference more
-because they diverged earlier, not because they are worse.
+The overall rate was 0.046%. Read the ratio before explaining the gradient,
+because it is easy to get wrong: `total_mutations / total_tips` sums each
+branch in the subtree *including the node's own stem*, and no root-to-tip path
+is computed anywhere. It is a local measure. It is not distance from the
+reference, so the choice of reference and the rerooting of the tree do not
+enter -- except as below, which is the case that matters.
 
-The cost here was lineage 8 -- all three of its genomes, the most basal clade
-in the dataset -- so the divergence axis that later dominates every split was
-truncated at its most informative end before it was ever measured. The
-quantitative damage elsewhere was slight: 37 of 11,500 lineage 1 tips is 0.3%,
-far too few to shift a spectrum built on 164,489 mutations, and the bias runs
-against the eventual finding rather than for it, since dropping the most
+Compare each clade's pruned count against its count of terminal branches at or
+above the threshold:
+
+| clade | in tree | median terminal | tips >= 250 | pruned |
+|---|---|---|---|---|
+| lineage4 | 56,543 | 2 | 3 | 3 |
+| lineage2 | 38,960 | 3 | 0 | 0 |
+| lineage1 | 11,500 | 31 | 30 | 37 |
+| lineage3 | 11,187 | 12 | 0 | 0 |
+| lineage8 | 3 | 1 | **0** | **3** |
+
+Every clade's removals are accounted for by its own long terminal branches --
+except lineage 8, whose three genomes have terminal branches of 1, 105 and 105,
+none of them over the threshold. It was removed as a *clade*, at an ancestral
+node whose subtree ratio crossed 250 on the strength of its **stem**: three
+tips holding ~211 mutations between them need a stem near 540 to reach 250.
+
+So one threshold produces two behaviours. Firing on a terminal branch, it
+removes an individually divergent genome, which is roughly the intent. Firing
+on an internal node, it removes a small clade on a long stem -- and for a clade
+near the root, the stem length is set by where the root was placed. This tree
+was rerooted to a putative ancestral node, with a new reference built by
+applying the rerooting substitutions, which redistributes mutations among the
+branches around the root. **Whether lineage 8 survives `--threshold 250` is
+therefore a consequence of the rerooting, not a property of those genomes.**
+Deeply nested clades are unaffected, which is why lineage 1's 37 removals need
+no such caveat.
+
+The quantitative damage was slight either way: 37 of 11,500 lineage 1 tips is
+0.3%, far too few to shift a spectrum built on 164,489 mutations, and the bias
+runs against the eventual finding rather than for it, since dropping the most
 divergent tips of a clade lowers its `CT|GA`.
+
+And the lineage 8 loss costs nothing in practice: 3 samples could never clear
+`--min_mutations` at any threshold, and removing 3 tips changes neither the
+topology elsewhere nor the global spectrum. The reason to record it is that it
+is the only visible instance of the internal-node behaviour, and it was visible
+only because lineage 8's own branches are short.
+
+This is what to fix if you replace the criterion, and it sets what "relative"
+should mean: compare a node's **stem against the subtree below it**, not
+against the global distribution. A contaminated genome or a junk small clade
+has a long stem *and* short internal branches; a genuinely old lineage has a
+long stem with proportionate internal diversity. Lineage 8 at ~540 over 211
+across 3 tips is the second pattern, and a stem-versus-subtree test keeps it.
 
 So: run the check. The removed samples' clades come from the unpruned tree,
 since the pruned one no longer contains them:
@@ -428,10 +467,10 @@ isolated oddballs inside normal diversity. That is the pattern the filter is
 *for*: it triggers on a spike against near-identical neighbours, and these were
 spikes. So the pruning question closes. It also settles the lineage 8 worry in
 the other direction: 3 samples could never clear `--min_mutations` at any
-threshold, and removing 3 tips from a reference-rooted tree changes neither the
-topology elsewhere nor the global spectrum. The filter's logic is wrong in
-principle -- it measures distance from the reference, not quality -- and on
-this tree it cost nothing.
+threshold, and removing 3 tips changes neither the topology elsewhere nor the
+global spectrum. The filter's logic is wrong in principle -- step 2 shows it
+fires on a clade's stem, which near the root is set by the rerooting rather
+than by the genomes -- and on this tree it cost nothing.
 
 The ninth parent was a 91-tip clade whose tips are **all unlabelled**, which
 raised the question of the other 853 unlabelled samples that survive pruning.
