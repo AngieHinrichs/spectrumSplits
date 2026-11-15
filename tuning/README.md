@@ -433,29 +433,47 @@ topology elsewhere nor the global spectrum. The filter's logic is wrong in
 principle -- it measures distance from the reference, not quality -- and on
 this tree it cost nothing.
 
-The ninth parent was different, and worth more than the thing we set out to
-check: a 91-tip clade whose tips are **all unlabelled**. That prompted the
-obvious question about the other 853 unlabelled samples that survive pruning,
-and the sample table answers it without touching the tree, since
-`matUtils summary -s` reports each sample's parent node:
+The ninth parent was a 91-tip clade whose tips are **all unlabelled**, which
+raised the question of the other 853 unlabelled samples that survive pruning.
+The sample table answers it without touching the tree, since `matUtils summary
+-s` reports each sample's parent node, and usher numbers nodes in traversal
+order so a clade occupies a contiguous range:
 
 | | |
 | --- | --- |
 | parents holding at least one unlabelled sample | 480 |
-| ...that also hold a labelled sample | **0** |
-| parents holding 2+ samples, all unlabelled | 262 |
-| all parents holding 2+ samples | 40,692 |
+| ...that also hold a labelled sample | 0 |
+| contiguous unlabelled runs of 5+ samples | 11, covering 857 of 867 |
 
-Not one parent node in the tree mixes a labelled and an unlabelled sample. If
-these were scattered bad genomes, mixed parents would be the common case. Zero
-means the unlabelled samples are phylogenetically segregated -- coherent groups,
-in at least two tight node-ID regions -- which is what a real taxon missing from
-the annotation scheme looks like, not what noise looks like.
+**Do not read the zero as a discovery.** It is close to tautological: lineage
+barcodes define monophyletic clades, so a sample is unlabelled exactly when its
+whole clade lacks a barcode, which makes unlabelled samples monophyletic by
+construction. The zero describes the labelling scheme, not the data. (Said
+plainly because the first reading here was that it implied a hidden taxon, and
+it does not.)
 
-This matters because **633 of the 853 sit inside the splits being interpreted**.
-They are contributing to named clades' spectra while having no lineage label, so
-any statement of the form "this clade is lineage X" is incomplete until they are
-identified. Resolve them before interpreting, not after.
+What does answer the question is the flanking lineage of each run:
+
+| size | node range | below | above |
+| --- | --- | --- | --- |
+| 290 | 65852..66056 | `lineage4.3.4.2` | `lineage4.3.3` |
+| 169 | 39797..39944 | `lineage2.2.2` | `lineage3` |
+| 142 | 62105..62175 | `lineage4.2.1.1` | `lineage4.2` |
+| 92 | 59244..59329 | `lineage4.1.3` | `lineage4.2.2` |
+| 56 | 70026..70066 | `lineage4.3.3` | `lineage4.3` |
+| 28 | 4172..4195 | `La3` | `lineage6.2.3` |
+
+Every run is embedded between named lineages, most of them lineage 4
+sublineages. Nothing sits basal, nothing sits outside the named diversity. So
+these are ordinary MTBC genomes in sublineages the barcode set does not name --
+an annotation gap, not an outgroup and not contamination. The 633 unlabelled
+samples inside splits are contributing normally, and the splits need no
+revision on their account.
+
+Worth doing anyway, because it is three commands and it is the check that would
+have caught the bad case: a run flanked by nothing, or sitting below the
+basal-most named lineage, would be an outgroup inside clades whose spectra you
+are comparing.
 
 ### 3. Build and apply a region mask
 
