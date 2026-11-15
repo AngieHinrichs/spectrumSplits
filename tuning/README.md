@@ -485,6 +485,59 @@ excluded most of the PE/PPE families, which were 76% of the mask. So the
 masked regions were below average in how many positions varied at all, and far
 above average in how often those positions recurred.
 
+#### Three rounds, and when to stop
+
+Masking is iterative, because each round's surviving top sites tell you what
+the gene list missed. On the MTBC tree it took three, and the returns fell off
+sharply:
+
+| | raw | round 1 | round 2 | round 3 |
+| --- | --- | --- | --- | --- |
+| usable SNVs | 3,249,554 | 2,972,123 | 2,886,050 | 2,845,156 |
+| worst single site | 6,102 | 1,989 | 318 | 225 |
+| top 20 sites' share | 1.24% | 0.50% | 0.16% | 0.12% |
+| `CT|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 |
+| `TC|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 |
+
+Round 2 was the one that mattered: the worst hotspot fell 84%, for 2.9% of the
+mutations. Round 3 cost another 1.4% to take it 29% further. Note the last two
+rows, which are the real test of whether a mask is removing noise or reshaping
+the data — the folded spectrum moves by ~0.001 per round and the direction
+never reverses. A mask that shifted a class by a percent would be deleting
+signal, not artifact.
+
+Round 3 was not justified by recurrence at all. The permutation null on the
+round-2 tree had already shown recurrence immaterial: the sites null peaked at
+62.7 against an observed 18,283. It was justified by *interpretation* — `Rv2082`
+held 11 of the 48 mutations defining `node_6`, a tier A clade, inside 917 bp,
+and no amount of null calibration addresses a clade whose defining branch sits
+on top of a suspect locus. That is a separate reason to mask, it arrives only
+once you have splits to look at, and it is worth a round on its own.
+
+#### The surviving sites are mostly flank, which is a pad problem
+
+Annotating what is left is how you decide there is nothing cheap remaining. On
+the round-3 tree the top 20 broke down as:
+
+- Four sites at 2,266,583–2,266,624, which are 28 to 69 bp past the `--mask_pad
+  150` window around `Rv2019` (2,265,989–2,266,405). The gene was masked and
+  the recurrence cluster straddles the boundary.
+- `889003`, 217 bp past the padded window around `Rv0794c` — same problem,
+  wider gap.
+- Five sites at 4,385,916–4,386,142 in `Rv3900c`, annotated in the H37Rv GFF
+  as a possible MTBC-specific genomic island. That is the `mobile_loci.txt`
+  class and it was simply not on the list.
+
+So most of what survives is not new biology to chase but the pad falling short
+by tens of base pairs. Resist fixing it. The four `Rv2019` flank sites hold
+~600 mutations out of 2.8M, the whole top 20 holds 0.12%, and each round costs
+hours. Raising `--mask_pad` globally to catch a 69 bp overhang would delete far
+more real sequence than it recovers in cleanliness. Record the finding, widen
+the pad next time you rebuild from scratch, and stop.
+
+The signal to stop is this: when the surviving top sites are flanks of loci you
+already masked, and the folded spectrum has stopped moving, the mask is done.
+
 If the new top sites in `surviving_sites.tsv` still annotate to resistance
 loci, widen `resistance_genes.txt` instead of masking those sites one by one.
 Watch in particular for a site where every possible substitution is
