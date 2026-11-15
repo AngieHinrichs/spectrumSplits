@@ -1070,6 +1070,30 @@ easy to confuse.) Do this in the same pass as a re-mask if one is pending,
 since both renumber every node anyway and step "Node IDs are not stable across
 trees" applies.
 
+#### Size the confound by mutations, not by tips
+
+Before pruning anything, measure what it is worth, and measure it the way the
+test does. `spectrumSplits.py` builds its tables from mutations; tip counts
+appear nowhere in the chi-squared. The two can differ by an order of magnitude.
+
+On the MTBC tree the BCG prune removed 336 of 913 tips from `node_10` -- 36.8%
+-- and **535 mutations** out of 2,845,156. That is 1.6 mutations per pruned tip
+against a tree-wide terminal median of 2, because repeated sequencing of a
+near-clonal vaccine stock produces tips that are nearly identical to each other
+and to their relatives. Estimating instead from the clade's average rate of
+11.2 mutations/tip gives ~3,760, seven times too high. So BCG was about 5% of
+`node_10`'s mutations, not 37% of its signal, and the clade's spectrum was
+never meaningfully driven by laboratory material.
+
+The honest way to size it is the profile delta: prune, re-profile, subtract.
+That is one cheap run and it is exact. A rate multiplication is not, and it
+fails hardest exactly where replicate sequencing has inflated a tip count --
+which is the case that made you suspicious in the first place.
+
+The prune is still worth making, because it makes every tip-weighted statement
+about the clade true and removes a question that would otherwise need a caveat
+in every later claim. Just do not expect it to move a spectrum.
+
 More generally: treat the top of the per-clade composition table as part of
 reading any split. A clade that is one named sublineage plus one named lab
 derivative is not a population.
