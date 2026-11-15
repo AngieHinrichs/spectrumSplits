@@ -413,6 +413,50 @@ Unlabelled samples deserve a look too. The 14 `None` here were removed at 35x
 the overall rate and cannot be placed from the clade file alone, so whether
 they were poor genomes or simply unclassified divergent ones is unresolved.
 
+#### Where the pruned samples sat, and what it turned up instead
+
+Follow up the per-clade rates by asking *where* in the tree the removals were,
+which the prune report gives for free: its first column is the parent of each
+pruned subtree, and that parent survives. One `matUtils extract -I <parent> -u`
+per distinct parent, joined against the `--sample-clades` table, says what the
+removed samples' neighbours were.
+
+On the MTBC tree the 14 unlabelled removals sat under 9 parents, and 8 of the 9
+were large ordinary clades -- 2,601 tips of `lineage1.2.1.2.1`, 11,385 of
+`lineage3`, 36,716 of `lineage4`, and so on -- with the pruned samples as
+isolated oddballs inside normal diversity. That is the pattern the filter is
+*for*: it triggers on a spike against near-identical neighbours, and these were
+spikes. So the pruning question closes. It also settles the lineage 8 worry in
+the other direction: 3 samples could never clear `--min_mutations` at any
+threshold, and removing 3 tips from a reference-rooted tree changes neither the
+topology elsewhere nor the global spectrum. The filter's logic is wrong in
+principle -- it measures distance from the reference, not quality -- and on
+this tree it cost nothing.
+
+The ninth parent was different, and worth more than the thing we set out to
+check: a 91-tip clade whose tips are **all unlabelled**. That prompted the
+obvious question about the other 853 unlabelled samples that survive pruning,
+and the sample table answers it without touching the tree, since
+`matUtils summary -s` reports each sample's parent node:
+
+| | |
+| --- | --- |
+| parents holding at least one unlabelled sample | 480 |
+| ...that also hold a labelled sample | **0** |
+| parents holding 2+ samples, all unlabelled | 262 |
+| all parents holding 2+ samples | 40,692 |
+
+Not one parent node in the tree mixes a labelled and an unlabelled sample. If
+these were scattered bad genomes, mixed parents would be the common case. Zero
+means the unlabelled samples are phylogenetically segregated -- coherent groups,
+in at least two tight node-ID regions -- which is what a real taxon missing from
+the annotation scheme looks like, not what noise looks like.
+
+This matters because **633 of the 853 sit inside the splits being interpreted**.
+They are contributing to named clades' spectra while having no lineage label, so
+any statement of the form "this clade is lineage X" is incomplete until they are
+identified. Resolve them before interpreting, not after.
+
 ### 3. Build and apply a region mask
 
 ```
