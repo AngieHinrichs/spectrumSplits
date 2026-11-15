@@ -290,14 +290,28 @@ mapB
 # 12 bp outside the gene, immediately next to Rv3798, which IS masked as a
 # mobile element.  Masking a locus pushes its hotspot into the neighbour --
 # the same non-convergence seen with per-site masking, one scale up.
-#Rv2081c
-#Rv2082
-#Rv2019
-#Rv0794c
-#Rv3862c
-#Rv3879c
-#Rv2820c
-#Rv1266c
-#Rv0419
-#Rv3081
-#Rv3797
+# ENABLED in round 2.  The trigger was not chi-squared inflation -- the
+# permutation null had already shown the sites null (max 62.7) only 2.6x the
+# types null, immaterial against an observed 18,283.  It was interpretation:
+# Rv2082 holds 11 of the 48 mutations defining node_6, a tier A clade, inside
+# 917 bp.  An internal branch cannot carry per-genome error, so the
+# branch-class test cannot clear it; only masking can.
+Rv2081c
+Rv2082
+Rv2019
+Rv0794c
+Rv3862c
+Rv3879c
+Rv2820c
+Rv1266c
+Rv0419
+Rv3081
+Rv3797
+# Named in the notes above but missing from the original candidate list.
+# pknH, lpqM and espK are three of the five certain artifacts: every possible
+# substitution at the site is synonymous, so selection cannot cause the
+# recurrence.  whiB6 is the CDS-plus-promoter cluster.
+pknH
+lpqM
+espK
+whiB6

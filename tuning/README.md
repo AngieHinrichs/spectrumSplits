@@ -969,3 +969,50 @@ Note what this step does *not* establish. Both measures ask whether a split
 is statistically robust, not whether it is biology. A shared alignment
 artifact spanning a whole lineage is present in most position-resamples and
 clears any size-matched null; steps 3 and 10 are what address it.
+
+### 12. Check what each split *contains* before claiming a mechanism
+
+Steps 10 and 11 ask whether a split is robust. Neither asks what is inside it,
+and on a tree that mixes natural populations with laboratory material that is
+the question that decides whether a spectrum means anything.
+
+The check needs no tree access once you have the sample sets from step 9 and a
+`--sample-clades` table from step 4:
+
+```
+awk -F'\t' '$1=="node_N"{print $2}' split_clade_samples.tsv | sort > n.txt
+grep -Fwf n.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
+```
+
+On the MTBC tree `node_10` is 913 tips, all *M. bovis* (La1) — and 336 of them
+(36.8%) are `La1.2.BCG`, the vaccine strain serially passaged in vitro since
+1908. Every BCG genome in the whole tree falls inside this one split and
+nowhere else. Its mutations accumulated under lab propagation and relaxed
+selection, not in a host, so `node_10`'s distinctive spectrum (the highest
+`TC|AG` and lowest `CA|GT` in the set) is measured on a clade that is over a
+third artificial.
+
+**The split's own absence at a finer level is not reassurance.** BCG's residual
+is roughly 3,760 mutations (913 tips carry 10,190, so 11.2 per tip), well under
+`--min_mutations 10000`. The search could not have separated BCG however
+different it is, so only membership could have found this. Any `--min_mutations`
+floor creates a band of clades that are invisible to the search rather than
+tested and rejected by it, and lab strains, outbreak clusters and recently
+sequenced collections all tend to sit in it.
+
+The fix is to prune before the search, not to caveat afterwards — a spectrum
+computed over mixed material cannot be decomposed later:
+
+```
+matUtils extract -i tree.pruned.masked.pb.gz --prune bcg_samples.txt \
+    -o tree.pruned.masked.nobcg.pb.gz
+```
+
+Confirm the flag against `matUtils extract --help`; `-I` selects internal node
+IDs and `-c` selects annotated clades, and those three are easy to confuse.
+Do this in the same pass as a re-mask if one is pending, since both renumber
+every node anyway and step "Node IDs are not stable across trees" applies.
+
+More generally: treat the top of the per-clade composition table as part of
+reading any split. A clade that is one named sublineage plus one named lab
+derivative is not a population.
