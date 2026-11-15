@@ -794,8 +794,14 @@ answers two questions that fail independently. It runs nothing on the tree.
 split_confidence.py --splits_log splits_chi40.log --spectra spectra_chi40.tsv \
     --null null_sites_cascade.tsv \
     --bootstrap_replicates bootstrap_by_replicate.tsv \
+    --clade_samples split_clade_samples.tsv \
     --output split_confidence.tsv
 ```
+
+Pass `--clade_samples` whenever you have it. Both of the other inputs are
+reported per node ID, and node IDs alone do not say which clade contains
+which; sample membership does, and getting the nesting wrong distorts every
+margin below it. See "Why the sizes need membership" below.
 
 **Margin** is the split's chi-squared over the highest chi-squared the
 permutation null reached on subtrees of comparable size. This is what makes it
@@ -803,17 +809,42 @@ safe to run the search at a low `--min_chi` and filter afterwards, which is
 the right way round: a single threshold cannot serve both ends of the size
 range, because chi-squared scales with the counts in the table. On the 129k
 MTBC tree, `--min_chi 40` accepted 62 splits and *every one* cleared its
-size-matched ceiling. The weakest were the root-level tests, where the ceiling
-is 62.7 — `node_48220` at 1.54x and `node_44869` at 1.64x — while the deeper
-splits, matched against ceilings of 12 to 18, had 2.3x to 291x.
+size-matched ceiling, by 2.37x at the weakest (`node_74277`) and 314x at the
+strongest (`node_6`).
 
 The script needs the log, not just the TSV, because the TSV does not record
-which subtree each split was tested in. That parent is what sets the size the
-null must match, and the log gives it from the `(sub)tree node_P` lines that
-precede each `New split found at`. Note that the log also contains every
-bootstrap replicate's identical-looking output, since replicates print to the
-same stderr; the script stops reading at the bootstrap marker, and a parser
-that does not will invent splits the real tree never had.
+which subtree each split was tested in. The log gives it from the `(sub)tree
+node_P` lines that precede each `New split found at`. Note that the log also
+contains every bootstrap replicate's identical-looking output, since
+replicates print to the same stderr; the script stops reading at the bootstrap
+marker, and a parser that does not will invent splits the real tree never had.
+
+#### Why the sizes need membership
+
+The search root in the log is not the size of the table. The search carves
+accepted splits out as it goes, so a split was tested against its search root
+*minus everything already accepted inside it*, and that shrinks from one
+iteration to the next. Two things follow, and both bite.
+
+First, the subtraction has to respect nesting: subtract only the maximal prior
+splits, since a prior split sitting inside another prior split left with its
+ancestor and must not be removed twice.
+
+Second, the nesting cannot be read off the log. A split accepted late can turn
+out to be an *ancestor* of one accepted earlier, because both were found while
+searching the same root — on this tree that was true for 11 of the 62, among
+them `node_55103`, `node_14473` and `node_22141`. Sample membership is the
+only durable statement of containment, which is what `--clade_samples` is for.
+
+Getting this wrong is not a rounding error and not conservative in any useful
+sense: using the search root's full size inflates the size, and so the null
+ceiling, for every *late-found* split — which penalises precisely the deep
+splits a low `--min_chi` was meant to reach. On the MTBC tree it understated
+`node_44869` by 3.7x (1.64x to 6.0x) and `node_48220` by 3.6x, and moved 8
+splits up a tier. `searched_size()` models the carving and is validated
+against the exact table totals the cascade null records in its
+`mutations_below` and `mutations_above` columns: 21 of 21 agree exactly. If
+you change that function, that check is how you find out.
 
 **Support** is the fraction of `--bootstrap_splits` replicates that recover
 the split. Those replicates resample alignment positions, so this asks
@@ -823,10 +854,11 @@ large margin with low support says the signal is real but rests on few
 positions. A small margin with high support says a consistent weak
 difference.
 
-On the MTBC tree the 62 splits came out 29 tier A, 26 tier B and 7 tier C
-once support was computed wobble-tolerantly. Scored on exact node IDs alone
-the same splits gave 14 / 22 / 26, so the placement wobble below is not a
-minor correction — it moved half the strong set.
+On the MTBC tree the 62 splits came out **36 tier A, 20 tier B and 6 tier C**,
+with correct sizing and wobble-tolerant support. Each correction mattered on
+its own: exact node IDs alone gave 14 tier A, and search-root sizing gave 29.
+Neither is a refinement of the other, and both move in the same direction, so
+a run that skips either understates how much of the tree is interpretable.
 
 #### The placement wobble, and a trap
 
@@ -868,9 +900,12 @@ added nothing. The split vanished outright in over half the position
 resamples. That is the pattern a site-driven artifact makes, and since its
 margin was a respectable 5.0x, it is the reason to compute support at all.
 
-The 7 splits that stayed in tier C had neighbourhood support of 45% to 63% on
-margins of 2.3x to 4.9x, so they are weak on both axes rather than rescued or
-condemned by either.
+The 6 splits that stayed in tier C had neighbourhood support of 45% to 63% on
+margins of 2.4x to 4.9x, so they are weak on both axes rather than rescued or
+condemned by either. Four of them -- `node_73308`, `node_73473`, `node_74277`,
+`node_74888` -- have adjacent node numbers, which suggests one region of the
+tree where the split placement is unstable rather than four independent
+failures.
 
 Note what this step does *not* establish. Both measures ask whether a split
 is statistically robust, not whether it is biology. A shared alignment

@@ -16,6 +16,18 @@ Two independent questions, because they fail independently:
      is reported is the ratio.  This is the check that justifies running the
      search at a low --min_chi and filtering afterwards.
 
+     Getting that size right is the whole difficulty, and it is not the size
+     of the subtree named in the log.  The search carves accepted splits out
+     as it goes, so the table a split was tested against is its search root
+     MINUS every split already accepted inside it.  That shrinks across
+     iterations, so using the search root's full size systematically inflates
+     the size -- and therefore the null ceiling -- for every late-found
+     split, which penalises exactly the deep splits the low threshold was
+     meant to reach.  On the 129k MTBC tree this understated the margin of
+     node_44869 by a factor of 3.7 and moved 8 splits between tiers.
+     searched_size() models the carving, and is validated against the exact
+     table totals the cascade null records.
+
   2. SUPPORT.  Does the split survive resampling the alignment positions?
      --bootstrap_splits writes one spectra file per replicate; a split that
      depends on a handful of recurrent sites will vanish from most of them
@@ -70,7 +82,7 @@ def parse_splits_log(lines):
     subtree whose table it was tested against, and so the size its null must
     match -- is recovered; the TSV does not record it.
     """
-    chi, parent = {}, {}
+    chi, parent, order = {}, {}, []
     current = None
     for line in lines:
         if line.startswith(BOOTSTRAP_MARKER):
@@ -88,7 +100,10 @@ def parse_splits_log(lines):
                                  f"bootstrap marker; is this log two runs?")
             chi[m.group(1)] = float(m.group(2))
             parent[m.group(1)] = current
-    return chi, parent
+            ### Log order is the order the search accepted them, which is what
+            ### says how much had already been carved out of each search root.
+            order.append((m.group(1), current))
+    return chi, parent, order
 
 
 def parse_spectra(lines):
@@ -106,29 +121,90 @@ def parse_spectra(lines):
     return res
 
 
-def cumulative_mutations(residual, parent):
-    """Node -> mutations in its whole subtree, summing residuals downward."""
+def read_clade_samples(lines):
+    """'node<TAB>sample' per line -> node: set of samples."""
+    sets = collections.defaultdict(set)
+    for line in lines:
+        f = line.rstrip("\n").split("\t")
+        if len(f) >= 2 and f[0] and not f[0].startswith("#"):
+            sets[f[0]].add(f[1])
+    return dict(sets)
+
+
+def nesting_from_samples(sets):
+    """node -> set of splits strictly inside it, by sample membership.
+
+    Membership is the only durable statement of which clade contains which,
+    and it does not agree with the log: a split accepted late can turn out to
+    be an ANCESTOR of one accepted earlier, since both were found while
+    searching the same root.  On the MTBC tree that happened for 11 of 62.
+    """
+    nodes = list(sets)
+    inside = {n: {m for m in nodes if m != n and sets[m] < sets[n]}
+              for n in nodes}
+    return inside
+
+
+def nesting_from_parents(parent):
+    """Fallback nesting from the log's search roots alone.
+
+    Only used without --clade_samples.  It cannot see a late split that
+    contains an earlier one, so the sizes it yields are upper bounds.
+    """
     kids = collections.defaultdict(list)
     for child, par in parent.items():
         kids[par].append(child)
-    memo = {}
+    inside = {}
 
     def walk(node, seen):
-        if node in memo:
-            return memo[node]
+        if node in inside:
+            return inside[node]
         if node in seen:
             raise ValueError(f"cycle in split parentage at {node}")
         seen = seen | {node}
-        total = residual.get(node, 0)
+        out = set()
         for child in kids[node]:
-            total += walk(child, seen)
-        memo[node] = total
-        return total
+            out.add(child)
+            out |= walk(child, seen)
+        inside[node] = out
+        return out
 
-    for node in set(parent) | set(parent.values()) | set(residual):
+    for node in set(parent) | set(parent.values()):
         if node is not None:
             walk(node, frozenset())
-    return memo
+    return inside
+
+
+def subtree_mutations(node, inside, residual):
+    """Mutations in a node's whole subtree.
+
+    spectrumSplits.py reports RESIDUAL counts -- each row covers only what is
+    left of a subtree after its children were carved out -- so a subtree is
+    its own residual plus the residuals of everything inside it.
+    """
+    return residual.get(node, 0) + sum(residual.get(m, 0)
+                                       for m in inside.get(node, ()))
+
+
+def searched_size(order, k, inside, residual, root="node_1"):
+    """Mutations in the table the k'th split was tested against.
+
+    Its search root, less every split already accepted strictly inside that
+    root.  Only the MAXIMAL prior splits are subtracted: a prior split nested
+    inside another prior split was already removed along with its ancestor,
+    and subtracting it again would undercount the table.
+    """
+    node, search_root = order[k]
+    if search_root is None:
+        return None
+    contained = inside.get(search_root)
+    if contained is None:
+        contained = set(inside) if search_root == root else set()
+    prior = [p for p, _ in order[:k] if p in contained]
+    maximal = [p for p in prior
+               if not any(p in inside.get(q, ()) for q in prior if q != p)]
+    return (subtree_mutations(search_root, inside, residual)
+            - sum(subtree_mutations(m, inside, residual) for m in maximal))
 
 
 def parse_null(lines):
@@ -224,6 +300,12 @@ def parse_args(argv=None):
                    help="aggregate counts, as from "
                         "'cut -f1 bootstrap_*_splits_output.tsv | grep ^node_ "
                         "| sort | uniq -c'")
+    p.add_argument("--clade_samples",
+                   help="'node<TAB>sample' per line, from 'matUtils extract "
+                        "-I <node> -u' over the accepted splits. Establishes "
+                        "the true nesting; without it the tested-against "
+                        "sizes are upper bounds and margins are understated "
+                        "for late-found splits.")
     p.add_argument("--bootstrap_replicates",
                    help="per-replicate membership, 'replicate<TAB>node' per "
                         "line; needed for neighbourhood support")
@@ -244,29 +326,42 @@ def parse_args(argv=None):
 
 
 def build_rows(args, log_lines, spectra_lines, null_lines,
-               support_lines=None, replicate_lines=None):
-    chi, parent = parse_splits_log(log_lines)
+               support_lines=None, replicate_lines=None, sample_lines=None):
+    chi, parent, order = parse_splits_log(log_lines)
     residual = parse_spectra(spectra_lines)
-    cum = cumulative_mutations(residual, parent)
     nulls = parse_null(null_lines)
     sup = parse_support(support_lines) if support_lines else {}
     reps = parse_replicates(replicate_lines) if replicate_lines else {}
     nreps = len(reps)
 
+    sets = read_clade_samples(sample_lines) if sample_lines else None
+    if sets:
+        inside = nesting_from_samples(sets)
+        ### node_1 is the whole tree; it is a search root but never a split.
+        inside.setdefault("node_1", set(sets))
+        true_parent = {}
+        for n in sets:
+            sup_n = [m for m in sets if m != n and sets[n] < sets[m]]
+            true_parent[n] = (min(sup_n, key=lambda m: len(sets[m]))
+                              if sup_n else "node_1")
+    else:
+        inside = nesting_from_parents(parent)
+        inside.setdefault("node_1", set(parent))
+        true_parent = {}
+
+    sizes = {order[k][0]: searched_size(order, k, inside, residual)
+             for k in range(len(order))}
+
     rows = []
     for node in sorted(chi, key=lambda n: -chi[n]):
-        par = parent[node]
-        size = cum.get(par)
+        size = sizes.get(node)
         ceil, nnull = (None, 0) if size is None else ceiling(
             nulls, size, args.null_window)
         margin = None if (ceil is None or ceil == 0) else chi[node] / ceil
-        ### Exact support as a percent of replicates, so the two support
-        ### columns are on the same scale and comparable.
         exact = sup.get(node)
         if reps:
-            exact_hits = sum(1 for s in reps.values() if node in s)
-            exact = 100.0 * exact_hits / nreps
-        elif exact is not None and support_lines is not None:
+            exact = 100.0 * sum(1 for s in reps.values() if node in s) / nreps
+        elif exact is not None:
             exact = float(exact)
         nb = None
         if reps and args.neighbourhood > 0:
@@ -274,9 +369,10 @@ def build_rows(args, log_lines, spectra_lines, null_lines,
                 reps, node, args.neighbourhood) / nreps
         best = nb if nb is not None else exact
         rows.append({
-            "node": node, "parent": par, "chi2": chi[node],
-            "tested_in_mutations": size, "null_ceiling": ceil,
-            "null_replicates": nnull, "margin": margin,
+            "node": node, "search_root": parent[node],
+            "clade_parent": true_parent.get(node, "NA"),
+            "chi2": chi[node], "tested_in_mutations": size,
+            "null_ceiling": ceil, "null_replicates": nnull, "margin": margin,
             "support_exact": exact, "support_neighbourhood": nb,
             "tier": tier(margin, best, args.strong_margin,
                          args.strong_support),
@@ -284,9 +380,9 @@ def build_rows(args, log_lines, spectra_lines, null_lines,
     return rows, nreps
 
 
-COLUMNS = ["node", "parent", "chi2", "tested_in_mutations", "null_ceiling",
-           "null_replicates", "margin", "support_exact",
-           "support_neighbourhood", "tier"]
+COLUMNS = ["node", "search_root", "clade_parent", "chi2",
+           "tested_in_mutations", "null_ceiling", "null_replicates",
+           "margin", "support_exact", "support_neighbourhood", "tier"]
 
 
 def write_rows(rows, handle):
@@ -327,7 +423,14 @@ def main():
 
     rows, nreps = build_rows(
         args, read(args.splits_log), read(args.spectra), read(args.null),
-        read(args.bootstrap_support), read(args.bootstrap_replicates))
+        read(args.bootstrap_support), read(args.bootstrap_replicates),
+        read(args.clade_samples))
+    if not args.clade_samples:
+        print("  WARNING: no --clade_samples, so nesting comes from the log's "
+              "search roots alone", file=sys.stderr)
+        print("  A split accepted late can contain one accepted earlier, "
+              "which that cannot see; sizes are then upper bounds and the "
+              "margins of late splits are understated.", file=sys.stderr)
 
     if not rows:
         print("error: no splits found before the bootstrap marker in "
@@ -348,6 +451,12 @@ def main():
                   f"+-{args.neighbourhood} in node number; ID adjacency is a "
                   f"proxy for topology, so read it as an upper estimate",
                   file=sys.stderr)
+    disagree = [r for r in rows if r["clade_parent"] not in ("NA", None)
+                and r["clade_parent"] != r["search_root"]]
+    if disagree:
+        print(f"  note: {len(disagree)} split(s) sit inside a clade other "
+              f"than the subtree they were found in, which is expected and is "
+              f"why membership decides the nesting", file=sys.stderr)
     counts = collections.Counter(r["tier"] for r in rows)
     print(f"  {len(rows)} splits: {counts['A']} tier A, {counts['B']} tier B, "
           f"{counts['C']} tier C", file=sys.stderr)
@@ -388,11 +497,12 @@ def selftest():
         "Computing distances between splits in (sub)tree node_1\n",
         "New split found at node_77 with x2 999.0\n",
     ]
-    chi, parent = parse_splits_log(log)
+    chi, parent, order = parse_splits_log(log)
     check(sorted(chi) == ["node_5", "node_9"]
           and parent == {"node_5": "node_1", "node_9": "node_5"}
-          and chi["node_5"] == 1000.0,
-          "splits log gives parents and stops at the bootstrap marker")
+          and chi["node_5"] == 1000.0
+          and order == [("node_5", "node_1"), ("node_9", "node_5")],
+          "splits log gives search roots, order, and stops at the marker")
 
     ### 2. A concatenated log would double every cumulative total.
     try:
@@ -407,9 +517,40 @@ def selftest():
     spectra = ["Node_ID\tTotal_Mutations\tNumber_Tips\tMutations:Tips\n",
                "node_1\t10\t5\t2.0\n", "node_5\t20\t5\t4.0\n",
                "node_9\t30\t5\t6.0\n", "\n"]
-    cum = cumulative_mutations(parse_spectra(spectra), parent)
-    check(cum["node_9"] == 30 and cum["node_5"] == 50 and cum["node_1"] == 60,
-          "cumulative subtree totals add residuals back up")
+    residual = parse_spectra(spectra)
+    inside = nesting_from_parents(parent)
+    inside.setdefault("node_1", set(parent))
+    check(subtree_mutations("node_9", inside, residual) == 30
+          and subtree_mutations("node_5", inside, residual) == 50
+          and subtree_mutations("node_1", inside, residual) == 60,
+          "subtree totals add residuals back up")
+
+    ### Membership overrides the log, because a split accepted late can be an
+    ### ancestor of one accepted earlier.  Here node_7 was found second yet
+    ### contains node_9, and both name node_5 as their search root.
+    sets = {"node_5": {"a", "b", "c"}, "node_7": {"b", "c"}, "node_9": {"c"}}
+    ins = nesting_from_samples(sets)
+    check(ins["node_5"] == {"node_7", "node_9"} and ins["node_7"] == {"node_9"}
+          and ins["node_9"] == set(),
+          "membership finds a late split that contains an earlier one")
+
+    ### The carving.  Three splits found in node_1 in this order; by the time
+    ### the third is tested the first two are gone.  node_9 is nested inside
+    ### node_5, so subtracting it again would undercount the table -- the bug
+    ### the maximal-prior rule exists to stop.
+    ins2 = {"node_1": {"node_5", "node_9", "node_7"},
+            "node_5": {"node_9"}, "node_9": set(), "node_7": set()}
+    res2 = {"node_1": 100, "node_5": 20, "node_9": 30, "node_7": 40}
+    ord2 = [("node_5", "node_1"), ("node_9", "node_5"), ("node_7", "node_1")]
+    sizes = [searched_size(ord2, k, ins2, res2) for k in range(3)]
+    ### whole tree 190; node_5's subtree is 50, so the third sees 140
+    check(sizes == [190, 50, 140],
+          "tested-against size shrinks as earlier splits are carved out")
+
+    ### Without the maximal rule this would read 190-50-30 = 110.
+    check(searched_size([("node_5", "node_1"), ("node_9", "node_5"),
+                         ("node_7", "node_1")], 2, ins2, res2) == 140,
+          "a prior split nested in another prior split is not subtracted twice")
 
     ### 4. Comparing an observation against itself would make every margin 1.
     nulls = parse_null([
@@ -457,7 +598,7 @@ def selftest():
         "1\t2\tnode_5\tnode_9\t10.0\t25\t25\n",
     ]
     reptsv = ["1\tnode_5\n", "2\tnode_5\n", "2\tnode_9\n", "3\tnode_6\n"]
-    rows, nreps = build_rows(args, log, spectra, nulltsv, None, reptsv)
+    rows, nreps = build_rows(args, log, spectra, nulltsv, None, reptsv, None)
     by = {r["node"]: r for r in rows}
     check(nreps == 3 and len(rows) == 2
           and abs(by["node_5"]["margin"] - 1000.0 / 20.0) < 1e-9
@@ -476,7 +617,7 @@ def selftest():
     ### Narrowing the window drops the 60-mutation null and leaves only the
     ### one drawn at node_9's own scale, which is the whole point of matching.
     narrow = parse_args(["--null_window", "1.05"])
-    rows_n, _ = build_rows(narrow, log, spectra, nulltsv, None, reptsv)
+    rows_n, _ = build_rows(narrow, log, spectra, nulltsv, None, reptsv, None)
     deep = {r["node"]: r for r in rows_n}["node_9"]
     check(deep["null_ceiling"] == 10.0 and deep["null_replicates"] == 1
           and abs(deep["margin"] - 5.0) < 1e-9,
