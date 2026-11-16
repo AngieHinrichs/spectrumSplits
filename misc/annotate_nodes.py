@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import argparse
 import bte
@@ -10,7 +11,21 @@ def parse_args():
     parser.add_argument("--input_tree", type=str, default="public-latest.all.masked.pb.gz", help="Input tree file (protobuf format)")
     parser.add_argument("--annotate_nodes_output_file", type=str, default="annotated_nodes_output.tsv", help="File to save annotated node data.")
     parser.add_argument("--metadata_output", type=str, default="metadata_output.tsv", help="File to save post-processed metadata.")
+    parser.add_argument("--fold", action="store_true", help="Also write the six strand-folded classes (CT|GA and so on) produced by spectrumSplits.py --fold, after the twelve unfolded columns. If the spectrum file has no folded columns, each is computed as the sum of its pair.")
     return parser.parse_args()
+
+### The twelve unfolded classes, and the six strand-folded pairs in the column
+### order spectrumSplits.py --fold writes them.  Each folded label names its
+### two members, e.g. "CT|GA" is CT plus GA.
+MUTATION_TYPES = ["AC","AG","AT","CA","CG","CT","GA","GC","GT","TA","TC","TG"]
+FOLDED_TYPES = ["CA|GT","CG|GC","CT|GA","TA|AT","TC|AG","TG|AC"]
+
+def folded_value( row, label ) :
+    """The folded proportion for one split: read from the file if spectrumSplits
+    wrote it, otherwise the sum of the pair (which is what it writes)."""
+    if label in row :
+        return row[ label ]
+    return sum( float( row.get( member, 0 ) ) for member in label.split( "|" ) )
 
 def import_tsv_to_dict(tsv_file):
     data = {}
@@ -52,32 +67,27 @@ if __name__ == "__main__":
     # Get the parent in the splits
     spectrum_roots = get_spectrum_roots(tree, splits)
 
+    columns = MUTATION_TYPES + ( FOLDED_TYPES if args.fold else [] )
+    if args.fold :
+        first_row = next( iter( spectra_data.values() ) )
+        missing = [ label for label in FOLDED_TYPES if label not in first_row ]
+        if missing :
+            print( f"Note: {args.spectrum_file} has no folded columns ({', '.join(missing)}); computing them as the sum of each pair.", file=sys.stderr )
+
     # Create a DataFrame to store the results
-    result_data = {
-        "NodeID": [],
-        "SepctrumRoot": [],
-        "AC": [], "AG": [], "AT": [],
-        "CA": [], "CG": [], "CT": [],
-        "GA": [], "GC": [], "GT": [],
-        "TA": [], "TC": [], "TG": []
-    }
+    result_data = { "NodeID": [], "SepctrumRoot": [] }
+    for column in columns :
+        result_data[ column ] = []
 
     # Populate the data
     for node, s in spectrum_roots.items():
         result_data["NodeID"].append(node)
         result_data["SepctrumRoot"].append(s)
-        result_data["AC"].append(spectra_data[s]["AC"])
-        result_data["AG"].append(spectra_data[s]["AG"])
-        result_data["AT"].append(spectra_data[s]["AT"])
-        result_data["CA"].append(spectra_data[s]["CA"])
-        result_data["CG"].append(spectra_data[s]["CG"])
-        result_data["CT"].append(spectra_data[s]["CT"])
-        result_data["GA"].append(spectra_data[s]["GA"])
-        result_data["GC"].append(spectra_data[s]["GC"])
-        result_data["GT"].append(spectra_data[s]["GT"])
-        result_data["TA"].append(spectra_data[s]["TA"])
-        result_data["TC"].append(spectra_data[s]["TC"])
-        result_data["TG"].append(spectra_data[s]["TG"])
+        for mutation_type in MUTATION_TYPES :
+            result_data[ mutation_type ].append( spectra_data[s][ mutation_type ] )
+        if args.fold :
+            for label in FOLDED_TYPES :
+                result_data[ label ].append( folded_value( spectra_data[s], label ) )
 
     # Convert result data into a pandas DataFrame
     df = pd.DataFrame(result_data)

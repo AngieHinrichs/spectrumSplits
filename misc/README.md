@@ -21,7 +21,7 @@ options:
 ```
 ## Annotate nodes
 ```
-usage: annotate_nodes.py [-h] [--spectrum_file SPECTRUM_FILE] [--input_tree INPUT_TREE] [--annotate_nodes_output_file ANNOTATE_NODES_OUTPUT_FILE] [--metadata_output METADATA_OUTPUT]
+usage: annotate_nodes.py [-h] [--spectrum_file SPECTRUM_FILE] [--input_tree INPUT_TREE] [--annotate_nodes_output_file ANNOTATE_NODES_OUTPUT_FILE] [--metadata_output METADATA_OUTPUT] [--fold]
 
 Annotate nodes with spectrum splits.
 
@@ -35,4 +35,5 @@ options:
                         File to save annotated node data.
   --metadata_output METADATA_OUTPUT
                         File to save post-processed metadata.
+  --fold                Also write the six strand-folded classes (CT|GA and so on) produced by spectrumSplits.py --fold, after the twelve unfolded columns. If the spectrum file has no folded columns, each is computed as the sum of its pair.
 ```
