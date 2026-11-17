@@ -378,7 +378,7 @@ annotate_sites.py --annotation NC_012345.1.gff3.gz \
 annotate_sites.py --annotation NC_012345.1.gff3.gz \
     --regions alignment_loci.txt --mask_pattern '^(PE|PPE|esx)' \
     --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
-    --mask_pad 100 \
+    --mask_pad 150 \
     --mask_bed alignment_loci.bed --mask_positions alignment_pos.txt
 
 sort -un selection_pos.txt alignment_pos.txt \
@@ -405,7 +405,9 @@ resistance list; the PE/PPE pattern gave 151 intervals over 266 kb — 348 kb in
 all, 7.9% of the 4,411,532 bp reference. The alignment list and `--mask_pad`
 came later, after the first re-profile showed what had survived, which is the
 normal way round: you cannot write that list until you have seen which sites
-recur.
+recur. The same goes for the pad: it started at 100 and was widened to 150
+when the survivors showed 100 falling short (step 4 has how). With the final
+list and pad, the mask covers 503 kb, 11.4% of the reference.
 
 Bases removed is not the number that matters, though; the next step has it.
 
@@ -415,8 +417,12 @@ Bases removed is not the number that matters, though; the next step has it.
 profile_tree.py --input_tree tree.pruned.masked.pb.gz > profile_masked.txt
 
 annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --from_profile profile_masked.txt --output surviving_sites.tsv
+    --from_profile profile_masked.txt --output surviving_sites.tsv \
+    --near_mask selection_loci.bed,alignment_loci.bed
 ```
+
+`--near_mask` checks each surviving site against the BED files the mask was
+built from; "The surviving sites are mostly flank" below says what it is for.
 
 *Worked example.* Judge the mask by recurrence, not by total count:
 
@@ -471,24 +477,53 @@ once you have splits to look at, and it is worth a round on its own.
 
 #### The surviving sites are mostly flank, which is a pad problem
 
-Annotating what is left is how you decide there is nothing cheap remaining. On
-the round-3 tree the top 20 broke down as:
+Annotating what is left is how you decide there is nothing cheap remaining,
+and the commonest leftover is a site just outside a locus that is already
+masked. The `distance` column cannot show that, because it is measured to the
+nearest gene, masked or not. `--near_mask` measures it to the mask itself: it
+adds a `mask_gap` column (bp outside the nearest masked interval: positive
+past its right end, negative before its left end, in genome coordinates) and
+a `mask_interval` column naming the masked genes, for every site within
+`--near_mask_within` bp (default 200). On stderr it summarizes, per masked
+interval, how many flank sites it has, how many mutations they carry, and how
+far it would have to widen to cover them.
 
-- Four sites at 2,266,583–2,266,624, which are 28 to 69 bp past the `--mask_pad
-  150` window around `Rv2019` (2,265,989–2,266,405). The gene was masked and
-  the recurrence cluster straddles the boundary.
-- `889003`, 217 bp past the padded window around `Rv0794c` — same problem,
-  wider gap.
+**Why the pad went from 100 to 150.** Run step 3 with `--mask_pad 100` and
+six of the top 20 surviving sites are flanks:
+
+| masked interval | gene | sites | mutations | `mask_gap` |
+| --- | --- | --- | --- | --- |
+| 2,265,889–2,266,505 | `Rv2019` | 5 | 906 | +3, +5, +6, +45, +48 |
+| 887,037–888,736 | `Rv0794c` | 1 | 190 | +38 |
+
+Both genes were on the list and both were masked; the recurrence clusters
+simply extend past the pad. `Rv2019` is the clear case: three sites within 3
+bp of each other, 103 to 106 bp past the gene's end, holding 585 mutations
+between them, all three among the ten largest sites left. A cluster
+straddling the edge of a masked gene is what a pad is for, and every gap was
+under 50 bp, so `--mask_pad 150` covers all six. The cost was 17 kb more
+masked sequence, 0.4% of the genome, since the pad widens every feature on
+the alignment list, not just these two.
+
+At 150 the same check comes back with the flanks further out:
+
+- Four sites at 2,266,583–2,266,624, 28 to 69 bp past the padded `Rv2019`
+  interval (2,265,839–2,266,555; the gene itself is 2,265,989–2,266,405). The
+  recurrence cluster continues past each new boundary.
+- `889003`, 217 bp past the padded `Rv0794c` interval -- too far out to be a
+  flank, and outside the default `--near_mask_within`.
 - Five sites at 4,385,916–4,386,142 in `Rv3900c`, annotated in the H37Rv GFF
-  as a possible MTBC-specific genomic island. That is the `mobile_loci.txt`
-  class and it was simply not on the list.
+  as a possible MTBC-specific genomic island. That is the class of the
+  prophages and mobile elements on `tb_alignment_loci.txt`, and it was simply
+  not on the list.
 
-So most of what survives is not new biology to chase but the pad falling short
-by tens of base pairs. Resist fixing it. The four `Rv2019` flank sites hold
-~600 mutations out of 2.8M, the whole top 20 holds 0.12%, and each round costs
-hours. Raising `--mask_pad` globally to catch a 69 bp overhang would delete far
-more real sequence than it recovers in cleanliness. Record the finding, widen
-the pad next time you rebuild from scratch, and stop.
+This time, resist widening. The first widening caught a tight cluster just
+outside the edge; the second would chase one that keeps going. The four
+`Rv2019` flank sites hold ~600 mutations out of 2.8M, the whole top 20 holds
+0.12%, and each round costs hours. Raising `--mask_pad` globally to catch a
+69 bp overhang would delete far more real sequence than it recovers in
+cleanliness. Record the finding, widen the pad next time you rebuild from
+scratch, and stop.
 
 The signal to stop is this: when the surviving top sites are flanks of loci you
 already masked, and the folded spectrum has stopped moving, the mask is done.
@@ -1230,6 +1265,16 @@ names. Matching is case sensitive, like `--mask_pattern`, so prefix `(?i)`;
 only CDS and RNA features carry products, so bare `gene` features never match
 (their CDS does, over essentially the same interval). The run prints the loci
 it matched.
+
+`--near_mask` takes the BED files a mask was built from and reports, for
+each site within `--near_mask_within` bp (default 200) of a masked interval,
+its distance outside it (`mask_gap`: positive past the interval's right end,
+negative before its left end) and the masked genes (`mask_interval`). The
+columns are added only when it is given. The stderr summary groups the sites
+by interval, with their mutation count and the widening that would cover
+them, and warns if any site lies *inside* the mask, which means the profile
+was not made from the tree that mask was applied to. Step 4 has the worked
+case.
 
 `--mask_pad` widens every masked feature on **both** sides, which
 `--promoter_flank` does not: a promoter flank is upstream-only by definition,

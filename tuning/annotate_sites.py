@@ -37,6 +37,11 @@ Examples:
   annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
       --from_profile mtb_profile.txt --output annotated_sites.tsv
 
+  # the same, on a masked tree's profile, flagging survivors just outside the mask
+  annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
+      --from_profile masked_profile.txt --output surviving_sites.tsv \\
+      --near_mask selection_loci.bed,alignment_loci.bed
+
   # build a mask covering known resistance loci plus their promoters
   annotate_sites.py --annotation NC_000962.3.gff3.gz \\
       --regions tb_resistance_genes.txt --promoter_flank 200 \\
@@ -163,6 +168,15 @@ def parse_args():
                    help="Also highlight sites within this many bp of a named "
                         "gene, reported as name@+N. Default 0: only sites "
                         "inside the gene are highlighted.")
+    p.add_argument("--near_mask", type=str, default=None,
+                   help="Comma-separated BED files of regions already masked "
+                        "(the --mask_bed outputs). Adds mask_gap and "
+                        "mask_interval columns, and summarizes surviving sites "
+                        "just outside a masked interval -- the sign that "
+                        "--mask_pad or --promoter_flank fell short")
+    p.add_argument("--near_mask_within", type=int, default=200,
+                   help="With --near_mask, flag sites within this many bp of a "
+                        "masked interval (default 200)")
     p.add_argument("--output", type=str, default=None,
                    help="Annotated sites TSV (default: stdout)")
     p.add_argument("--selftest", action="store_true",
@@ -569,6 +583,44 @@ def merge_intervals(intervals):
     return [(s, e) for s, e in out]
 
 
+def read_bed_intervals(paths):
+    """Read BED files into merged 1-based inclusive intervals.
+
+    BED is 0-based half-open, so [start, end) becomes [start + 1, end].
+    Sequence names are ignored: these are single-chromosome masks.
+    """
+    intervals = []
+    for path in paths:
+        with smart_open(path) as fh:
+            for line in fh:
+                if not line.strip() or line.startswith(("#", "track", "browser")):
+                    continue
+                fields = line.split("\t")
+                intervals.append((int(fields[1]) + 1, int(fields[2])))
+    return merge_intervals(intervals)
+
+
+def mask_gap(intervals, starts, pos):
+    """Distance from pos to the nearest masked interval.
+
+    Returns (gap, interval).  gap is 0 inside an interval, positive past an
+    interval's right (higher-coordinate) end, negative before its left end --
+    genome orientation, not gene orientation.  intervals must be merged and
+    sorted, and starts the list of their start coordinates.
+    """
+    if not intervals:
+        return None, None
+    i = bisect.bisect_right(starts, pos) - 1
+    best = None
+    for j in (i, i + 1):
+        if 0 <= j < len(intervals):
+            s, e = intervals[j]
+            gap = 0 if s <= pos <= e else (pos - e if pos > e else pos - s)
+            if best is None or abs(gap) < abs(best[0]):
+                best = (gap, (s, e))
+    return best
+
+
 ### Feature types that can be masked.  A "gene" feature and its CDS cover
 ### nearly the same interval, so matching both and merging is harmless.
 MASKABLE_TYPES = ("CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene")
@@ -846,6 +898,25 @@ def selftest():
     if failures == 0:
         print("ok: highlight separates a site inside a gene from one near it")
 
+    ### --near_mask distances: inside is 0, past the right end positive,
+    ### before the left end negative, and the nearer of two intervals wins.
+    near_failures = 0
+    ivs = merge_intervals([(100, 200), (150, 250), (1000, 1100)])
+    sts = [s for s, _ in ivs]
+    for pos, want in ((100, 0), (250, 0), (253, 3), (97, -3), (600, 350),
+                      (700, -300), (1105, 5), (1, -99)):
+        got, _ = mask_gap(ivs, sts, pos)
+        if got != want:
+            near_failures += 1
+            print(f"FAIL mask_gap at {pos}: got {got}, want {want}",
+                  file=sys.stderr)
+    if mask_gap([], [], 5) != (None, None):
+        near_failures += 1
+        print("FAIL mask_gap with no intervals", file=sys.stderr)
+    if near_failures == 0:
+        print("ok: --near_mask distances to masked intervals")
+    failures += near_failures
+
     print("FAILED" if failures else "all self-tests passed")
     return 1 if failures else 0
 
@@ -931,6 +1002,14 @@ def main():
         print(f"Highlighting sites in {len(highlight_names)} named genes from "
               f"{args.highlight}", file=sys.stderr)
 
+    near_ivs, near_starts = None, None
+    if args.near_mask:
+        near_ivs = read_bed_intervals([b for b in args.near_mask.split(",") if b])
+        near_starts = [s for s, _ in near_ivs]
+        print(f"Checking sites against {len(near_ivs)} masked intervals "
+              f"({sum(e - s + 1 for s, e in near_ivs):,} bp) from "
+              f"{args.near_mask}", file=sys.stderr)
+
     did_something = False
 
     # ---- annotate sites -------------------------------------------------
@@ -953,7 +1032,13 @@ def main():
                   "gene", "locus_tag", "strand", "codon", "codon_pos",
                   "ref_codon", "ref_aa", "aa_change", "distance", "product",
                   "highlight"]
+        if near_ivs is not None:
+            header += ["mask_gap", "mask_interval"]
         out.write("\t".join(header) + "\n")
+        ### masked interval -> [(gap, pos, count), ...] for sites near it
+        near_hits = defaultdict(list)
+        n_in_mask = 0
+        near_loci = {}
 
         n_coding = 0
         n_promoter = 0
@@ -1063,6 +1148,28 @@ def main():
                         n_highlighted += 1
                     else:
                         n_nearby += 1
+            if near_ivs is not None:
+                gap, iv = mask_gap(near_ivs, near_starts, pos)
+                if gap is not None and abs(gap) <= args.near_mask_within:
+                    ### Name the genes lying wholly inside the interval, so the
+                    ### row says which masked locus the site is the flank of.
+                    ### (The interval's own ends sit in padding, where a lookup
+                    ### finds the neighbours instead.)
+                    if iv not in near_loci:
+                        inside = sorted({g.label() for g in features
+                                         if g.ftype == "gene"
+                                         and iv[0] <= g.start and g.end <= iv[1]})
+                        near_loci[iv] = inside[:3] + (
+                            [f"+{len(inside) - 3} more"] if len(inside) > 3 else [])
+                    loci = near_loci[iv]
+                    row["mask_gap"] = gap
+                    row["mask_interval"] = (f"{iv[0]}-{iv[1]}"
+                                            + (f" ({','.join(loci)})" if loci else ""))
+                    if gap == 0:
+                        n_in_mask += 1
+                    else:
+                        near_hits[row["mask_interval"]].append(
+                            (gap, pos, count if isinstance(count, int) else 0))
             out.write("\t".join(str(row[k]) for k in header) + "\n")
 
         if args.output:
@@ -1084,6 +1191,27 @@ def main():
             else:
                 print("  highlighted: none of these sites fall in the named genes",
                       file=sys.stderr)
+        if near_ivs is not None:
+            if n_in_mask:
+                print(f"  WARNING: {n_in_mask} site(s) lie INSIDE a masked "
+                      f"interval. Was this profile made from the masked tree, "
+                      f"and with the same mask?", file=sys.stderr)
+            n_near = sum(len(v) for v in near_hits.values())
+            if n_near:
+                print(f"  {n_near} site(s) lie within {args.near_mask_within} bp "
+                      f"outside a masked interval (mask_gap > 0: past its "
+                      f"right end; < 0: before its left end):", file=sys.stderr)
+                for iv, hits in sorted(near_hits.items(),
+                                       key=lambda kv: -sum(h[2] for h in kv[1])):
+                    gaps = sorted(h[0] for h in hits)
+                    print(f"    {iv}: {len(hits)} site(s), "
+                          f"{sum(h[2] for h in hits):,} mutations, gaps "
+                          + ", ".join(f"{g:+d}" for g in gaps)
+                          + f" -- widening by {max(abs(g) for g in gaps)} bp "
+                          f"would cover them", file=sys.stderr)
+            else:
+                print(f"  no sites within {args.near_mask_within} bp outside a "
+                      f"masked interval", file=sys.stderr)
         if per_gene:
             print("  sites per feature: " + ", ".join(
                 f"{g}={n}" for g, n in sorted(per_gene.items(), key=lambda x: -x[1])),
