@@ -26,6 +26,7 @@ and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
   - [9. Check the splits against sequencing quality](#9-check-the-splits-against-sequencing-quality)
   - [10. Rank the splits before interpreting them](#10-rank-the-splits-before-interpreting-them)
   - [11. Check what each split *contains* before claiming a mechanism](#11-check-what-each-split-contains-before-claiming-a-mechanism)
+  - [12. Test a candidate mechanism genotype-first](#12-test-a-candidate-mechanism-genotype-first)
 - [Testing the method](#testing-the-method): what was run to test the workflow itself, and what to use when a result must bear more weight than the tiers carry.
   - [Replicate the search on a changed tree, and match by membership](#replicate-the-search-on-a-changed-tree-and-match-by-membership)
 - [Script reference](#script-reference): usage, inputs, outputs and options for each script.
@@ -40,6 +41,7 @@ and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
+  - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`match_splits.py`](#match_splitspy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
   - [`tb_resistance_genes.txt`, and a caution](#tb_resistance_genestxt-and-a-caution)
@@ -59,6 +61,7 @@ and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
+| [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 
 The steps depend on one another, so the order matters more than any single
@@ -1822,8 +1825,83 @@ grep -Fwf n.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
 That is also where something step 2 missed would show: a split whose top
 clades include a strain you would not call a natural population.
 
+### 12. Test a candidate mechanism genotype-first
+
+**Not yet run on real data.** Everything below describes the design and the
+synthetic checks; there are no worked numbers from a tree yet.
+
+Step 8 showed why a repair-gene hit on a split's defining branch proves
+nothing: that branch carries every lineage-defining mutation, so co-occurrence
+is guaranteed. The evidence that would count is independent recurrence -- the
+same gene hit on unrelated branches, each followed by the same shift. This
+step looks for exactly that, starting from the genotype instead of the
+splits:
+
+```
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes tb_repair_genes.txt --fold --max_branch_length 250 \
+    --output_events hit_events.tsv --output_summary hit_summary.tsv
+```
+
+It finds every branch with a coding SNV in a listed gene, classifies it
+against the codon as it stood in the *parent's* genome (not the reference,
+which is wrong wherever an ancestral branch already changed the codon), and
+compares what accumulated in the hit child's subtree with what accumulated in
+its siblings'.
+
+**There is no sister clade on an UShER tree.** Parents are polytomies, often
+with hundreds of children, so the hit child is compared with *all* of its
+parent's other children pooled. Each sibling descends from the same ancestral
+genome, so each is a valid contrast and the lineage is held fixed within
+every comparison. The null is that the hit child is exchangeable with its
+siblings. A permutation redraws, for every event, which child carried the hit
+and recomputes the pooled statistic. For a binary parent that is a paired
+sign-flip; for a polytomy it is the same test with more choices, and the
+polytomy's size does not affect its validity.
+
+Two details matter for the null being honest:
+
+- **The draw is size-biased.** A mutation lands on a long branch more often
+  than a short one, so real hit branches are longer than random siblings.
+  Uniform draws would make every hit child look mutation-rich. Each child is
+  drawn in proportion to its top-branch SNV count plus one -- the chance the
+  hit would have landed there.
+- **The hit mutation itself is removed** before counting. Other hits of the
+  same gene are cut out of each other's comparisons, and a hit nested inside
+  another is tested as its own event (`nested_under` names the outer one).
+
+`--top_branch` sets whether each child's own branch is counted, which
+decides whether terminal hits contribute at all; see the
+[script reference](#gene_hit_contrastspy) for the trade-off, and for what
+`--selftest` checks.
+
+**What to read in `hit_summary.tsv`.** One row per gene and effect set, plus a
+pooled `ALL`. `omnibus_p` says whether to look further; `diff_<class>` is the
+weighted mean shift in that class's proportion (hit child minus siblings),
+with `p_<class>` its permutation p. `rate_logratio` compares mean tip depth --
+a mutator should raise it, while a shift with no rate change points away from
+lost fidelity -- but sampling dates move it too, so it is secondary.
+
+**Read the synonymous control first.** It runs by default (`--effects
+nonsynonymous,synonymous`). Synonymous hits in the same genes should show no
+shift. If they do, the comparison is biased and the nonsynonymous rows cannot
+be read either. `--effects lof` restricts to nonsense and start-loss, the
+changes most likely to remove function.
+
+`ALL` pools genes with different mechanisms; a gene that raises `CT|GA` and
+one that raises `CA|GT` cancel there, so treat it as a screen. With dozens of
+genes and six or twelve classes, a handful of per-class p < 0.05 is expected
+by chance -- trust consistent results across classes and effect sets over a
+single small p.
+
+**What it cannot see.** The tree carries SNVs only, so frameshifts,
+deletions and IS6110 insertions -- the commonest ways a gene is actually lost
+-- are invisible, as are promoter changes. A negative result here does not
+clear a gene.
+
 If a late change forces a rerun from the mask on, as a re-mask prompted by a
-locus found under a split would, match the new splits to these by
+locus found under a split would, match the new splits to the old ones by
 membership: see [Testing the method](#testing-the-method).
 
 ## Testing the method
@@ -2554,6 +2632,66 @@ dotted names), the `--top` (default 3) clades with shares, and the flag
 root, and works without `--confidence`. `--output` writes the same per
 split as a TSV, with the top clades as `clade:count`. `--selftest` checks
 the residual, the lineage naming and the flag on a constructed tree.
+
+### `gene_hit_contrasts.py`
+
+Used in [step 12](#12-test-a-candidate-mechanism-genotype-first). Finds every
+branch with a coding SNV in a listed gene and tests whether the spectrum below
+it differs from its siblings', pooled across all the independent hits. Needs
+`bte`; it reuses `annotate_sites.py`'s annotation and codon code and
+`permutation_null.py`'s spectrum code, so keep the three scripts together.
+
+```
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes tb_repair_genes.txt --fold --max_branch_length 250 \
+    --output_events hit_events.tsv --output_summary hit_summary.tsv
+```
+
+Inputs:
+
+- `--annotation` and `--reference`: as for `annotate_sites.py`, and in the
+  tree's coordinates. `--seqid` picks one sequence if they hold several.
+- `--genes`: gene names or locus tags, one per line, `#` comments allowed;
+  [`tb_repair_genes.txt`](#tb_repair_genestxt) works as it is.
+- `--fold` and `--max_branch_length`: match the search. A branch over the cap
+  contributes no mutations but still counts for topology.
+
+Options:
+
+- `--effects` (default `nonsynonymous,synonymous`): comma-separated effect
+  sets to test, from `nonsynonymous`, `lof` (nonsense and start-loss),
+  `missense` and `synonymous`. The synonymous set is the built-in control.
+- `--top_branch include` (the default) counts each child's own branch as well
+  as what is below it. It is the only way terminal hits contribute anything,
+  and most branches are terminal. Its cost is dilution: mutations that predate
+  the hit on the same branch are counted as if after it. That weakens a real
+  effect but cannot manufacture one, since siblings are treated identically.
+  `--top_branch exclude` is the cleaner check, usable only on internal hits.
+- `--min_focal` (default 1): the fewest counted mutations in the hit child
+  for an event to be used. Siblings below it are not drawn as pseudo-hits.
+- `--min_comparator` (default 10): the fewest mutations in the pooled
+  siblings for an event to be used.
+- `--permutations` (default 1000) and `--seed` (default 1).
+
+Outputs:
+
+- `--output_events` (default `hit_events.tsv`): one row per hit event and
+  effect set, with the gene, hit and parent node, codon effect and amino-acid
+  changes, `nested_under`, how many siblings were used, the tips, mutations
+  and mean tip depth on each side, the event's chi-squared, and the class
+  proportions on both sides (`focal_<class>`, `comparator_<class>`).
+- `--output_summary` (default `hit_summary.tsv`): one row per gene and effect
+  set, plus a pooled `ALL`, with event counts, `diff_<class>` and `p_<class>`,
+  `omnibus` and `omnibus_p`, and `rate_logratio` and `rate_p`. Step 12 says
+  how to read them.
+
+`--selftest` checks codon effects on both strands (including ancestral codon
+state and two changes in one codon), checks the cut-subtree bookkeeping
+against brute force, and simulates star-of-polytomy trees for null
+calibration and power. In a larger run of the same simulation, 300 null trees
+gave per-class p < 0.05 at 4.5% and omnibus at 4.0%; the rate statistic ran
+slightly high at 6.3% with the top branch included and 5.0% without.
 
 ### `match_splits.py`
 
