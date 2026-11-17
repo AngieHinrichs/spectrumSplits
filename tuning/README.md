@@ -1,25 +1,38 @@
 # Parameter tuning helpers
 
-Three read-only scripts for choosing `spectrumSplits.py` parameters on a tree
-other than the one the defaults were calibrated on. None of them modifies the
-tree, and all three need only `bte` and the Python standard library.
+Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
+than the one the defaults were calibrated on, and for checking the splits it
+then finds. None of them modifies the tree. They need only the Python standard
+library and `bte`, and two need less: `prune_clade_check.py` uses `bte` only
+with `--input_tree`, and `split_confidence.py` reads text files only.
 
-| Script | What it answers |
-| --- | --- |
-| `profile_tree.py` | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
-| `permutation_null.py` | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
-| `prune_clade_check.py` | What did `qc/prune_mutation_sample_ratio.py` remove, by clade, and was it a divergent genome or a clade on a long stem? Works from `matUtils summary` output; `bte` optional. |
-| `annotate_sites.py` | What are the recurrent sites, and which regions should be masked before any of the above is trusted? |
-| `branch_class_spectra.py` | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
-| `split_confidence.py` | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
+| Script | Step | What it answers |
+| --- | --- | --- |
+| [`profile_tree.py`](#profile_treepy) | 1, 4 | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
+| [`prune_clade_check.py`](#prune_clade_checkpy) | 2 | What did `qc/prune_mutation_sample_ratio.py` remove, by clade, and was it a divergent genome or a clade on a long stem? |
+| [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
+| [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
+| [`branch_class_spectra.py`](#branch_class_spectrapy) | 10 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
+| [`split_confidence.py`](#split_confidencepy) | 11, 13 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
 `--min_mutations`, and both reshape the null that `--min_chi` is calibrated
-against. [Suggested order](#suggested-order) at the end is the part to work
-from; the sections in between exist to explain why each of its steps is there.
+against.
 
-## Why the spectrumSplits.py defaults need calibration
+This README has three parts:
+
+- [Background](#background): why the defaults do not transfer between trees,
+  and two properties of a tree to know before reading any result from it.
+- [Suggested order](#suggested-order): the walkthrough, start to finish, with
+  worked numbers from an *M. tuberculosis* tree. This is the part to work
+  from; the step numbers in the table above refer to it.
+- [Script reference](#script-reference): usage, inputs, outputs and options
+  for each script, and the gene lists that `annotate_sites.py` reads.
+
+## Background
+
+### Why the spectrumSplits.py defaults need calibration
 
 `spectrumSplits.py` scores each candidate node with a 2 x 12 chi-squared test:
 the candidate subtree's mutation spectrum against the rest of the subtree it
@@ -39,245 +52,7 @@ test's independence assumption.
 
 That means `--min_chi` has to be calibrated, not copied.
 
-## 1. `profile_tree.py` — measure the tree first
-
-```
-profile_tree.py --input_tree tree.pb.gz
-profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
-```
-
-Reports:
-
-| Section | What to do with it |
-| --- | --- |
-| Tree size, total usable SNVs | Sets the ceiling on how much splitting is possible |
-| Global 12-type and strand-folded 6-type spectrum | Shows whether folding to 6 categories is worth it, and gives the rarest-class floor on `--min_mutations` (5 / p_rarest, so expected cell counts stay at or above 5) |
-| Per-branch mutation counts, and what each `--max_branch_length` cap would exclude | Pick a cap only if there is a clear outlier tail; on a diverged, sparsely sampled tree long branches are usually real |
-| Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
-| Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
-| Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
-
-`--node_table` writes one row per node (branch and subtree counts, tips,
-mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.
-
-## 2. `permutation_null.py` — calibrate `--min_chi`
-
-Destroys any association between mutation type and position in the tree, then
-runs the same search and the same statistic, and reports the chi-squared values
-it still finds. Set `--min_chi` comfortably above the maximum.
-
-```
-# headline calibration
-permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-    --replicates 20 --mode sites --include_observed
-```
-
-Two null models:
-
-- `--mode types` shuffles mutation-type labels across all mutations, keeping
-  topology and per-branch counts fixed. The strict independence null: it also
-  removes the type clumping that recurrent sites cause, so it gives the lower,
-  more permissive threshold.
-- `--mode sites` (default) gives each site a single type (its most common one)
-  and shuffles that assignment across sites. Which branches carry mutations at
-  which site is untouched, so a site mutating 500 times inside one clade still
-  dumps 500 counts of one randomized type into that clade. This keeps the
-  independence violation and gives the higher, more conservative threshold.
-  Prefer it, especially with convergent selection at resistance loci.
-
-Key options:
-
-- `--min_mutations` / `--max_branch_length` should match what you intend for the
-  real run; they change which nodes are eligible and so change the null.
-- `--max_splits` defaults to `1`: one pass over the whole tree per replicate,
-  which is exactly the quantity the first real split has to beat. Raise it to
-  follow the greedy cascade into subtrees, where chi-squared is necessarily
-  smaller and not comparable to the first pass.
-- `--fold` scores the strand-folded 6-type spectrum (6 categories, 5 degrees of
-  freedom) instead of 12. This must match how you intend to run
-  `spectrumSplits.py`, which takes the same `--fold` flag: the statistic changes
-  scale and the null changes shape, so a threshold calibrated one way is
-  meaningless the other. See `spectrumSplits/README.md` for when folding is
-  appropriate.
-- `--include_observed` scores the unpermuted tree through the same code path, so
-  the real maximum and the null maximum are directly comparable. If the ratio is
-  under about 2x, the strongest real split is close to what chance produces.
-- `--nthreads` runs replicates concurrently where `fork` is available, and falls
-  back to serial otherwise; running several instances with different `--seed`
-  also works.
-- `--selftest` checks the chi-squared implementation against a naive reference
-  and against `scipy.stats.chi2_contingency`, and exits. Run it once in the
-  environment where `spectrumSplits.py` runs, not on a laptop: where scipy is
-  not importable the scipy comparison is SKIPPED with a note, so a pass there
-  confirms only the naive reference. Confirmed on the MTBC server, where both
-  agree on 200 random tables to 1.8e-12.
-
-The statistic is reimplemented in pure Python rather than called through scipy,
-so all candidate nodes can be scored in one vectorless pass without scipy's
-per-call overhead. It matches `chi2_contingency` exactly for tables larger than
-2 x 2 (no continuity correction); columns whose total is zero are skipped, where
-scipy would raise.
-
-## 3. `annotate_sites.py` — identify recurrent sites, and build mask regions
-
-`profile_tree.py` tells you *which* sites mutate repeatedly; this tells you
-*what they are*, so you can decide what to mask. It does two jobs.
-
-**Identify sites.** Reads positions straight out of a profile report:
-
-```
-annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \
-    --from_profile mtb_profile.txt --output annotated_sites.tsv
-```
-
-Reports feature type, gene, locus tag, strand, codon number, codon position,
-reference codon and amino acid for each site. Given a bare position it lists all
-three possible amino-acid changes; given a mutation string such as `C1057G` it
-reports the specific change and whether it is synonymous. Reverse-strand genes
-are handled (codon numbering runs from the feature's `end` downwards and bases
-are reverse-complemented) — `--selftest` checks that arithmetic on both strands,
-and it is worth running once.
-
-**Build mask regions.** Masking a top-N list of individual sites does not
-converge: mask `rpoB` codon 445 position 1 and position 2 of the same codon
-surfaces in the next profile. Mask the locus instead:
-
-```
-annotate_sites.py --annotation NC_000962.3.gff3.gz \
-    --regions tb_resistance_genes.txt --promoter_flank 200 \
-    --mask_bed resistance_loci.bed
-```
-
-`--promoter_flank` extends each feature upstream in a strand-aware way, which
-matters because several important mutations are promoter mutations
-(`inhA`/`fabG1` −15, `embA` −16, `pncA` −11). `--mask_pattern '^(PE|PPE)'` adds
-features by name, for the repetitive families where alignment artifacts
-accumulate. Output is a merged BED, or `--mask_positions` for a flat 1-based
-position list (expect tens of thousands of lines).
-
-`--mask_matutils` writes those same positions as `N<position>N`, one per line,
-which is the format `matUtils mask -m` reads, so the mask can go straight into
-`matUtils mask` with no conversion step.
-
-`--mask_product_pattern` masks by **function** instead of by name, matching
-each feature's product description: `'(?i)(transposase|integrase|insertion
-element)'` finds mobile elements whatever they happen to be called. This is not
-a convenience — `--mask_pattern` matches gene names and locus tags only, so a
-transposase annotated as `Rv2648` is unreachable by name, and the genes most
-worth masking for alignment reasons are exactly the ones with uninformative
-names. Matching is case sensitive, like `--mask_pattern`, so prefix `(?i)`;
-only CDS and RNA features carry products, so bare `gene` features never match
-(their CDS does, over essentially the same interval). The run prints the loci
-it matched.
-
-`--mask_pad` widens every masked feature on **both** sides, which
-`--promoter_flank` does not: a promoter flank is upstream-only by definition,
-so it reaches nothing downstream of a feature. Use it for alignment artifacts,
-which spill past a feature's annotated edges in either direction. On a
-129k-sample MTBC tree, nine of the twenty most recurrent sites left after
-masking the resistance loci sat 1-56 bp *outside* a feature, seven of them
-downstream; `--mask_pad 100` covered all nine. The two options are additive, so
-a feature given both grows by their sum on its upstream side.
-
-Names that don't resolve against your annotation are reported as NOT FOUND
-rather than silently dropped. Matching is case-insensitive and covers every
-name a feature carries — `gene`, `Name`, `locus_tag`, `old_locus_tag`,
-`gene_synonym` and `Alias` — not just the one displayed in the output. That
-matters more than it sounds: NCBI GFF3 often puts the locus tag in `Name` and
-the name people actually look a gene up by in `gene_synonym`, so `mabA` and
-`gidB` resolve to `Rv1482c` and `Rv3919c` even though neither is the displayed
-name.
-
-A NOT FOUND line is still worth reading rather than ignoring, because it has
-three quite different causes: the annotation genuinely lacks that name (pair
-the entry with its locus tag), the name is wrong (`clpC` where the genome has
-`clpC1` and `clpC2`), or the gene is absent. Only the first is harmless, and
-only if the locus is covered by another entry.
-
-A position in no feature is reported as `intergenic`, with the nearest gene and
-a signed distance to it (negative = upstream). Whole-sequence landmark records
-are ignored for this: an NCBI GFF3 opens with a `region` line spanning the
-whole chromosome, and GenBank uses `source` the same way, so every position
-falls inside one. Counted as a hit, they would turn every intergenic site into
-a nameless feature at distance 0 — and let `--mask_pattern` mask the entire
-genome. They are still listed in the feature counts, then dropped with a note.
-
-### A caution about the gene list
-
-`tb_resistance_genes.txt` holds gene **names and locus tags only — no
-coordinates**. Every interval is resolved from the annotation *you* supply, so
-the coordinates come from your reference rather than from this repository. That
-is deliberate: a name you can check beats a coordinate you cannot.
-
-The list is a starting point and is not authoritative. The authoritative source
-is the WHO *Catalogue of mutations in Mycobacterium tuberculosis complex and
-their association with drug resistance*, 2nd edition (2023), which publishes
-genomic coordinates and is what you should cite. Cross-check against
-TB-Profiler's database too. This script does not predict drug resistance; for
-resistance calls use TB-Profiler or Mykrobe.
-
-### The other gene list: `tb_repair_genes.txt`
-
-`tb_repair_genes.txt` lists DNA repair, replication-fidelity and dNTP-pool
-genes, and exists for the opposite purpose. **Do not mask these.** A
-repair-gene mutation is the *explanation* you want when a clade turns out to
-have a distinct spectrum: a lineage that lost or altered a repair function is
-what a real mutational-spectrum split looks like. Masking them destroys the
-signal.
-
-Use it with `--highlight`, which flags matching sites in a `highlight` column
-and counts them, changing nothing else:
-
-```
-annotate_sites.py --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \
-    --positions <mutations on the clade's defining branch> \
-    --highlight tb_repair_genes.txt
-```
-
-This list carries gene names and **no locus tags at all** — the Rv numbers are
-in comments as hints to check. A name missing from your annotation is reported
-as NOT FOUND, which is harmless, whereas a misremembered locus tag would resolve
-to the wrong gene and mislead you silently. Verify any you rely on against
-Mycobrowser or the NCBI H37Rv annotation.
-
-### The third gene list: `tb_alignment_loci.txt`
-
-`tb_alignment_loci.txt` is also masked, but for the opposite reason to
-`tb_resistance_genes.txt`. Resistance loci recur because the same mutation is
-selected repeatedly — the variants are real. These loci recur because short
-reads cannot be placed unambiguously: paralogous families (PE/PPE, `esx`, the
-`Rv1318c`-`Rv1320c` adenylate cyclases, `lldD1`/`lldD2`), repeats (IS6110, the
-13E12 family) and prophages (phiRv1, phiRv2). There the variants are largely
-not real at all.
-
-Keeping the two lists apart keeps each auditable, and they want different
-widening, so resolve them separately and concatenate:
-
-```
-annotate_sites.py --annotation NC_012345.1.gff3.gz \
-    --regions tb_resistance_genes.txt --promoter_flank 200 \
-    --mask_bed selection_loci.bed
-
-annotate_sites.py --annotation NC_012345.1.gff3.gz \
-    --regions tb_alignment_loci.txt --mask_pattern '^(PE|PPE|esx)' \
-    --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
-    --mask_pad 100 --mask_bed alignment_loci.bed
-```
-
-The strongest signal that a site belongs in this list rather than the
-resistance list is in `annotate_sites.py`'s `aa_change` column: if every
-possible substitution at a position is synonymous, or a third codon position
-recurs hundreds of times, selection cannot be the cause.
-
-Two cautions. The list carries a handful of genes whose recurrence has **no
-established mechanism** — `ponA1`, `hsdM` and `Rv2024c` are nonsynonymous at
-every alternate, so they may well be convergent selection rather than
-miscalling. They are listed because they break the independence assumption
-either way, but if you are looking for the biology, look at them before you
-mask them. And prefer `--mask_pattern` for the large families: it matches names,
-so it picks up members the file does not list.
-
-## Know how your tree was rooted
+### Know how your tree was rooted
 
 Ask before you interpret anything near the root. The MTBC tree used here was
 built against NC_000962.3 as both reference and root, then rerooted to a node
@@ -292,13 +67,13 @@ the tree build rather than a measurement. Three consequences:
   anything. On this tree there is a second reason as well -- once the search
   accepted its splits, `node_1`'s residual was down to 260 tips.
 - Any criterion that fires on a clade's stem can be decided by the rooting for
-  clades near the root. Step 2 has the worked case.
+  clades near the root. Step 2 of the walkthrough has the worked case.
 - Claims about the deepest branches need the rooting's provenance attached.
 
 Splits well inside named lineages are unaffected, which on this tree is all of
 them that survived ranking.
 
-## Node IDs are not stable across trees
+### Node IDs are not stable across trees
 
 `matUtils` assigns node IDs when it reads a tree, so `node_5289` in one
 `.pb.gz` has nothing to do with `node_5289` in another. Masking makes this
@@ -1332,3 +1107,373 @@ split lists -- only by asking where its samples went. And a `--min_mutations`
 floor does not merely hide small clades, it can *relocate* a finding from the
 split you would report into a residual you might not think to look at.
 
+## Script reference
+
+In walkthrough order.
+
+### `profile_tree.py`
+
+Used in [step 1](#1-profile-the-raw-tree) and again in
+[step 4](#4-re-profile-and-check-what-the-mask-bought).
+
+```
+profile_tree.py --input_tree tree.pb.gz
+profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
+```
+
+Reports:
+
+| Section | What to do with it |
+| --- | --- |
+| Tree size, total usable SNVs | Sets the ceiling on how much splitting is possible |
+| Global 12-type and strand-folded 6-type spectrum | Shows whether folding to 6 categories is worth it, and gives the rarest-class floor on `--min_mutations` (5 / p_rarest, so expected cell counts stay at or above 5) |
+| Per-branch mutation counts, and what each `--max_branch_length` cap would exclude | Pick a cap only if there is a clear outlier tail; on a diverged, sparsely sampled tree long branches are usually real |
+| Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
+| Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
+| Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
+
+`--node_table` writes one row per node (branch and subtree counts, tips,
+mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.
+
+### `prune_clade_check.py`
+
+Used in [step 2](#2-prune-samples-with-implausible-divergence). Tabulates
+what `qc/prune_mutation_sample_ratio.py` removed, by clade, and whether each
+removal was a single divergent genome or a whole subtree. It reads only text
+files; `bte` is needed only for `--input_tree`.
+
+```
+prune_clade_check.py --samples samples_raw.txt --clades clades_raw.txt \
+    --prune_report pruned_report.txt --threshold 250 \
+    [--input_tree tree.pb.gz] > prune_check.md
+```
+
+Inputs, all describing the **unpruned** tree:
+
+- `--samples`: `matUtils summary -s` output. Its `parsimony` column is each
+  sample's terminal branch length, and `parent_id` places it in the tree.
+- `--clades`: `matUtils summary --sample-clades` output.
+- `--prune_report`: the prune script's stdout, which lists every removed
+  sample, so the pruned tree is not needed.
+- `--threshold`: the value given to the prune script. It sets only the
+  `tips >=` column.
+
+Output is markdown, in five sections: removal rate by clade; terminal branches
+at or above the threshold against removals, split into terminal-branch and
+internal-node crossings; each internal-node pruning with its subtree total and
+the tips' terminal branches; the surviving parent of each pruned subtree, with
+the tips under it and their commonest clades (needs `--input_tree`); and the
+unlabelled samples, as contiguous runs in node-number order with the labelled
+lineage on either side.
+
+- `--depth` collapses clade names to that many dot-separated parts (default 1,
+  so `lineage4.3.4.2` counts as `lineage4`; 0 keeps full names).
+- `--input_tree` reads the unpruned tree with `bte` to report each
+  internal-node pruning's exact stem, and to fill in the parent section.
+  Without it, the stem and the internal branches below it are reported
+  together as one remainder.
+- `--min_run` is the smallest unlabelled run listed (default 5).
+- `--exclude` names samples to ignore (default `ReconstructedAncestor`, which
+  `matUtils` lists as an unlabelled sample).
+
+### `annotate_sites.py`
+
+Used in [step 3](#3-build-and-apply-a-region-mask) to build the mask, and in
+[step 4](#4-re-profile-and-check-what-the-mask-bought) to identify what survived it.
+
+`profile_tree.py` tells you *which* sites mutate repeatedly; this tells you
+*what they are*, so you can decide what to mask. It does two jobs.
+
+**Identify sites.** Reads positions straight out of a profile report:
+
+```
+annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --from_profile profile.txt --output annotated_sites.tsv
+```
+
+Reports feature type, gene, locus tag, strand, codon number, codon position,
+reference codon and amino acid for each site. Given a bare position it lists all
+three possible amino-acid changes; given a mutation string such as `C1057G` it
+reports the specific change and whether it is synonymous. Reverse-strand genes
+are handled (codon numbering runs from the feature's `end` downwards and bases
+are reverse-complemented) — `--selftest` checks that arithmetic on both strands,
+and it is worth running once.
+
+**Build mask regions.** Masking a top-N list of individual sites does not
+converge: mask `rpoB` codon 445 position 1 and position 2 of the same codon
+surfaces in the next profile. Mask the locus instead:
+
+```
+annotate_sites.py --annotation NC_012345.1.gff3.gz \
+    --regions tb_resistance_genes.txt --promoter_flank 200 \
+    --mask_bed resistance_loci.bed
+```
+
+`--promoter_flank` extends each feature upstream in a strand-aware way, which
+matters because several important mutations are promoter mutations
+(`inhA`/`fabG1` −15, `embA` −16, `pncA` −11). `--mask_pattern '^(PE|PPE)'` adds
+features by name, for the repetitive families where alignment artifacts
+accumulate. Output is a merged BED, or `--mask_positions` for a flat 1-based
+position list (expect tens of thousands of lines).
+
+`--mask_matutils` writes those same positions as `N<position>N`, one per line,
+which is the format `matUtils mask -m` reads, so the mask can go straight into
+`matUtils mask` with no conversion step.
+
+`--mask_product_pattern` masks by **function** instead of by name, matching
+each feature's product description: `'(?i)(transposase|integrase|insertion
+element)'` finds mobile elements whatever they happen to be called. This is not
+a convenience — `--mask_pattern` matches gene names and locus tags only, so a
+transposase annotated as `Rv2648` is unreachable by name, and the genes most
+worth masking for alignment reasons are exactly the ones with uninformative
+names. Matching is case sensitive, like `--mask_pattern`, so prefix `(?i)`;
+only CDS and RNA features carry products, so bare `gene` features never match
+(their CDS does, over essentially the same interval). The run prints the loci
+it matched.
+
+`--mask_pad` widens every masked feature on **both** sides, which
+`--promoter_flank` does not: a promoter flank is upstream-only by definition,
+so it reaches nothing downstream of a feature. Use it for alignment artifacts,
+which spill past a feature's annotated edges in either direction. On a
+129k-sample MTBC tree, nine of the twenty most recurrent sites left after
+masking the resistance loci sat 1-56 bp *outside* a feature, seven of them
+downstream; `--mask_pad 100` covered all nine. The two options are additive, so
+a feature given both grows by their sum on its upstream side.
+
+Names that don't resolve against your annotation are reported as NOT FOUND
+rather than silently dropped. Matching is case-insensitive and covers every
+name a feature carries — `gene`, `Name`, `locus_tag`, `old_locus_tag`,
+`gene_synonym` and `Alias` — not just the one displayed in the output. That
+matters more than it sounds: NCBI GFF3 often puts the locus tag in `Name` and
+the name people actually look a gene up by in `gene_synonym`, so `mabA` and
+`gidB` resolve to `Rv1482c` and `Rv3919c` even though neither is the displayed
+name.
+
+A NOT FOUND line is still worth reading rather than ignoring, because it has
+three quite different causes: the annotation genuinely lacks that name (pair
+the entry with its locus tag), the name is wrong (`clpC` where the genome has
+`clpC1` and `clpC2`), or the gene is absent. Only the first is harmless, and
+only if the locus is covered by another entry.
+
+A position in no feature is reported as `intergenic`, with the nearest gene and
+a signed distance to it (negative = upstream). Whole-sequence landmark records
+are ignored for this: an NCBI GFF3 opens with a `region` line spanning the
+whole chromosome, and GenBank uses `source` the same way, so every position
+falls inside one. Counted as a hit, they would turn every intergenic site into
+a nameless feature at distance 0 — and let `--mask_pattern` mask the entire
+genome. They are still listed in the feature counts, then dropped with a note.
+
+### `permutation_null.py`
+
+Used in [step 7](#7-calibrate---min_chi).
+
+Destroys any association between mutation type and position in the tree, then
+runs the same search and the same statistic, and reports the chi-squared values
+it still finds. Set `--min_chi` comfortably above the maximum.
+
+```
+# headline calibration
+permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
+    --replicates 20 --mode sites --include_observed
+```
+
+Two null models:
+
+- `--mode types` shuffles mutation-type labels across all mutations, keeping
+  topology and per-branch counts fixed. The strict independence null: it also
+  removes the type clumping that recurrent sites cause, so it gives the lower,
+  more permissive threshold.
+- `--mode sites` (default) gives each site a single type (its most common one)
+  and shuffles that assignment across sites. Which branches carry mutations at
+  which site is untouched, so a site mutating 500 times inside one clade still
+  dumps 500 counts of one randomized type into that clade. This keeps the
+  independence violation and gives the higher, more conservative threshold.
+  Prefer it, especially with convergent selection at resistance loci.
+
+Key options:
+
+- `--min_mutations` / `--max_branch_length` should match what you intend for the
+  real run; they change which nodes are eligible and so change the null.
+- `--max_splits` defaults to `1`: one pass over the whole tree per replicate,
+  which is exactly the quantity the first real split has to beat. Raise it to
+  follow the greedy cascade into subtrees, where chi-squared is necessarily
+  smaller and not comparable to the first pass.
+- `--fold` scores the strand-folded 6-type spectrum (6 categories, 5 degrees of
+  freedom) instead of 12. This must match how you intend to run
+  `spectrumSplits.py`, which takes the same `--fold` flag: the statistic changes
+  scale and the null changes shape, so a threshold calibrated one way is
+  meaningless the other. See `spectrumSplits/README.md` for when folding is
+  appropriate.
+- `--include_observed` scores the unpermuted tree through the same code path, so
+  the real maximum and the null maximum are directly comparable. If the ratio is
+  under about 2x, the strongest real split is close to what chance produces.
+- `--nthreads` runs replicates concurrently where `fork` is available, and falls
+  back to serial otherwise; running several instances with different `--seed`
+  also works.
+- `--selftest` checks the chi-squared implementation against a naive reference
+  and against `scipy.stats.chi2_contingency`, and exits. Run it once in the
+  environment where `spectrumSplits.py` runs, not on a laptop: where scipy is
+  not importable the scipy comparison is SKIPPED with a note, so a pass there
+  confirms only the naive reference. Confirmed on the MTBC server, where both
+  agree on 200 random tables to 1.8e-12.
+
+The statistic is reimplemented in pure Python rather than called through scipy,
+so all candidate nodes can be scored in one vectorless pass without scipy's
+per-call overhead. It matches `chi2_contingency` exactly for tables larger than
+2 x 2 (no continuity correction); columns whose total is zero are skipped, where
+scipy would raise.
+
+### `branch_class_spectra.py`
+
+Used in [step 10](#10-check-the-splits-against-sequencing-quality). Splits
+each accepted split's mutations into those on internal branches and those on
+terminal branches, and compares the two, to tell a lineage signal from a
+per-genome quality gradient. Needs `bte`.
+
+```
+branch_class_spectra.py --input_tree tree.pruned.masked.pb.gz \
+    --spectra spectra.tsv --fold --max_branch_length 250 \
+    --output branch_class.tsv
+```
+
+- `--input_tree` must be the same file the search ran on, because node IDs are
+  assigned when a tree is read (see
+  [Node IDs are not stable across trees](#node-ids-are-not-stable-across-trees)).
+  Split roots missing from the tree are reported with a warning.
+- `--spectra` is the search's `--output_spectrum` TSV; split roots are read
+  from its `Node_ID` column. `--splits` takes a plain list of node IDs instead.
+- `--fold` and `--max_branch_length` must match the search. A branch over the
+  cap contributes nothing, as in `spectrumSplits.py`.
+
+Each node's mutations go to the nearest split root at or above it, which is
+how `spectrumSplits.py` reports spectra. The report on stdout gives the
+whole-tree spectrum by branch class, the correlation of each class with
+divergence per tip computed separately on internal and terminal branches (the
+test), and one line per split. `--output` writes two rows per split
+(`internal`, `terminal`) with `Node_ID`, `Branch_Class`, `Tips`, `Mutations`
+and the proportion of each class. `--selftest` checks the group assignment and
+partitioning, and exits.
+
+### `split_confidence.py`
+
+Used in [step 11](#11-rank-the-splits-before-interpreting-them), and again in
+step 13. Ranks the accepted splits by two independent measures, margin over a
+size-matched null and bootstrap support. It reads only files earlier steps
+produce, runs nothing on the tree, and needs nothing beyond the standard
+library.
+
+```
+split_confidence.py --splits_log splits.log --spectra spectra.tsv \
+    --null null_sites_cascade.tsv \
+    --bootstrap_replicates bootstrap_by_replicate.tsv \
+    --clade_samples split_clade_samples.tsv \
+    --output split_confidence.tsv
+```
+
+Inputs:
+
+- `--splits_log`: the search's stderr. Bootstrap replicates print to the same
+  stream; only the lines before the bootstrap marker are read.
+- `--spectra`: the `--output_spectrum` TSV from the same run.
+- `--null`: the cascade null from `permutation_null.py --max_splits`, as in
+  [step 7](#7-calibrate---min_chi).
+- `--bootstrap_replicates`: `replicate<TAB>node` per line, made from the
+  replicate outputs with
+
+  ```
+  for f in bootstrap_*_splits_output.tsv; do n=${f#bootstrap_}; n=${n%%_*};
+    cut -f1 "$f" | grep ^node_ | sed "s/^/$n\t/"; done > bootstrap_by_replicate.tsv
+  ```
+
+  `--bootstrap_support` takes aggregate counts instead, but then support can
+  only be counted at the exact node.
+- `--clade_samples`: `node<TAB>sample` per line, from `matUtils extract -I
+  <node> -u` over the accepted splits. It establishes which split is nested in
+  which; without it the tested-against sizes are upper bounds and late-found
+  splits' margins are understated.
+
+Options:
+
+- `--null_window` (default 1.5): how far, as a fold range, a null replicate's
+  subtree size may be from the split's and still count as size-matched.
+- `--neighbourhood` (default 10): the node-number window within which a
+  bootstrap replicate's split counts as the same split (0 disables).
+- `--strong_margin` (default 5) and `--strong_support` (default 70%): tier A
+  needs both, tier B one, tier C neither. An input that is missing counts as a
+  failure.
+
+Output columns: `node`, `search_root`, `clade_parent`, `chi2`,
+`tested_in_mutations`, `null_ceiling`, `null_replicates`, `margin`,
+`support_exact`, `support_neighbourhood`, `tier`. `--selftest` runs the
+self-tests and exits.
+
+## Gene lists
+
+Three lists of *M. tuberculosis* loci ship with these scripts, for
+`annotate_sites.py --regions` and `--highlight`. Two are masked and one is
+deliberately not.
+
+### `tb_resistance_genes.txt`, and a caution
+
+`tb_resistance_genes.txt` holds gene **names and locus tags only — no
+coordinates**. Every interval is resolved from the annotation *you* supply, so
+the coordinates come from your reference rather than from this repository. That
+is deliberate: a name you can check beats a coordinate you cannot.
+
+The list is a starting point and is not authoritative. The authoritative source
+is the WHO *Catalogue of mutations in Mycobacterium tuberculosis complex and
+their association with drug resistance*, 2nd edition (2023), which publishes
+genomic coordinates and is what you should cite. Cross-check against
+TB-Profiler's database too. This script does not predict drug resistance; for
+resistance calls use TB-Profiler or Mykrobe.
+
+### `tb_repair_genes.txt`
+
+`tb_repair_genes.txt` lists DNA repair, replication-fidelity and dNTP-pool
+genes, and exists for the opposite purpose. **Do not mask these.** A
+repair-gene mutation is the *explanation* you want when a clade turns out to
+have a distinct spectrum: a lineage that lost or altered a repair function is
+what a real mutational-spectrum split looks like. Masking them destroys the
+signal.
+
+Use it with `--highlight`, which flags matching sites in a `highlight` column
+and counts them, changing nothing else:
+
+```
+annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --positions <mutations on the clade's defining branch> \
+    --highlight tb_repair_genes.txt
+```
+
+This list carries gene names and **no locus tags at all** — the Rv numbers are
+in comments as hints to check. A name missing from your annotation is reported
+as NOT FOUND, which is harmless, whereas a misremembered locus tag would resolve
+to the wrong gene and mislead you silently. Verify any you rely on against
+Mycobrowser or the NCBI H37Rv annotation.
+
+### `tb_alignment_loci.txt`
+
+`tb_alignment_loci.txt` is also masked, but for the opposite reason to
+`tb_resistance_genes.txt`. Resistance loci recur because the same mutation is
+selected repeatedly — the variants are real. These loci recur because short
+reads cannot be placed unambiguously: paralogous families (PE/PPE, `esx`, the
+`Rv1318c`-`Rv1320c` adenylate cyclases, `lldD1`/`lldD2`), repeats (IS6110, the
+13E12 family) and prophages (phiRv1, phiRv2). There the variants are largely
+not real at all.
+
+Keeping the two lists apart keeps each auditable, and they want different
+widening, so [step 3](#3-build-and-apply-a-region-mask) resolves them in two
+separate passes and merges the results.
+
+The strongest signal that a site belongs in this list rather than the
+resistance list is in `annotate_sites.py`'s `aa_change` column: if every
+possible substitution at a position is synonymous, or a third codon position
+recurs hundreds of times, selection cannot be the cause.
+
+Two cautions. The list carries a handful of genes whose recurrence has **no
+established mechanism** — `ponA1`, `hsdM` and `Rv2024c` are nonsynonymous at
+every alternate, so they may well be convergent selection rather than
+miscalling. They are listed because they break the independence assumption
+either way, but if you are looking for the biology, look at them before you
+mask them. And prefer `--mask_pattern` for the large families: it matches names,
+so it picks up members the file does not list.

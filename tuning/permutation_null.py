@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Calibrate spectrumSplits.py's --min_chi against a permutation null.
 
-This is step 4 of parameter tuning.  spectrumSplits.py scores every node in a
+This is step 7 of parameter tuning.  spectrumSplits.py scores every node in a
 subtree and keeps the single best chi-squared value, so the largest chi-squared
 it finds is a maximum over hundreds of thousands of correlated tests.  A
 nominal significance cutoff is therefore meaningless: --min_chi has to clear
