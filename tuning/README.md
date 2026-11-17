@@ -8,6 +8,7 @@ tree, and all three need only `bte` and the Python standard library.
 | --- | --- |
 | `profile_tree.py` | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
 | `permutation_null.py` | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
+| `prune_clade_check.py` | What did `qc/prune_mutation_sample_ratio.py` remove, by clade, and was it a divergent genome or a clade on a long stem? Works from `matUtils summary` output; `bte` optional. |
 | `annotate_sites.py` | What are the recurrent sites, and which regions should be masked before any of the above is trusted? |
 | `branch_class_spectra.py` | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | `split_confidence.py` | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
@@ -383,20 +384,55 @@ distribution cuts into the bulk.
 
 #### Check what it removed, by clade
 
+Run this first, so you have your own tree's numbers beside the worked example.
+The removed samples' clades come from the unpruned tree, since the pruned one
+no longer contains them, and the prune report already lists every removed
+sample:
+
+```
+matUtils summary -i tree.pb.gz -s samples_raw.txt
+matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
+prune_clade_check.py --samples samples_raw.txt --clades clades_raw.txt \
+    --prune_report pruned_report.txt --threshold 250 \
+    --input_tree tree.pb.gz > prune_check.md
+```
+
+`prune_clade_check.py` writes, as markdown, every table in this step and the
+next one. Its sections match the tables below:
+
+| `prune_check.md` section | README table |
+|---|---|
+| 1. Removal rate by clade | clade / in tree / removed / rate / vs overall |
+| 2. Terminal branches >= 250 vs. removals | median terminal / tips >= 250 / pruned |
+| 3. Prunings at internal nodes | tip terminals / stem / internal below |
+| 4. Surviving parents of pruned subtrees | the parents in "Where the pruned samples sat" |
+| 5. Unlabelled samples | the unlabelled-parent counts and run table |
+
+It lists every clade, while the README tables leave out the small ones.
+Clades are collapsed to their first dot-separated part (`--depth 0` keeps full
+names). `--threshold` only sets the `tips >=` column, so give it the same
+value you passed to the prune script. `--input_tree` needs `bte` and adds the
+exact stems (section 3) and the parent table (section 4); without it, the stem
+and the internal branches below it are reported together as one remainder.
+
 An absolute mutations:tips threshold is a divergence filter, not a quality
 filter, and on this tree the difference is measurable. Of the 60 samples
-pruned at 250:
+pruned at 250 (smaller clades with no removals omitted):
 
 | clade | in tree | removed | rate | vs overall |
 |---|---|---|---|---|
 | lineage8 | 3 | 3 | 100% | — |
-| None | 868 | 14 | 1.6% | 35x |
+| None | 867 | 14 | 1.6% | 35x |
+| La2 | 184 | 1 | 0.54% | 12x |
 | lineage1 | 11,500 | 37 | 0.32% | 6.9x |
+| lineage6 | 967 | 1 | 0.1% | 2.2x |
+| La1 | 8,278 | 1 | 0.012% | 0.26x |
 | lineage4 | 56,543 | 3 | 0.005% | 0.1x |
 | lineage2 | 38,960 | 0 | 0 | — |
 | lineage3 | 11,187 | 0 | 0 | — |
 
-The overall rate was 0.046%. Read the ratio before explaining the gradient,
+The overall rate was 0.046%. (`None` excludes `ReconstructedAncestor`, which
+`matUtils` lists as an unlabelled sample.) Read the ratio before explaining the gradient,
 because it is easy to get wrong: `total_mutations / total_tips` sums each
 branch in the subtree *including the node's own stem*, and no root-to-tip path
 is computed anywhere. It is a local measure. It is not distance from the
@@ -404,21 +440,44 @@ reference, so the choice of reference and the rerooting of the tree do not
 enter -- except as below, which is the case that matters.
 
 Compare each clade's pruned count against its count of terminal branches at or
-above the threshold:
+above the threshold, and split the removals by where the threshold was crossed
+-- at the sample's own terminal branch, or at an internal node whose whole
+subtree went:
 
-| clade | in tree | median terminal | tips >= 250 | pruned |
-|---|---|---|---|---|
-| lineage4 | 56,543 | 2 | 3 | 3 |
-| lineage2 | 38,960 | 3 | 0 | 0 |
-| lineage1 | 11,500 | 31 | 30 | 37 |
-| lineage3 | 11,187 | 12 | 0 | 0 |
-| lineage8 | 3 | 1 | **0** | **3** |
+| clade | in tree | median terminal | tips >= 250 | pruned | via terminal | via internal node |
+|---|---|---|---|---|---|---|
+| lineage4 | 56,543 | 2 | 3 | 3 | 3 | 0 |
+| lineage2 | 38,960 | 3 | 0 | 0 | 0 | 0 |
+| lineage1 | 11,500 | 31 | 30 | 37 | 21 | 16 |
+| lineage3 | 11,187 | 12 | 0 | 0 | 0 | 0 |
+| None | 867 | 6 | 10 | 14 | 7 | 7 |
+| lineage8 | 3 | 1 | **0** | **3** | 0 | 3 |
 
-Every clade's removals are accounted for by its own long terminal branches --
-except lineage 8, whose three genomes have terminal branches of 1, 105 and 105,
-none of them over the threshold. It was removed as a *clade*, at an ancestral
-node whose subtree ratio crossed 250 on the strength of its **stem**: three
-tips holding ~211 mutations between them need a stem near 540 to reach 250.
+Where the pruned count exceeds the long tips, samples went with a subtree.
+The internal-node prunings show which of two things drove the crossing:
+
+| child | tips | clade | tip terminals | stem | internal below |
+|---|---|---|---|---|---|
+| node_3 | 3 | lineage8 | 0, 1, 105 | **863** | 87 |
+| node_5009 | 2 | None | 190, 198 | **410** | 0 |
+| node_5010 | 5 | None | 6, 15, 528, 584, 909 | 27 | 561 |
+| node_8504 | 6 | lineage1.1.2 | 218, 223, 235, 247, 261, 297 | 24 | 53 |
+| node_13065 | 2 | lineage1.2.1 | 250, 261 | 95 | 0 |
+| node_13084 | 2 | lineage1.2.2.2 | 248, 254 | 12 | 0 |
+| node_13100 | 2 | lineage1.2.2.2 | 231, 278 | 20 | 0 |
+| node_13666 | 2 | lineage1.2.2.2 | 282, 298 | 9 | 0 |
+| node_14547 | 2 | lineage1.2.2.2 | 236, 319 | 13 | 0 |
+
+Lineage 1's internal-node removals are small groups of tips that are each long
+-- most of them near or over 250 on their own -- joined by short stems; the
+tips drove the crossing, and the result is close to what a per-tip filter
+would have done. `node_5010` is the same, carried by its 528-, 584- and
+909-mutation tips. Two prunings are different. Lineage 8's three genomes
+have terminal branches of 0, 1 and 105, none of them over the threshold, and
+it was removed as a *clade*, at an ancestral node whose subtree ratio crossed
+250 on the strength of its **stem**: 863 mutations, against 193 in the
+subtree below it. `node_5009`, two unlabelled genomes at 190 and 198 inside
+the lineage 6 neighbourhood, went the same way on a 410-mutation stem.
 
 So one threshold produces two behaviours. Firing on a terminal branch, it
 removes an individually divergent genome, which is roughly the intent. Firing
@@ -428,8 +487,10 @@ was rerooted to a putative ancestral node, with a new reference built by
 applying the rerooting substitutions, which redistributes mutations among the
 branches around the root. **Whether lineage 8 survives `--threshold 250` is
 therefore a consequence of the rerooting, not a property of those genomes.**
-Deeply nested clades are unaffected, which is why lineage 1's 37 removals need
-no such caveat.
+Deeply nested clades are unaffected by the rerooting, which is why lineage 1's
+37 removals need no such caveat; `node_5009` is nested too, so its stem is a
+property of those two genomes, but it was still removed as a pair rather than
+for either genome's own branch.
 
 The quantitative damage was slight either way: 37 of 11,500 lineage 1 tips is
 0.3%, far too few to shift a spectrum built on 164,489 mutations, and the bias
@@ -439,29 +500,21 @@ divergent tips of a clade lowers its `CT|GA`.
 And the lineage 8 loss costs nothing in practice: 3 samples could never clear
 `--min_mutations` at any threshold, and removing 3 tips changes neither the
 topology elsewhere nor the global spectrum. The reason to record it is that it
-is the only visible instance of the internal-node behaviour, and it was visible
-only because lineage 8's own branches are short.
+is the clearest instance of stem-driven pruning, and it was visible only
+because lineage 8's own branches are short. Without splitting removals by
+terminal versus internal node, `node_5009` would have gone unnoticed among the
+unlabelled removals.
 
 This is what to fix if you replace the criterion, and it sets what "relative"
 should mean: compare a node's **stem against the subtree below it**, not
 against the global distribution. A contaminated genome or a junk small clade
 has a long stem *and* short internal branches; a genuinely old lineage has a
-long stem with proportionate internal diversity. Lineage 8 at ~540 over 211
-across 3 tips is the second pattern, and a stem-versus-subtree test keeps it.
+long stem with proportionate internal diversity. Lineage 8, with a stem of 863
+over 193 mutations across 3 tips, is the second pattern, and a
+stem-versus-subtree test keeps it.
 
-So: run the check. The removed samples' clades come from the unpruned tree,
-since the pruned one no longer contains them:
-
-```
-matUtils summary -i tree.pb.gz -s samples_raw.txt
-matUtils summary -i tree.pruned.pb.gz -s samples_pruned.txt
-comm -23 <(cut -f1 samples_raw.txt | sort) <(cut -f1 samples_pruned.txt | sort) \
-    > pruned.txt
-matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
-grep -Fwf pruned.txt clades_raw.txt | cut -f2 | sort | uniq -c | sort -nr
-```
-
-A spread across unrelated clades at roughly the overall rate means the filter
+So: run the check (the commands are at the top of this section), and read
+its first two tables this way. A spread across unrelated clades at roughly the overall rate means the filter
 removed bad genomes. Concentration in the basal clades, or an entire small
 clade going at once, means it removed biology, and the threshold wants raising
 -- or replacing with a clade-relative criterion, flagging a tip only when it
@@ -477,9 +530,10 @@ they were poor genomes or simply unclassified divergent ones is unresolved.
 
 Follow up the per-clade rates by asking *where* in the tree the removals were,
 which the prune report gives for free: its first column is the parent of each
-pruned subtree, and that parent survives. One `matUtils extract -I <parent> -u`
-per distinct parent, joined against the `--sample-clades` table, says what the
-removed samples' neighbours were.
+pruned subtree, and that parent survives. The tips under each parent, joined
+against the `--sample-clades` table, say what the removed samples' neighbours
+were; `prune_clade_check.py --input_tree` lists them (by hand, it is one
+`matUtils extract -I <parent> -u` per distinct parent).
 
 On the MTBC tree the 14 unlabelled removals sat under 9 parents, and 8 of the 9
 were large ordinary clades -- 2,601 tips of `lineage1.2.1.2.1`, 11,385 of
@@ -501,9 +555,12 @@ order so a clade occupies a contiguous range:
 
 | | |
 | --- | --- |
-| parents holding at least one unlabelled sample | 480 |
+| parents holding at least one unlabelled sample | 492 |
 | ...that also hold a labelled sample | 0 |
 | contiguous unlabelled runs of 5+ samples | 11, covering 857 of 867 |
+
+(Counted on the unpruned tree, as is everything here; the pruned tree gives
+480 parents.)
 
 **Do not read the zero as a discovery.** It is close to tautological: lineage
 barcodes define monophyletic clades, so a sample is unlabelled exactly when its
@@ -512,7 +569,8 @@ construction. The zero describes the labelling scheme, not the data. (Said
 plainly because the first reading here was that it implied a hidden taxon, and
 it does not.)
 
-What does answer the question is the flanking lineage of each run:
+What does answer the question is the flanking lineage of each run (the six
+largest; `prune_clade_check.py` lists all 11):
 
 | size | node range | below | above |
 | --- | --- | --- | --- |
