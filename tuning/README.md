@@ -459,8 +459,8 @@ sharply:
 | usable SNVs | 3,249,554 | 2,972,123 | 2,886,050 | 2,845,156 |
 | worst single site | 6,102 | 1,989 | 318 | 225 |
 | top 20 sites' share | 1.24% | 0.50% | 0.16% | 0.12% |
-| `CT|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 |
-| `TC|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 |
+| `CT\|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 |
+| `TC\|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 |
 
 Round 2 was the one that mattered: the worst hotspot fell 84%, for 2.9% of the
 mutations. Round 3 cost another 1.4% to take it 29% further. Note the last two
