@@ -377,7 +377,7 @@ annotate_sites.py --annotation NC_012345.1.gff3.gz \
 
 annotate_sites.py --annotation NC_012345.1.gff3.gz \
     --regions alignment_loci.txt --mask_pattern '^(PE|PPE|esx)' \
-    --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
+    --mask_product_pattern '(?i)(transposase|integrase|insertion element|^maturase$)' \
     --mask_pad 150 \
     --mask_bed alignment_loci.bed --mask_positions alignment_pos.txt
 
@@ -405,9 +405,11 @@ resistance list; the PE/PPE pattern gave 151 intervals over 266 kb — 348 kb in
 all, 7.9% of the 4,411,532 bp reference. The alignment list and `--mask_pad`
 came later, after the first re-profile showed what had survived, which is the
 normal way round: you cannot write that list until you have seen which sites
-recur. The same goes for the pad: it started at 100 and was widened to 150
-when the survivors showed 100 falling short (step 4 has how). With the final
-list and pad, the mask covers 503 kb, 11.4% of the reference.
+recur. The same goes for the pad, which started at 100 and was widened to 150
+when the survivors showed 100 falling short, and for `maturase` in the product
+pattern, added in the final round for a recurrent site no other pattern
+reached (step 4 has both). With the final list, pattern and pad, the mask
+covers 504 kb, 11.4% of the reference.
 
 Bases removed is not the number that matters, though; the next step has it.
 
@@ -504,6 +506,18 @@ straddling the edge of a masked gene is what a pad is for, and every gap was
 under 50 bp, so `--mask_pad 150` covers all six. The cost was 17 kb more
 masked sequence, 0.4% of the genome, since the pad widens every feature on
 the alignment list, not just these two.
+
+Not every survivor of that run was a flank. The second largest, `79558` with
+224 mutations, is codon 25 of `Rv0071`, whose only annotation is the product
+"maturase". Maturases are typically encoded by mobile group II introns, the
+same class of element as the transposases the product pattern already
+caught, but no name or product pattern reached it, and the two maturase locus
+tags `tb_alignment_loci.txt` had guessed are not in NC_000962.3. So the final
+round added it to `--mask_product_pattern`, at a cost of 1.0 kb with the pad.
+The pattern is anchored, `^maturase$`, because the product pattern matches
+anywhere in a product: a bare `maturase` also catches `Rv0693`,
+"mycofactocin radical SAM maturase MftC", an enzyme rather than a mobile
+element.
 
 At 150 the same check comes back with the flanks further out:
 

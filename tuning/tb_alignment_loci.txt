@@ -30,12 +30,13 @@
 #   annotate_sites.py --annotation NC_000962.3.gff3.gz \
 #       --regions tb_alignment_loci.txt \
 #       --mask_pattern '^(PE|PPE|esx)' \
-#       --mask_product_pattern '(?i)(transposase|integrase|insertion element)' \
-#       --mask_pad 100 --mask_matutils matUtils_mask.txt
+#       --mask_product_pattern '(?i)(transposase|integrase|insertion element|^maturase$)' \
+#       --mask_pad 150 --mask_matutils matUtils_mask.txt
 #
 # On a 129k-sample MTBC tree, nine of the twenty most recurrent surviving sites
 # sat 1-56 bp OUTSIDE a feature, seven of them downstream, where a promoter
 # flank reaches nothing.  100 bp of symmetric pad covered all nine.
+# A later round widened it to 150 for the Rv2019 cluster (see below).
 #
 # The two lists can go in one mask, but they want different widening, so
 # resolve them separately and concatenate the BED files:
@@ -177,7 +178,7 @@ Rv2659c
 # events after the first full mask, and no name or product pattern above
 # reaches it.  The two maturase locus tags this file guessed (Rv1764, Rv2105)
 # are NOT FOUND in NC_000962.3, so the product is the only reliable route:
-#     --mask_product_pattern '(?i)(transposase|integrase|insertion element|maturase)'
+#     --mask_product_pattern '(?i)(transposase|integrase|insertion element|^maturase$)'
 #
 # --mask_pattern matches gene names and locus tags, NOT products, so use
 # --mask_product_pattern for these.  That is the point of it: a transposase
