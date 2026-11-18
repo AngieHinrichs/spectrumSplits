@@ -1290,6 +1290,23 @@ biology.
 `split_confidence.py` reads the files steps 7, 8 and 9 already produced and
 answers two questions that fail independently. It runs nothing on the tree.
 
+Two of its inputs need assembling first. The bootstrap replicates, one file
+each from step 8, become one `replicate<TAB>node` table; and each split's
+samples, from the tree, become one `node<TAB>sample` table:
+
+```
+for f in bootstrap_*_splits_output.tsv; do n=${f#bootstrap_}; n=${n%%_*};
+  cut -f1 "$f" | grep ^node_ | sed "s/^/$n\t/"; done > bootstrap_by_replicate.tsv
+
+for n in $(cut -f1 spectra.tsv | grep ^node_); do
+  matUtils extract -i tree.pruned.masked.pb.gz -I $n -u split_samples.txt >& /dev/null
+  sed "s/^/$n\t/" split_samples.txt
+done > split_clade_samples.tsv
+```
+
+The second loop runs `matUtils` once per split, so it takes a while on a big
+tree. Run both before anything renumbers the tree's nodes (see step 8).
+
 ```
 split_confidence.py --splits_log splits.log --spectra spectra.tsv \
     --null null_sites_cascade.tsv \
@@ -1380,12 +1397,8 @@ double-counts any replicate which split two nearby nodes, and on the MTBC
 tree those sums ran to 156% for `node_14473` and 132% for `node_36623` —
 which does demonstrate the wobble is real, but is an upper bound and not a
 support value. The aggregate `uniq -c` file is enough for exact support only;
-the per-replicate file is what the neighbourhood calculation needs:
-
-```
-for f in bootstrap_*_splits_output.tsv; do n=${f#bootstrap_}; n=${n%%_*};
-  cut -f1 "$f" | grep ^node_ | sed "s/^/$n\t/"; done > bootstrap_by_replicate.tsv
-```
+the per-replicate `bootstrap_by_replicate.tsv` made at the top of this step is
+what the neighbourhood calculation needs.
 
 Two caveats on the neighbourhood number. Node-ID adjacency is a proxy for
 topological adjacency, not the same thing — usher assigns IDs in traversal
