@@ -402,6 +402,44 @@ have caught the bad case: a run flanked by nothing, or sitting below the
 basal-most named lineage, would be an outgroup inside clades whose spectra you
 are comparing.
 
+#### Prune known laboratory strains here too
+
+If you already know which samples are laboratory material — vaccine strains,
+lab-adapted reference stocks, experimental-evolution lines — prune them now,
+in the same step. Their mutations accumulated in culture, not in hosts, so a
+split containing them averages two different processes. Step 11 would find
+the ones a split contains, but by then every later step has run on the mixed
+tree, and pruning renumbers every node, so steps 3 to 10 would have to be
+redone. Pruning here costs nothing extra.
+
+Build the list from the clade labels and keep the pattern explicit, since
+which labels mark lab strains depends on the organism and the annotation. On
+the MTBC tree it is BCG, the vaccine strain, labelled `La1.2.BCG`:
+
+```
+awk -F'\t' '$2 ~ /BCG/ {print $1}' clades_raw.txt > lab_samples.txt
+matUtils extract -i tree.pruned.pb.gz -s lab_samples.txt --prune \
+    -o tree.pruned.nolab.pb.gz
+mv tree.pruned.nolab.pb.gz tree.pruned.pb.gz
+```
+
+`--prune` takes no argument: the sample list still goes to `-s/--samples`,
+and `--prune` inverts that selection so the listed samples are the ones
+removed. Without it the same two arguments would keep *only* the lab
+strains, which is the opposite tree and will not announce itself, so check
+the output's sample count with `matUtils summary`: it should have fallen by
+the number of lab samples the divergence prune had not already removed.
+(`-I` selects internal node IDs and `-c` annotated clades; all of these are
+easy to confuse.) Keep `lab_samples.txt` and the pattern with the run, so
+the prune can be repeated on a newer tree.
+
+A label only finds what was labelled. A lab stock with no distinguishing
+label, such as an H37Rv derivative filed under the lineage 4.9 it belongs
+to, stays in. Step 11 checks the splits for any lab label the pattern
+missed.
+
+*This walkthrough did not prune BCG here*, which is why step 11 finds it.
+
 ### 3. Build and apply a region mask
 
 ```
@@ -1556,22 +1594,15 @@ floor creates a band of clades that are invisible to the search rather than
 tested and rejected by it, and lab strains, outbreak clusters and recently
 sequenced collections all tend to sit in it.
 
-The fix is to prune before the search, not to caveat afterwards — a spectrum
-computed over mixed material cannot be decomposed later:
-
-```
-matUtils extract -i tree.pruned.masked.pb.gz -s bcg_samples.txt --prune \
-    -o tree.pruned.masked.nobcg.pb.gz
-```
-
-`--prune` takes no argument: the sample list still goes to `-s/--samples`, and
-`--prune` inverts that selection so the listed samples are the ones removed.
-Without it the same two arguments would keep *only* BCG, which is the opposite
-tree and will not announce itself -- so check the sample count of the output.
-(`-I` selects internal node IDs and `-c` annotated clades; all of these are
-easy to confuse.) Do this in the same pass as a re-mask if one is pending,
-since both renumber every node anyway and step "Node IDs are not stable across
-trees" applies.
+The fix is to prune, not to caveat afterwards — a spectrum computed over
+mixed material cannot be decomposed later. The place for that is step 2,
+when the lab strains are known in advance. Then this step is the check that
+the prune caught them: with the same `--lab_pattern`, the `lab` flag should
+not fire. If it fires anyway, for a strain you did not know about or one
+labelled differently, prune it as in step 2 and rerun from step 3. Do that
+in the same pass as a re-mask if one is pending, since both renumber every
+node (see "Node IDs are not stable across trees"), and the rerun is then
+also step 12's replicate.
 
 #### Size the confound by mutations, not by tips
 
@@ -1607,6 +1638,14 @@ A mask round or a prune gives you a second, independent search over nearly the
 same data. That is the strongest check available on this pipeline, and it is
 free once you have the sample sets, because node IDs are gone and membership is
 all that carries across.
+
+Any change that leaves the data nearly the same will do: a further mask
+round, a prune that step 11 called for, or, when neither is pending, a
+deliberate one, such as dropping a random tenth of the samples (`matUtils
+summary -s`, then `shuf` the names, then `matUtils extract -s ... --prune`).
+The point is reproducibility under a change, not the particular change. The
+example below uses a mask round plus a BCG prune, because that is the change
+this tree went through; the `_nobcg` file names are that run's.
 
 ```
 split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
