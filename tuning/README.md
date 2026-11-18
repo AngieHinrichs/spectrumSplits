@@ -669,13 +669,52 @@ freedom that folding removes carry mostly noise and artifacts from clades whose
 mutations happen to sit more on one arm. Folding doubles every cell count and
 takes the degrees of freedom from 11 to 5.
 
-The case for not folding is an asymmetry tied to the reference's forward
-strand itself. It would show as a pair with the same sign on the leading and
-lagging arms, and on + and − strand genes. A double-stranded genome's biology
-doesn't produce that, but a single-stranded genome would, and so could an
-artifact of the reference or the alignment. Only then does the 12-type test
-see something the folded one can't. Here, the one pair with the same sign on
-both arms is T>A/A>T, at +0.02 ± 0.02.
+**When not to fold.** The 12-type test sees something the folded one can't
+only if there is an asymmetry tied to the reference's forward strand itself,
+and only if that asymmetry *differs between clades*. A double-stranded
+genome's biology doesn't produce one. A single-stranded genome would, and so
+could an artifact of the reference or the alignment in part of the tree.
+
+The FOLD TEST at the end of the STRAND ASYMMETRY section checks for it. It
+splits each pair's forward-strand log ratio into three parts:
+
+- F, the part tied to the forward strand.
+- R, the replication part.
+- T, the transcription part.
+
+F, R and T are the mean, the arm contrast and the gene-strand contrast of the
+four arm × gene-strand cells, so each cancels the others. A constant F does
+nothing to splits, because both sides of every split share it. So the
+verdict rests on how much F varies between clades. That is measured two
+ways: as chi2/df around the clades' weighted mean, and as the z of the most
+extreme clade against the rest. Each clade's F is the mean of its two arms,
+so a clade whose mutations sit more on one arm is not penalised.
+
+*Worked example.* On the round 3 tree:
+
+| pair | F | z | R | T | F chi2/df across 26 clades | most extreme clade, z |
+| --- | --- | --- | --- | --- | --- | --- |
+| C>A / G>T | −0.015 | −2.8 | −0.081 | +0.017 | 1.57 | −2.9 |
+| C>G / G>C | +0.018 | +3.4 | +0.345 | −0.031 | 0.78 | −1.9 |
+| C>T / G>A | +0.035 | +13.5 | +0.525 | +0.037 | 1.55 | −2.8 |
+| T>A / A>T | +0.027 | +1.8 | +0.021 | −0.085 | 1.66 | −2.8 |
+| T>C / A>G | −0.007 | −1.6 | −0.076 | −0.146 | 1.19 | −3.2 |
+| T>G / A>C | +0.023 | +3.5 | +0.300 | −0.247 | 0.93 | +2.1 |
+
+C>T/G>A has a highly significant F (z 13.5). That is because the leading-arm
+skew (+0.56) is a little larger than the lagging-arm one (−0.49), probably an
+arm difference in the replication effect or a slightly misplaced terminus.
+Neither is a reason not to fold. Its F is the same in every clade, with
+chi2/df 1.55, against 55 for the replication part in the per-clade table
+above. The verdict is fold.
+
+The defaults flag a pair at chi2/df ≥ 3 (`--fold_max_dispersion`) or a
+single clade at |z| ≥ 5 (`--fold_max_z`). Recurrent sites inflate both, and
+on this tree pairs with no strand effect at all come in at chi2/df 1.2 to 1.7
+and |z| up to about 3. A synthetic tree with an extra 10% of one clade's
+G>A turned into forward C>T gave chi2/df 26 and z 13 for that clade. The test
+reports the clade, so if it fires, look there for a reference or alignment
+problem before you unfold.
 
 Settle this now: it changes both the floor in step 6 and the null in step 7.
 
@@ -1297,7 +1336,7 @@ Reports:
 | Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
 | Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
 | Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
-| Strand asymmetry (with `--reference`, or `--terminus`) | Complementary-pair log2 ratios on the leading and lagging arms, in + and − strand genes (with `--annotation`), and per annotated clade, with a heterogeneity chi-squared for each pair. This is what step 5 reads |
+| Strand asymmetry (with `--reference`, or `--terminus`) | Complementary-pair log2 ratios on the leading and lagging arms, in + and − strand genes (with `--annotation`), and per annotated clade, with a heterogeneity chi-squared for each pair. It ends with a FOLD TEST and a verdict. This is what step 5 reads |
 
 The strand asymmetry section needs the origin and terminus of replication.
 `--reference` estimates them from cumulative GC skew: the minimum is the origin
@@ -1306,7 +1345,9 @@ it is in most bacteria. Without a reference, give `--terminus`; `--origin`
 defaults to 1. Either can override the estimate. In the per-clade table each
 mutation goes to its nearest annotated ancestor, so a parent clade's row
 leaves out its annotated subclades. Clades with fewer than
-`--strand_min_clade` mutations (default 25,000) are not listed.
+`--strand_min_clade` mutations (default 25,000) are not listed, and the FOLD
+TEST uses the same clades. Its limits are `--fold_max_dispersion` (default 3)
+and `--fold_max_z` (default 5); step 5 explains both.
 
 `--node_table` writes one row per node (branch and subtree counts, tips,
 mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.

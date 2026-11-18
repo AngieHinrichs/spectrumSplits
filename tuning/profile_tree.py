@@ -19,8 +19,8 @@ Reports:
     at or above 5 (informs --min_mutations)
   * the mutations:tips ratio distribution (informs qc/prune_mutation_sample_ratio.py)
   * with --reference or --terminus: strand asymmetry by replication arm, by
-    gene strand (with --annotation), and its spread across annotated clades
-    (informs --fold; see the STRAND ASYMMETRY section's notes)
+    gene strand (with --annotation), and its spread across annotated clades,
+    ending in a FOLD TEST with a verdict on --fold
 
 Nothing is modified; the tree is read only.
 
@@ -76,6 +76,14 @@ def parse_args():
     parser.add_argument("--annotation", type=str, default=None,
                         help="GFF3 annotation, optionally gzipped; adds a gene-strand breakdown to the "
                         "STRAND ASYMMETRY section (gene and pseudogene features)")
+    parser.add_argument("--fold_max_dispersion", type=float, default=3.0,
+                        help="FOLD TEST: recommend against --fold if any pair's "
+                        "forward-strand component varies across clades with "
+                        "chi2/df at or above this")
+    parser.add_argument("--fold_max_z", type=float, default=5.0,
+                        help="FOLD TEST: recommend against --fold if any one clade's "
+                        "forward-strand component deviates from the others by at "
+                        "least this many standard errors")
     parser.add_argument("--strand_min_clade", type=int, default=25000,
                         help="Smallest clade, in mutations, listed in the per-clade "
                         "strand asymmetry table")
@@ -262,6 +270,31 @@ def print_pair_table(title, spectrum, out):
         print(f"    {label}\t{a}\t{b}\t{lr:+.3f}\t{se:.3f}", file=out)
 
 
+def log2_ratio_var(spectrum, label):
+    """(log2(first/second), variance) for a folded pair label, or None."""
+    x, y = label.split("|")
+    a, b = spectrum[MUT_INDEX[x]], spectrum[MUT_INDEX[y]]
+    if not a or not b:
+        return None
+    return math.log2(a / b), (1 / a + 1 / b) / math.log(2) ** 2
+
+
+def forward_component(by_arm, label):
+    """Forward-strand component of a pair from its leading and lagging spectra.
+
+    On each arm the forward-strand log ratio is F + R (leading) or F - R
+    (lagging), where R is the replication-strand effect.  Their mean is F,
+    the part tied to the reference's forward strand itself: the only part
+    that a forward-strand 12-type test can see and folding throws away.
+    Returns (F, variance) or None.
+    """
+    lead = log2_ratio_var(by_arm[True], label)
+    lag = log2_ratio_var(by_arm[False], label)
+    if lead is None or lag is None:
+        return None
+    return (lead[0] + lag[0]) / 2, (lead[1] + lag[1]) / 4
+
+
 def homogeneity_chi2(pairs):
     """Pearson chi-squared for a 2 x K table given as [(a_k, b_k), ...]."""
     ta = sum(a for a, _ in pairs)
@@ -316,6 +349,8 @@ def main():
     arm_spectrum = {"leading": [0] * 12, "lagging": [0] * 12}   # forward-strand counts
     gene_spectrum = {k: [0] * 12 for k in ("+ gene", "- gene", "both strands", "intergenic")}
     clade_leading = defaultdict(lambda: [0] * 12)   # leading-strand orientation
+    clade_arm = defaultdict(lambda: {True: [0] * 12, False: [0] * 12})  # forward, by arm
+    cell_spectrum = defaultdict(lambda: [0] * 12)   # forward, by (leading, gene label)
     clade_of = [""] * n_nodes
     gene_label = {0: "intergenic", 1: "+ gene", 2: "- gene", 3: "both strands"}
 
@@ -355,9 +390,11 @@ def main():
                 arm_spectrum["leading" if leading else "lagging"][idx] += 1
                 oriented = idx if leading else MUT_INDEX[complement_type(mut_type)]
                 clade_leading[clade_of[i]][oriented] += 1
+                clade_arm[clade_of[i]][leading][idx] += 1
                 if gene_strands is not None:
                     st = gene_strands[pos] if pos < len(gene_strands) else 0
                     gene_spectrum[gene_label[st]][idx] += 1
+                    cell_spectrum[(leading, gene_label[st])][idx] += 1
         own_spectrum[i] = spec
 
     total_mutations = sum(global_spectrum)
@@ -576,6 +613,105 @@ def main():
                 df = len(counts) - 1
                 print(f"    {label}\t{chi:.1f}\t{df}\t{chi / df:.1f}\t{hi[0] - lo[0]:.3f}\t"
                       f"{lo[1]} {lo[0]:+.3f}\t{hi[1]} {hi[0]:+.3f}", file=out)
+        print(file=out)
+
+        # ---- fold test ------------------------------------------------
+        print("  FOLD TEST.  Each pair's forward-strand log ratio is split into", file=out)
+        print("    F  the part tied to the reference's forward strand itself:", file=out)
+        print("       the only part a 12-type test sees and --fold discards", file=out)
+        print("    R  the replication-strand part (positive: excess on leading)", file=out)
+        if gene_strands is not None:
+            print("    T  the transcription part (positive: excess on coding strand)", file=out)
+            print("  F, R and T are the mean, arm contrast and gene-strand contrast", file=out)
+            print("  of the four arm x gene-strand cells, so each cancels the others.", file=out)
+        else:
+            print("  F and R are the mean and half-difference of the two arms.", file=out)
+        print("  A constant F, however significant, is shared by both sides of", file=out)
+        print("  every split and changes nothing.  What --fold would lose is F", file=out)
+        print("  varying between clades, so the decision rests on its", file=out)
+        print("  clade-to-clade dispersion (chi2/df of per-clade F around their", file=out)
+        print("  weighted mean; per-clade F uses arms only, so arm imbalance", file=out)
+        print("  within a clade does not enter).", file=out)
+        fold_clades = [c for c, s in clade_leading.items()
+                       if sum(s) >= args.strand_min_clade]
+        hdr = "    pair\tF\tSE\tz\tR"
+        if gene_strands is not None:
+            hdr += "\tT"
+        hdr += "\tclades\tF chi2/df\tmost extreme clade (F, z)"
+        print(hdr, file=out)
+        flagged = []
+        worst = 0.0
+        worst_z = 0.0
+        for label in FOLDED_TYPES:
+            if gene_strands is not None:
+                cells = {(lead, g): log2_ratio_var(cell_spectrum[(lead, g)], label)
+                         for lead in (True, False) for g in ("+ gene", "- gene")}
+                if any(v is None for v in cells.values()):
+                    continue
+                f_val = sum(v[0] for v in cells.values()) / 4
+                f_var = sum(v[1] for v in cells.values()) / 16
+                r_val = (cells[(True, "+ gene")][0] + cells[(True, "- gene")][0]
+                         - cells[(False, "+ gene")][0] - cells[(False, "- gene")][0]) / 4
+                t_val = (cells[(True, "+ gene")][0] + cells[(False, "+ gene")][0]
+                         - cells[(True, "- gene")][0] - cells[(False, "- gene")][0]) / 4
+            else:
+                fc = forward_component({True: arm_spectrum["leading"],
+                                        False: arm_spectrum["lagging"]}, label)
+                if fc is None:
+                    continue
+                f_val, f_var = fc
+                lead = log2_ratio_var(arm_spectrum["leading"], label)
+                lag = log2_ratio_var(arm_spectrum["lagging"], label)
+                r_val = (lead[0] - lag[0]) / 2
+                t_val = None
+            se = math.sqrt(f_var)
+            per = [(c, forward_component(clade_arm[c], label)) for c in fold_clades]
+            per = [(c, v[0], v[1]) for c, v in per if v is not None]
+            if len(per) >= 2:
+                w = [1 / v for _, _, v in per]
+                mean_f = sum(f * wi for (_, f, _), wi in zip(per, w)) / sum(w)
+                disp = sum((f - mean_f) ** 2 / v for _, f, v in per) / (len(per) - 1)
+                # Each clade against the weighted mean of the others.
+                ext = None
+                for c, f, v in per:
+                    others = [(f2, v2) for c2, f2, v2 in per if c2 != c]
+                    wo = sum(1 / v2 for _, v2 in others)
+                    mo = sum(f2 / v2 for f2, v2 in others) / wo
+                    z = (f - mo) / math.sqrt(v + 1 / wo)
+                    if ext is None or abs(z) > abs(ext[2]):
+                        ext = (c or "(none)", f, z)
+                rng = f"{ext[0]} {ext[1]:+.3f}, {ext[2]:+.1f}"
+                worst = max(worst, disp)
+                worst_z = max(worst_z, abs(ext[2]))
+                if disp >= args.fold_max_dispersion or abs(ext[2]) >= args.fold_max_z:
+                    flagged.append((label, disp, ext))
+                disp_s = f"{disp:.2f}"
+            else:
+                disp_s, rng = "-", "-"
+            row = f"    {label}\t{f_val:+.3f}\t{se:.3f}\t{f_val / se:+.1f}\t{r_val:+.3f}"
+            if t_val is not None:
+                row += f"\t{t_val:+.3f}"
+            row += f"\t{len(per)}\t{disp_s}\t{rng}"
+            print(row, file=out)
+        if len(fold_clades) < 2:
+            print("  Verdict: too few clades with annotations to test; decide from", file=out)
+            print("  the tables above.", file=out)
+        elif flagged:
+            print("  Verdict: consider NOT folding.  F varies across clades for:", file=out)
+            for lab, d, ext in flagged:
+                print(f"    {lab}: chi2/df {d:.2f}, most extreme {ext[0]} "
+                      f"(F {ext[1]:+.3f}, z {ext[2]:+.1f})", file=out)
+            print(f"  (limits: --fold_max_dispersion {args.fold_max_dispersion}, "
+                  f"--fold_max_z {args.fold_max_z}).", file=out)
+            print("  A forward-strand effect that differs between clades is unusual", file=out)
+            print("  for a double-stranded genome: check that clade's reference and", file=out)
+            print("  alignment for an artifact before relying on it.", file=out)
+        else:
+            print(f"  Verdict: fold.  No pair's F varies across clades: largest", file=out)
+            print(f"  chi2/df {worst:.2f} (limit {args.fold_max_dispersion}), largest single-clade "
+                  f"|z| {worst_z:.1f} (limit {args.fold_max_z}).", file=out)
+            print("  Recurrent sites inflate both, so chi2/df up to ~2 and |z| up to", file=out)
+            print("  ~4 are within noise.", file=out)
         print(file=out)
         print("  Reading this:", file=out)
         print("  * A pair whose ratio flips sign between the LEADING and LAGGING arms", file=out)
