@@ -18,15 +18,20 @@ Reports:
     minimum --min_mutations needed to keep expected chi-squared cell counts
     at or above 5 (informs --min_mutations)
   * the mutations:tips ratio distribution (informs qc/prune_mutation_sample_ratio.py)
+  * with --reference or --terminus: strand asymmetry by replication arm, by
+    gene strand (with --annotation), and its spread across annotated clades
+    (informs --fold; see the STRAND ASYMMETRY section's notes)
 
 Nothing is modified; the tree is read only.
 
 Usage:
     profile_tree.py --input_tree tree.pb.gz
     profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
+    profile_tree.py --input_tree tree.pb.gz --reference ref.fa --annotation genes.gff3
 """
 
 import argparse
+import gzip
 import math
 import sys
 from collections import Counter, defaultdict
@@ -56,6 +61,24 @@ def parse_args():
                         help="Comma-separated --max_branch_length values to evaluate")
     parser.add_argument("--top_branches", type=int, default=20,
                         help="Number of longest branches to list")
+    parser.add_argument("--reference", type=str, default=None,
+                        help="Reference FASTA in the tree's coordinates, optionally gzipped.  Enables the "
+                        "STRAND ASYMMETRY section; the origin and terminus of "
+                        "replication are estimated from cumulative GC skew unless "
+                        "--origin/--terminus are given")
+    parser.add_argument("--origin", type=int, default=None,
+                        help="Replication origin position (1-based).  Default: the "
+                        "minimum of cumulative G-C skew with --reference, else 1")
+    parser.add_argument("--terminus", type=int, default=None,
+                        help="Replication terminus position (1-based).  Default: the "
+                        "maximum of cumulative G-C skew; required for the STRAND "
+                        "ASYMMETRY section when --reference is not given")
+    parser.add_argument("--annotation", type=str, default=None,
+                        help="GFF3 annotation, optionally gzipped; adds a gene-strand breakdown to the "
+                        "STRAND ASYMMETRY section (gene and pseudogene features)")
+    parser.add_argument("--strand_min_clade", type=int, default=25000,
+                        help="Smallest clade, in mutations, listed in the per-clade "
+                        "strand asymmetry table")
     return parser.parse_args()
 
 
@@ -145,6 +168,115 @@ def fold(mut_type):
     return b + "|" + a
 
 
+def open_text(path):
+    """Open a plain or gzipped text file."""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt")
+    return open(path)
+
+
+def read_fasta(path):
+    """Concatenated, upper-cased sequence of every record in a FASTA file."""
+    parts = []
+    with open_text(path) as fh:
+        for line in fh:
+            if not line.startswith(">"):
+                parts.append(line.strip())
+    return "".join(parts).upper()
+
+
+def gc_skew_extremes(seq):
+    """(argmin, argmax) of cumulative G-C count, as 1-based positions.
+
+    In most bacteria the leading strand is G-rich, so walking the forward
+    strand the cumulative G-C count falls to its minimum at the origin and
+    rises to its maximum at the terminus.
+    """
+    c = 0
+    lo, lo_pos, hi, hi_pos = 0, 1, 0, 1
+    for i, b in enumerate(seq, 1):
+        if b == "G":
+            c += 1
+        elif b == "C":
+            c -= 1
+        if c < lo:
+            lo, lo_pos = c, i
+        if c > hi:
+            hi, hi_pos = c, i
+    return lo_pos, hi_pos
+
+
+def forward_is_leading(pos, origin, terminus):
+    """True if the forward strand is the leading strand at pos.
+
+    That is the arm replicated travelling forward from the origin to the
+    terminus, wrapping around the end of a circular genome when the origin
+    lies past the terminus.
+    """
+    if origin <= terminus:
+        return origin <= pos < terminus
+    return pos >= origin or pos < terminus
+
+
+def read_gene_strands(path):
+    """bytearray indexed by 1-based position: 0 none, 1 +, 2 -, 3 both."""
+    spans = []
+    with open_text(path) as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 9 or f[2] not in ("gene", "pseudogene") or f[6] not in "+-":
+                continue
+            spans.append((int(f[3]), int(f[4]), 1 if f[6] == "+" else 2))
+    strands = bytearray((max(e for _, e, _ in spans) if spans else 0) + 2)
+    for start, end, bit in spans:
+        for p in range(start, end + 1):
+            strands[p] |= bit
+    return strands
+
+
+def complement_type(mut_type):
+    return COMPLEMENT[mut_type[0]] + COMPLEMENT[mut_type[1]]
+
+
+def pair_rows(spectrum):
+    """(label, a, b, log2(a/b), SE) for each folded pair of a 12-count list."""
+    rows = []
+    for label in FOLDED_TYPES:
+        x, y = label.split("|")
+        a, b = spectrum[MUT_INDEX[x]], spectrum[MUT_INDEX[y]]
+        if a and b:
+            lr = math.log2(a / b)
+            se = math.sqrt(1 / a + 1 / b) / math.log(2)
+        else:
+            lr = se = float("nan")
+        rows.append((label, a, b, lr, se))
+    return rows
+
+
+def print_pair_table(title, spectrum, out):
+    print(f"  {title}  (n={sum(spectrum)})", file=out)
+    print("    pair\tfirst\tsecond\tlog2(first/second)\tSE", file=out)
+    for label, a, b, lr, se in pair_rows(spectrum):
+        print(f"    {label}\t{a}\t{b}\t{lr:+.3f}\t{se:.3f}", file=out)
+
+
+def homogeneity_chi2(pairs):
+    """Pearson chi-squared for a 2 x K table given as [(a_k, b_k), ...]."""
+    ta = sum(a for a, _ in pairs)
+    tb = sum(b for _, b in pairs)
+    n = ta + tb
+    if not ta or not tb:
+        return 0.0
+    chi = 0.0
+    for a, b in pairs:
+        m = a + b
+        ea, eb = m * ta / n, m * tb / n
+        chi += (a - ea) ** 2 / ea + (b - eb) ** 2 / eb
+    return chi
+
+
 def main():
     args = parse_args()
     out = sys.stdout
@@ -162,6 +294,31 @@ def main():
     n_nodes = len(nodes)
     print(f"Indexed {n_nodes} nodes", file=sys.stderr)
 
+    # ---- strand-asymmetry setup -------------------------------------------
+    do_strand = args.reference is not None or args.terminus is not None
+    origin, terminus, skew_note = args.origin, args.terminus, ""
+    gene_strands = None
+    if do_strand:
+        if args.reference:
+            seq = read_fasta(args.reference)
+            skew_min, skew_max = gc_skew_extremes(seq)
+            if origin is None:
+                origin = skew_min
+                skew_note += " origin from GC skew;"
+            if terminus is None:
+                terminus = skew_max
+                skew_note += " terminus from GC skew;"
+            del seq
+        if origin is None:
+            origin = 1
+        if args.annotation:
+            gene_strands = read_gene_strands(args.annotation)
+    arm_spectrum = {"leading": [0] * 12, "lagging": [0] * 12}   # forward-strand counts
+    gene_spectrum = {k: [0] * 12 for k in ("+ gene", "- gene", "both strands", "intergenic")}
+    clade_leading = defaultdict(lambda: [0] * 12)   # leading-strand orientation
+    clade_of = [""] * n_nodes
+    gene_label = {0: "intergenic", 1: "+ gene", 2: "- gene", 3: "both strands"}
+
     # ---- per-branch pass -------------------------------------------------
     own_count = [0] * n_nodes          # usable SNVs on this branch
     own_spectrum = [None] * n_nodes    # list of 12 counts, lazily created
@@ -177,6 +334,9 @@ def main():
         if not children[i]:
             n_leaves += 1
         spec = None
+        if do_strand:
+            clade_of[i] = next((a for a in node.annotations if a), "") \
+                or (clade_of[parent[i]] if parent[i] >= 0 else "")
         for mutation in muts:
             parsed = parse_mutation(mutation)
             if parsed is None:
@@ -190,6 +350,14 @@ def main():
             own_count[i] += 1
             global_spectrum[idx] += 1
             site_counts[pos] += 1
+            if do_strand:
+                leading = forward_is_leading(pos, origin, terminus)
+                arm_spectrum["leading" if leading else "lagging"][idx] += 1
+                oriented = idx if leading else MUT_INDEX[complement_type(mut_type)]
+                clade_leading[clade_of[i]][oriented] += 1
+                if gene_strands is not None:
+                    st = gene_strands[pos] if pos < len(gene_strands) else 0
+                    gene_spectrum[gene_label[st]][idx] += 1
         own_spectrum[i] = spec
 
     total_mutations = sum(global_spectrum)
@@ -358,6 +526,70 @@ def main():
     print("  and are the main reason --min_chi must exceed any nominal", file=out)
     print("  significance cutoff.  qc/mask_site_splits.py targets these.", file=out)
     print(file=out)
+
+    if do_strand:
+        print("=" * 72, file=out)
+        print("STRAND ASYMMETRY  (informs --fold)", file=out)
+        print("=" * 72, file=out)
+        print(f"  origin {origin}, terminus {terminus}"
+              + (f"  ({skew_note.strip(' ;')})" if skew_note else ""), file=out)
+        print("  Each pair's log2 ratio compares a mutation type with its", file=out)
+        print("  complement, counted on the forward strand.  0 means symmetric.", file=out)
+        print(file=out)
+        print_pair_table("forward strand is LEADING (origin -> terminus)",
+                         arm_spectrum["leading"], out)
+        print_pair_table("forward strand is LAGGING",
+                         arm_spectrum["lagging"], out)
+        print(file=out)
+        if gene_strands is not None:
+            for key in ("+ gene", "- gene", "intergenic"):
+                print_pair_table(f"forward strand, {key}", gene_spectrum[key], out)
+            print(f"  ({sum(gene_spectrum['both strands'])} mutations in genes on both "
+                  "strands left out)", file=out)
+            print(file=out)
+
+        clades = [(c, s) for c, s in clade_leading.items()
+                  if sum(s) >= args.strand_min_clade]
+        clades.sort(key=lambda cs: -sum(cs[1]))
+        print("  Per clade, leading-strand orientation (lagging-arm mutations", file=out)
+        print("  complemented), log2(first/second) for each pair.  Mutations are", file=out)
+        print("  assigned to the nearest annotated ancestor, so a parent clade's", file=out)
+        print("  row excludes its annotated subclades; (none) is mutations above", file=out)
+        print(f"  every annotation.  Clades with >= {args.strand_min_clade} mutations:", file=out)
+        print("    clade\tmutations\t" + "\t".join(FOLDED_TYPES), file=out)
+        for c, s in clades:
+            vals = [f"{lr:+.3f}" for _, _, _, lr, _ in pair_rows(s)]
+            print(f"    {c or '(none)'}\t{sum(s)}\t" + "\t".join(vals), file=out)
+        if len(clades) >= 2:
+            print("  Heterogeneity across those clades (2 x K chi-squared on each", file=out)
+            print("  pair's leading-oriented counts; chi2/df near 1 means the clades", file=out)
+            print("  agree within sampling noise; spread = max - min log2 ratio, which", file=out)
+            print("  includes that noise for the smaller clades):", file=out)
+            print("    pair\tchi2\tdf\tchi2/df\tspread\tlowest\thighest", file=out)
+            for j, label in enumerate(FOLDED_TYPES):
+                x, y = label.split("|")
+                counts = [(s[MUT_INDEX[x]], s[MUT_INDEX[y]]) for _, s in clades]
+                lrs = [(pair_rows(s)[j][3], c or "(none)") for c, s in clades]
+                lrs = [t for t in lrs if not math.isnan(t[0])]
+                chi = homogeneity_chi2(counts)
+                lo, hi = min(lrs), max(lrs)
+                df = len(counts) - 1
+                print(f"    {label}\t{chi:.1f}\t{df}\t{chi / df:.1f}\t{hi[0] - lo[0]:.3f}\t"
+                      f"{lo[1]} {lo[0]:+.3f}\t{hi[1]} {hi[0]:+.3f}", file=out)
+        print(file=out)
+        print("  Reading this:", file=out)
+        print("  * A pair whose ratio flips sign between the LEADING and LAGGING arms", file=out)
+        print("    (or between + and - genes) marks a strand-asymmetric process", file=out)
+        print("    that cancels in the GLOBAL SPECTRUM.  Near-equal global pairs do", file=out)
+        print("    not show that no such process exists.", file=out)
+        print("  * spectrumSplits.py counts forward-strand types, so the same", file=out)
+        print("    cancellation happens inside every clade whose mutations span both", file=out)
+        print("    arms.  A clade-to-clade difference in this asymmetry is invisible", file=out)
+        print("    with or without --fold; unfolding adds degrees of freedom that", file=out)
+        print("    carry mostly noise and arm-imbalance artifacts.", file=out)
+        print("  * Heterogeneity chi-squared is inflated by recurrent sites like any", file=out)
+        print("    statistic on this tree; read the spread as the effect size.", file=out)
+        print(file=out)
 
     if args.node_table:
         with open(args.node_table, "w") as fh:

@@ -33,10 +33,11 @@
 #       --mask_product_pattern '(?i)(transposase|integrase|insertion element|^maturase$)' \
 #       --mask_pad 150 --mask_matutils matUtils_mask.txt
 #
-# On a 129k-sample MTBC tree, nine of the twenty most recurrent surviving sites
+# On a 129k-sample MTBC tree, after masking round 1 (tuning/README.md step 3
+# lists the rounds), nine of the twenty most recurrent surviving sites
 # sat 1-56 bp OUTSIDE a feature, seven of them downstream, where a promoter
 # flank reaches nothing.  100 bp of symmetric pad covered all nine.
-# A later round widened it to 150 for the Rv2019 cluster (see below).
+# Round 3 widened it to 150 for the Rv2019 cluster (see below).
 #
 # The two lists can go in one mask, but they want different widening, so
 # resolve them separately and concatenate the BED files:
@@ -256,7 +257,7 @@ Rv0036c
 mapB
 
 # ---------------------------------------------------------------------------
-# SECOND ROUND: what survived the full mask on a 129k-sample MTBC tree
+# ROUND 3: what survived round 2's mask on a 129k-sample MTBC tree
 #
 # After masking both lists (469 kb union), the worst site fell from 6,102
 # events to 318 and the top 20 from 1.24% of all mutations to 0.16%.  These
@@ -291,7 +292,7 @@ mapB
 # 12 bp outside the gene, immediately next to Rv3798, which IS masked as a
 # mobile element.  Masking a locus pushes its hotspot into the neighbour --
 # the same non-convergence seen with per-site masking, one scale up.
-# ENABLED in round 2.  The trigger was not chi-squared inflation -- the
+# ENABLED in round 3.  The trigger was not chi-squared inflation -- the
 # permutation null had already shown the sites null (max 62.7) only 2.6x the
 # types null, immaterial against an observed 18,283.  It was interpretation:
 # Rv2082 holds 11 of the 48 mutations defining node_6, a tier A clade, inside

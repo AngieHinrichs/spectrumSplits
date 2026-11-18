@@ -400,23 +400,40 @@ matUtils mask -i tree.pruned.pb.gz -m matUtils_mask.txt \
 Expect this to take a while: `matUtils mask` traverses the tree once per masked
 position.
 
-*Worked example.* The first pass resolved 41 intervals over 81 kb from the
-resistance list; the PE/PPE pattern gave 151 intervals over 266 kb — 348 kb in
-all, 7.9% of the 4,411,532 bp reference. The alignment list and `--mask_pad`
-came later, after the first re-profile showed what had survived, which is the
-normal way round: you cannot write that list until you have seen which sites
-recur. The same goes for the pad, which started at 100 and was widened to 150
-when the survivors showed 100 falling short, and for `maturase` in the product
-pattern, added in the final round for a recurrent site no other pattern
-reached (step 4 has both). With the final list, pattern and pad, the mask
-covers 504 kb, 11.4% of the reference.
+#### Masking comes in rounds
+
+The commands above build the finished mask, but nobody could have written it
+in one go. Masking is iterative: build a mask, apply it, re-profile (step 4),
+see which sites still recur most, and add what they point to. Each
+build-apply-re-profile cycle is a *round*. The MTBC tree took three:
+
+| round | adds | mask | prompted by |
+| --- | --- | --- | --- |
+| 1 | `tb_resistance_genes.txt` with a 200 bp upstream flank, and the `^(PE\|PPE\|esx)` name pattern | 348 kb, 7.9% | Prior knowledge: loci under selection, and the best-known paralogous families |
+| 2 | The first section of `tb_alignment_loci.txt` (mobile elements, prophages, repeats), the transposase / integrase / insertion element product pattern, and `--mask_pad 100` | 469 kb | Round 1's surviving top sites, many of them just outside a feature |
+| 3 | The round 3 section of `tb_alignment_loci.txt`, `^maturase$`, and `--mask_pad 150` | 504 kb, 11.4% | Round 2's surviving top sites: synonymous-only hotspots, clusters such as `Rv2019`'s just past the 100 bp pad, the `Rv0071` maturase site, and `Rv2082` under a clade-defining branch |
+
+The commands above are round 3, and following this walkthrough you can run
+them directly; you don't need to repeat the history. The earlier rounds are
+here because the worked examples compare against them, and because on a
+different tree you will need rounds of your own: you can't write an artifact
+list until you have seen which sites recur. Step 4's "Three rounds, and when
+to stop" has what each round bought and how to tell when you are done. After
+round 3 the BCG samples were also pruned (step 13); that is a prune, not a
+mask round.
+
+*Worked example.* In round 1, the resistance list resolved to 41 intervals
+over 81 kb and the PE/PPE pattern to 151 intervals over 266 kb, 348 kb of the
+4,411,532 bp reference together. Round 3's commands, as written above, cover
+504 kb.
 
 Bases removed is not the number that matters, though; the next step has it.
 
 ### 4. Re-profile, and check what the mask bought
 
 ```
-profile_tree.py --input_tree tree.pruned.masked.pb.gz > profile_masked.txt
+profile_tree.py --input_tree tree.pruned.masked.pb.gz \
+    --reference NC_012345.1.fna --annotation NC_012345.1.gff3.gz > profile_masked.txt
 
 annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
     --from_profile profile_masked.txt --output surviving_sites.tsv \
@@ -426,20 +443,25 @@ annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
 `--near_mask` checks each surviving site against the BED files the mask was
 built from; "The surviving sites are mostly flank" below says what it is for.
 
-*Worked example.* Judge the mask by recurrence, not by total count:
+*Worked example.* Judge the mask by recurrence, not by total count. "Usable
+SNVs" is every A/C/G/T substitution on every branch, so a site that mutated
+on 200 branches counts 200 times; it is the tree's parsimony score. The
+round 3 column is what step 3's commands produce:
 
-| | raw | pruned + masked |
-| --- | --- | --- |
-| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) |
-| distinct mutated sites | 1,988,164 | 1,865,580 |
-| mutations per site (mean) | 1.634 | 1.593 |
-| worst single site | 6,102 | 1,989 |
-| top 20 sites' share | 1.24% | 0.50% |
+| | raw | round 1 | round 3 |
+| --- | --- | --- | --- |
+| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) | 2,846,170 (−12.4%) |
+| distinct mutated sites | 1,988,164 | 1,865,580 | 1,807,975 |
+| mutations per site (mean) | 1.634 | 1.593 | 1.574 |
+| worst single site | 6,102 | 1,989 | 225 |
+| top 20 sites' share | 1.24% | 0.50% | 0.12% |
 
-Masking 7.9% of the genome removed 8.5% of the mutations, so by total count it
-looks like it bought nothing. It bought a great deal: 13 of the raw top 20
+Round 1 masked 7.9% of the genome and removed 8.5% of the mutations, so by
+total count it looks like it bought nothing. It bought a great deal: 13 of the raw top 20
 sites are gone, including all seven largest, and the worst hotspot fell by
-two thirds. Those are the sites that break the independence assumption.
+two thirds. Those are the sites that break the independence assumption. By
+round 3, 11.4% of the genome masked has removed 12.4% of the mutations and
+96% of the worst hotspot.
 
 The reason the total barely moved is worth knowing, because it is easy to
 misread. Only 122,584 of the ~348,000 masked positions had ever mutated — 35%,
@@ -450,8 +472,7 @@ above average in how often those positions recurred.
 
 #### Three rounds, and when to stop
 
-Masking is iterative, because each round's surviving top sites tell you what
-the gene list missed. On the MTBC tree it took three, and the returns fell off
+Step 3 lists what each round added. On the MTBC tree the returns fell off
 sharply:
 
 | | raw | round 1 | round 2 | round 3 |
@@ -462,6 +483,12 @@ sharply:
 | `CT\|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 |
 | `TC\|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 |
 
+These are the figures from the original runs. The round 3 column counts
+1,014 fewer mutations than step 3's commands give, because that run used an
+unanchored `maturase`, which also masked `Rv0693` (see below); 2,846,170
+above is the anchored pattern's figure. Later steps' worked examples come
+from the original round 3 tree.
+
 Round 2 was the one that mattered: the worst hotspot fell 84%, for 2.9% of the
 mutations. Round 3 cost another 1.4% to take it 29% further. Note the last two
 rows, which are the real test of whether a mask is removing noise or reshaping
@@ -469,13 +496,16 @@ the data — the folded spectrum moves by ~0.001 per round and the direction
 never reverses. A mask that shifted a class by a percent would be deleting
 signal, not artifact.
 
-Round 3 was not justified by recurrence at all. The permutation null on the
-round-2 tree had already shown recurrence immaterial: the sites null peaked at
-62.7 against an observed 18,283. It was justified by *interpretation* — `Rv2082`
-held 11 of the 48 mutations defining `node_6`, a tier A clade, inside 917 bp,
-and no amount of null calibration addresses a clade whose defining branch sits
-on top of a suspect locus. That is a separate reason to mask, it arrives only
-once you have splits to look at, and it is worth a round on its own.
+The decision to run round 3 at all was not made on recurrence. The
+permutation null on the round 2 tree had already shown recurrence immaterial:
+the sites null peaked at 62.7 against an observed 18,283. It was made on
+*interpretation* — `Rv2082` held 11 of the 48 mutations defining `node_6`, a
+tier A clade, inside 917 bp, and no amount of null calibration addresses a
+clade whose defining branch sits on top of a suspect locus. That is a separate
+reason to mask, it arrives only once you have splits to look at, and it is
+worth a round on its own. Once a round was happening anyway, the cheap fixes
+round 2's survivors pointed to went into it too: the wider pad and the
+maturase site, below.
 
 #### The surviving sites are mostly flank, which is a pad problem
 
@@ -490,8 +520,10 @@ a `mask_interval` column naming the masked genes, for every site within
 interval, how many flank sites it has, how many mutations they carry, and how
 far it would have to widen to cover them.
 
-**Why the pad went from 100 to 150.** Run step 3 with `--mask_pad 100` and
-six of the top 20 surviving sites are flanks:
+**Why the pad went from 100 to 150.** Round 2's survivors showed `Rv2019`'s
+recurrence cluster sitting just past the 100 bp pad. To see the same thing on
+your own tree, run step 3 with round 3's list but `--mask_pad 100` and
+without `^maturase$`. Six of the top 20 surviving sites are then flanks:
 
 | masked interval | gene | sites | mutations | `mask_gap` |
 | --- | --- | --- | --- | --- |
@@ -512,14 +544,16 @@ Not every survivor of that run was a flank. The second largest, `79558` with
 "maturase". Maturases are typically encoded by mobile group II introns, the
 same class of element as the transposases the product pattern already
 caught, but no name or product pattern reached it, and the two maturase locus
-tags `tb_alignment_loci.txt` had guessed are not in NC_000962.3. So the final
-round added it to `--mask_product_pattern`, at a cost of 1.0 kb with the pad.
+tags `tb_alignment_loci.txt` had guessed are not in NC_000962.3. So round 3
+added it to `--mask_product_pattern`, at a cost of 1.0 kb with the pad.
 The pattern is anchored, `^maturase$`, because the product pattern matches
 anywhere in a product: a bare `maturase` also catches `Rv0693`,
 "mycofactocin radical SAM maturase MftC", an enzyme rather than a mobile
-element.
+element. The original round 3 run used the bare form and masked it: 1.5 kb
+with the pad, holding 1,014 mutations at 663 sites.
 
-At 150 the same check comes back with the flanks further out:
+On the round 3 tree, at 150, the same check comes back with the flanks
+further out:
 
 - Four sites at 2,266,583–2,266,624, 28 to 69 bp past the padded `Rv2019`
   interval (2,265,839–2,266,555; the gene itself is 2,265,989–2,266,405). The
@@ -554,12 +588,56 @@ profiles by sample membership, not by ID.
 
 ### 5. Decide whether to fold
 
-*Worked example.* The 12-type spectrum gives C>T 0.2538 against G>A 0.2521,
-C>A 0.0604 against G>T 0.0604, A>G 0.0794 against T>C 0.0788, and so on: every
-complementary pair agrees to within 1.2%. There is no strand-asymmetric
-process to preserve, so fold — the folded classes double every cell count and
-take the degrees of freedom from 11 to 5. If one pair disagreed two-fold,
-folding would average away a real asymmetry and should be skipped.
+Read this off `profile_masked.txt` from step 4. Its GLOBAL SPECTRUM section
+has the 12-type and folded spectra; the STRAND ASYMMETRY section, which
+`--reference` turns on, has what actually decides the question.
+
+The tempting check doesn't work. Comparing each type with its complement in
+the global spectrum (C>T against G>A, and so on) looks like a test for a
+strand-asymmetric process, but every count is taken on the reference's forward
+strand. That is the leading strand on one replication arm and the lagging
+strand on the other, and the template strand for about half the genes. A
+process tied to the leading or the transcribed strand pushes the forward-strand
+ratio one way on half the genome and the other way on the other half, so it
+cancels. Near-equal global pairs are what you'd see with or without one.
+
+*Worked example.* On the round 3 tree the global pairs agree closely: C>T
+0.2542 against G>A 0.2537, C>A 0.0601 against G>T 0.0604, and every other
+pair within 2%. The STRAND ASYMMETRY section shows what that hides. Its
+numbers are log2(first/second), where 0 means symmetric:
+
+| | C>T / G>A | C>G / G>C | T>G / A>C | T>C / A>G |
+| --- | --- | --- | --- | --- |
+| forward strand leading | +0.559 | +0.349 | +0.283 | −0.095 |
+| forward strand lagging | −0.485 | −0.313 | −0.242 | +0.080 |
+| + strand genes | +0.132 | +0.032 | −0.194 | −0.162 |
+| − strand genes | −0.131 | −0.033 | +0.203 | +0.155 |
+| intergenic | +0.023 | +0.020 | +0.020 | +0.015 |
+
+The terminus was estimated from GC skew at 2.04 Mb. On the leading strand,
+C>T outnumbers G>A by about 47% (2^0.56). In genes, the coding strand carries a
+smaller excess of C>T and deficits of T>C and T>G. Both effects flip sign
+cleanly and cancel genome-wide. They also vary by clade: in the leading-strand
+orientation, C>T/G>A is +0.34 to +0.39 in the lineage 1 sublineages and
+mostly +0.5 to +0.67 in lineages 2, 3 and 4. Its heterogeneity chi2/df is 55,
+far above the 1 that sampling noise would give.
+
+So fold. But the reason is not that the genome is free of strand-asymmetric
+processes. spectrumSplits.py counts forward-strand types, so a clade with a
+stronger leading-strand C>T excess gains forward C>T on one arm and forward G>A
+on the other, and the two cancel inside the clade just as they do globally.
+That difference is invisible with or without `--fold`. The six degrees of
+freedom that folding removes carry mostly noise and artifacts from clades whose
+mutations happen to sit more on one arm. Folding doubles every cell count and
+takes the degrees of freedom from 11 to 5.
+
+The case for not folding is an asymmetry tied to the reference's forward
+strand itself. It would show as a pair with the same sign on the leading and
+lagging arms, and on + and − strand genes. A double-stranded genome's biology
+doesn't produce that, but a single-stranded genome would, and so could an
+artifact of the reference or the alignment. Only then does the 12-type test
+see something the folded one can't. Here, the one pair with the same sign on
+both arms is T>A/A>T, at +0.02 ± 0.02.
 
 Settle this now: it changes both the floor in step 6 and the null in step 7.
 
@@ -1168,6 +1246,7 @@ Used in [step 1](#1-profile-the-raw-tree) and again in
 ```
 profile_tree.py --input_tree tree.pb.gz
 profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
+profile_tree.py --input_tree tree.pb.gz --reference ref.fna --annotation genes.gff3.gz
 ```
 
 Reports:
@@ -1175,11 +1254,21 @@ Reports:
 | Section | What to do with it |
 | --- | --- |
 | Tree size, total usable SNVs | Sets the ceiling on how much splitting is possible |
-| Global 12-type and strand-folded 6-type spectrum | Shows whether folding to 6 categories is worth it, and gives the rarest-class floor on `--min_mutations` (5 / p_rarest, so expected cell counts stay at or above 5) |
+| Global 12-type and strand-folded 6-type spectrum | Gives the rarest-class floor on `--min_mutations` (5 / p_rarest, so expected cell counts stay at or above 5). Don't use it to decide whether to fold: strand asymmetries cancel in it (see [step 5](#5-decide-whether-to-fold)) |
 | Per-branch mutation counts, and what each `--max_branch_length` cap would exclude | Pick a cap only if there is a clear outlier tail; on a diverged, sparsely sampled tree long branches are usually real |
 | Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
 | Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
 | Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
+| Strand asymmetry (with `--reference`, or `--terminus`) | Complementary-pair log2 ratios on the leading and lagging arms, in + and − strand genes (with `--annotation`), and per annotated clade, with a heterogeneity chi-squared for each pair. This is what step 5 reads |
+
+The strand asymmetry section needs the origin and terminus of replication.
+`--reference` estimates them from cumulative GC skew: the minimum is the origin
+and the maximum the terminus, which assumes the leading strand is G-rich, as
+it is in most bacteria. Without a reference, give `--terminus`; `--origin`
+defaults to 1. Either can override the estimate. In the per-clade table each
+mutation goes to its nearest annotated ancestor, so a parent clade's row
+leaves out its annotated subclades. Clades with fewer than
+`--strand_min_clade` mutations (default 25,000) are not listed.
 
 `--node_table` writes one row per node (branch and subtree counts, tips,
 mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.
