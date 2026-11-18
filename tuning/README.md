@@ -1124,26 +1124,54 @@ matUtils extract -i tree.pruned.masked.pb.gz -I node_N -u node_N_samples.txt
 grep -Fwf node_N_samples.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
 ```
 
-*Worked example.* The three largest splits on the tree above each turned out
-to be a recognised, deeply diverged group, and the tip counts matched the
-split sizes exactly:
+`matUtils extract -I` lists every sample below the node, including those in
+splits nested inside it. `spectra.tsv`'s `Number_Tips` counts only what is
+left after nested splits are carved out, so the two differ whenever a split
+has splits below it.
 
-| split | clades | tips | share |
-|---|---|---|---|
-| `node_5045` | lineage 1 and sublineages | 11,468 | 8.9% |
-| `node_14473` | lineage 2.2.1 (Beijing) | 35,044 | 27.1% |
-| `node_6` | La1/La2/La3, the animal-adapted members | 8,729 | 6.8% |
+*Worked example.* Every split carrying a repair-gene result in
+`branch_hits.py` turned out to be a recognised lineage, and two pairs of
+them are nested (checked with `comm -12` on the sorted sample files):
 
-Two things follow, in opposite directions.
+| split | clades | samples | `Number_Tips` | hit on its branch |
+|---|---|---|---|---|
+| `node_14051` | all of lineage 2: 2.1, 2.2, 2.2.1, 2.2.2 | 38,960 | 2,586 | `polA` T186P, R188G |
+| `node_14377`, inside `node_14051` | lineage 2.2.1 (Beijing) | 35,044 | 1,966 | `mutT4` R48G |
+| `node_12343` | lineage 1.2.2 | 2,132 | 444 | `recA` R540Q |
+| `node_13078`, inside `node_12343` | lineage 1.2.2.2 | 565 | 565 | `polA` G795D |
+| `node_3821` | lineage 6, with 27 lineage 9 samples | 993 | 209 | `uvrA`, `recA`, `nudC`, `mutY`: one each in 192 mutations |
 
-The repair-gene reading collapses for `node_14473`. One of only five
-mutations on its defining branch is `mutT4` R48G, a 12x enrichment — and it
-is lineage 2.2.1, so that is the documented Beijing `mutT4` polymorphism. The
-variant and the spectrum are both properties of lineage 2, and a single
-branch cannot separate them. Any deep branch carries hundreds of
-lineage-defining mutations, so co-occurrence is guaranteed. What would be
-evidence is independent recurrence: the same gene disrupted on an unrelated
-branch with the same shift.
+Every one of those hits is lineage-defining, so in every case the lineage is
+the explanation to beat.
+
+The repair-gene reading collapses for `node_14377`. One of only four
+mutations on its defining branch is `mutT4` R48G, and it is lineage 2.2.1,
+so that is the documented Beijing `mutT4` polymorphism. The variant and the
+spectrum are both properties of lineage 2.2.1, and a single branch cannot
+separate them. Any deep branch carries hundreds of lineage-defining
+mutations, so co-occurrence is guaranteed. What would be evidence is
+independent recurrence: the same gene disrupted on an unrelated branch with
+the same shift. `branch_hits.py` found none that beats chance.
+
+The `polA` pair, the one result `branch_hits.py` could not put down to
+chance, sits on the branch that defines all of lineage 2, so about 39,000
+genomes share it. That cuts both ways. A misalignment would not normally
+reach every genome in a lineage, but a systematic one would: if lineage 2
+carries an indel or rearrangement near `polA` relative to the reference,
+every lineage 2 sample mismaps the same way, and the result is exactly this,
+two changes 6 bp apart on one deep branch. So the first check is the reads
+of a few lineage 2 samples across 1,831,200-1,831,300, or a known lineage 2
+indel nearby. And if the pair is real, it is fixed across lineage 2 along
+with everything else that defines the lineage, so this branch cannot
+separate it from lineage either.
+
+`node_3821` is *M. africanum* lineage 6, with lineage 9 inside it. A
+192-mutation defining branch is what a deeply diverged lineage looks like,
+and its four protein-changing hits against 2.2 expected are well within
+chance. Its spectrum is the lineage's spectrum.
+
+The rest of this example is from the round 2 tree and has not yet been
+redone on round 3.
 
 The quality reading collapses too, more thoroughly than step 9 could show.
 The clade that broke the divergence correlation — high mutations per tip, but
@@ -1166,7 +1194,7 @@ are not stable across trees" above). The sample set is the only durable
 handle:
 
 ```
-matUtils extract -i tree.pruned.masked.pb.gz -I node_5045 -u split_samples.txt
+matUtils extract -i tree.pruned.masked.pb.gz -I node_14051 -u split_samples.txt
 ```
 
 `-I` selects by internal node ID, which is what `splits.log` reports. `-c` is
