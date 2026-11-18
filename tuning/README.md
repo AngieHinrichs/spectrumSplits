@@ -771,9 +771,23 @@ permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
 
 permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
     --min_mutations 10000 --max_branch_length 250 --mode sites \
-    --replicates 20 --include_observed --seed 1 --nthreads 8 \
-    --output null_sites.tsv
+    --max_splits 25 --min_chi 1 --replicates 20 --include_observed \
+    --seed 1 --nthreads 8 --output null_sites_cascade.tsv
 ```
+
+The `types` run scores one split per replicate, over the whole tree. The
+`sites` run follows the greedy cascade 25 splits deep, so the same run also
+measures the null for the deeper splits ("The threshold should scale with
+subtree size" below). Its first iteration is the whole-tree pass. Each
+replicate's permutation depends only on `--seed` and the replicate number,
+so those rows are exactly what a `--max_splits 1` run would give, and a
+separate one adds nothing. The printed summary reports each replicate's
+maximum. That is in practice its first split: on the MTBC tree no replicate
+had a deeper split that scored higher. So the summary is the whole-tree
+calibration. To see the whole-tree rows alone, run
+`awk -F'\t' '$2 == 1' null_sites_cascade.tsv`. In this run `--min_chi 1` only
+stops the search: a higher value would cut the null off at exactly the depth
+being measured.
 
 Use `--output` for the per-split TSV; the summary goes to stdout, so
 redirecting stdout saves the summary and silently discards the table. Pass the
@@ -814,30 +828,16 @@ recurrence table looks tidy.
 and the observed maximum is still 146x that. When the headroom is this large
 the exact choice does not matter; when it is not, prefer the larger margin.
 
-One caveat on transferring this number: it was calibrated with the default
-`--max_splits 1`, so it is the threshold the *first* split must beat. Deeper
-splits in the greedy cascade are scored on smaller subtrees, where both the
-observed chi-squared and the null are smaller. Re-run with `--max_splits 25`
-before trusting one threshold to govern the whole cascade.
+One caveat on transferring this number: it is the threshold the *first*
+split must beat. Deeper splits in the greedy cascade are scored on smaller
+subtrees, where both the observed chi-squared and the null are smaller.
+Check the cascade before trusting one threshold to govern every split.
 
 #### The threshold should scale with subtree size
 
-That caveat turns out to matter more than a caveat usually does, so do this
-run rather than skipping it. Score the cascade null with a permissive
-threshold, since here `--min_chi` exists only to stop the search and setting
-it high would truncate the null at exactly the depth being measured:
-
-```
-permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_mutations 10000 --max_branch_length 250 --mode sites \
-    --max_splits 25 --min_chi 1 --replicates 20 --include_observed \
-    --seed 1 --nthreads 8 --output null_sites_cascade.tsv
-```
-
-The printed summary will not answer the question: it reports the maximum
-per replicate, which with `--max_splits 25` is still each replicate's first
-split, so it comes back close to the `--max_splits 1` run. The answer is in
-the TSV. Group the null splits by the size of the subtree each was carved
+That caveat turns out to matter more than a caveat usually does. The printed
+summary can't answer it, because it reports only each replicate's maximum,
+which is its first split. The answer is in the cascade TSV. Group the null splits by the size of the subtree each was carved
 from (`mutations_below + mutations_above`) and compare each observed split
 against nulls from subtrees within, say, 2x its size.
 
@@ -898,7 +898,7 @@ marginal. A run that instead stopped at 18283, 4100, 1900 with nothing under
 Note that `--min_chi` governs every split, while step 7 calibrated it against
 the first one. The deeper splits in a list like that are scored on smaller
 subtrees, so a threshold that is strict for the root can be loose by the
-fourth split. The `--max_splits 25` null run settles that, and on this tree
+fourth split. The cascade null from step 7 settles that, and on this tree
 the answer was no: see "The threshold should scale with subtree size" above.
 A run that stops with its last split a fraction above the threshold has not
 saturated — it has hit the bar, and splits below it are going unexamined.
@@ -1266,7 +1266,7 @@ all that carries across.
 
 ```
 split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
-    --null null_sites_nobcg.tsv \
+    --null null_sites_cascade_nobcg.tsv \
     --bootstrap_replicates bootstrap_by_replicate_nobcg.tsv \
     --clade_samples split_clade_samples_nobcg.tsv \
     --output split_confidence_nobcg.tsv
@@ -1499,9 +1499,10 @@ runs the same search and the same statistic, and reports the chi-squared values
 it still finds. Set `--min_chi` comfortably above the maximum.
 
 ```
-# headline calibration
+# whole-tree calibration and the cascade null, in one run
 permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-    --replicates 20 --mode sites --include_observed
+    --replicates 20 --mode sites --include_observed \
+    --max_splits 25 --min_chi 1
 ```
 
 Two null models:
@@ -1524,7 +1525,12 @@ Key options:
 - `--max_splits` defaults to `1`: one pass over the whole tree per replicate,
   which is exactly the quantity the first real split has to beat. Raise it to
   follow the greedy cascade into subtrees, where chi-squared is necessarily
-  smaller and not comparable to the first pass.
+  smaller and not comparable to the first pass. A raised run includes the
+  `--max_splits 1` run: each replicate's permutation depends only on `--seed`
+  and the replicate number, so its iteration-1 rows are identical, and so is
+  in practice the printed summary, which reports each replicate's maximum. Keep
+  `--min_chi 1` with a raised `--max_splits`, so the threshold doesn't cut the
+  cascade short.
 - `--fold` scores the strand-folded 6-type spectrum (6 categories, 5 degrees of
   freedom) instead of 12. This must match how you intend to run
   `spectrumSplits.py`, which takes the same `--fold` flag: the statistic changes

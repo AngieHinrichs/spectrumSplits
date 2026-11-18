@@ -37,13 +37,19 @@ scipy would raise; this only arises when a mutation type is entirely absent.
 Pass --fold to score the strand-folded 6-type spectrum instead.
 
 Usage:
-    # headline calibration: one pass over the whole tree, per replicate
+    # the site-level null over the full greedy cascade.  Its iteration-1
+    # rows are the whole-tree calibration, and in practice so is the printed
+    # summary (each replicate's maximum); the deeper rows give the null for
+    # smaller subtrees.  --min_chi 1 keeps the threshold from cutting the
+    # cascade short.
     permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-        --replicates 20 --mode sites --include_observed
+        --replicates 20 --mode sites --include_observed \
+        --max_splits 25 --min_chi 1 --seed 1 --output null_sites_cascade.tsv
 
-    # explore the full greedy cascade rather than just the first split
+    # the type-level null, for comparison: same --seed, whole tree only
     permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-        --replicates 5 --max_splits 25 --min_chi 1
+        --replicates 20 --mode types --include_observed \
+        --seed 1 --output null_types.tsv
 """
 
 import argparse
