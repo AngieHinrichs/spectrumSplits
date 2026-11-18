@@ -7,6 +7,38 @@ library and `bte`, and three need less: `prune_clade_check.py` uses `bte` only
 with `--input_tree`, and `null_by_size.py` and `split_confidence.py` read text
 files only.
 
+## Contents
+
+- [Background](#background): why the defaults do not transfer between trees, and two properties of a tree to know before reading any result from it.
+  - [Why the spectrumSplits.py defaults need calibration](#why-the-spectrumsplitspy-defaults-need-calibration)
+  - [Know how your tree was rooted](#know-how-your-tree-was-rooted)
+  - [Node IDs are not stable across trees](#node-ids-are-not-stable-across-trees)
+- [Suggested order](#suggested-order): the walkthrough, start to finish, with worked numbers from an *M. tuberculosis* tree. This is the part to work from; the step numbers in the script table refer to it.
+  - [1. Profile the raw tree](#1-profile-the-raw-tree)
+  - [2. Prune samples with implausible divergence](#2-prune-samples-with-implausible-divergence)
+  - [3. Build and apply a region mask](#3-build-and-apply-a-region-mask)
+  - [4. Re-profile, and check what the mask bought](#4-re-profile-and-check-what-the-mask-bought)
+  - [5. Decide whether to fold](#5-decide-whether-to-fold)
+  - [6. Pick `--min_mutations` and `--max_branch_length`](#6-pick---min_mutations-and---max_branch_length)
+  - [7. Calibrate `--min_chi`](#7-calibrate---min_chi)
+  - [8. Run the search with bootstrap, and check where it saturates](#8-run-the-search-with-bootstrap-and-check-where-it-saturates)
+  - [9. Check the splits against sequencing quality](#9-check-the-splits-against-sequencing-quality)
+  - [10. Rank the splits before interpreting them](#10-rank-the-splits-before-interpreting-them)
+  - [11. Check what each split *contains* before claiming a mechanism](#11-check-what-each-split-contains-before-claiming-a-mechanism)
+  - [12. Replicate the search on a changed tree, and match by membership](#12-replicate-the-search-on-a-changed-tree-and-match-by-membership)
+- [Script reference](#script-reference): usage, inputs, outputs and options for each script.
+  - [`profile_tree.py`](#profile_treepy)
+  - [`prune_clade_check.py`](#prune_clade_checkpy)
+  - [`annotate_sites.py`](#annotate_sitespy)
+  - [`permutation_null.py`](#permutation_nullpy)
+  - [`null_by_size.py`](#null_by_sizepy)
+  - [`branch_class_spectra.py`](#branch_class_spectrapy)
+  - [`split_confidence.py`](#split_confidencepy)
+- [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
+  - [`tb_resistance_genes.txt`, and a caution](#tb_resistance_genestxt-and-a-caution)
+  - [`tb_repair_genes.txt`](#tb_repair_genestxt)
+  - [`tb_alignment_loci.txt`](#tb_alignment_locitxt)
+
 | Script | Step | What it answers |
 | --- | --- | --- |
 | [`profile_tree.py`](#profile_treepy) | 1, 4 | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
@@ -21,16 +53,6 @@ The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
 `--min_mutations`, and both reshape the null that `--min_chi` is calibrated
 against.
-
-This README has three parts:
-
-- [Background](#background): why the defaults do not transfer between trees,
-  and two properties of a tree to know before reading any result from it.
-- [Suggested order](#suggested-order): the walkthrough, start to finish, with
-  worked numbers from an *M. tuberculosis* tree. This is the part to work
-  from; the step numbers in the table above refer to it.
-- [Script reference](#script-reference): usage, inputs, outputs and options
-  for each script, and the gene lists that `annotate_sites.py` reads.
 
 ## Background
 
