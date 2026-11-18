@@ -3,9 +3,10 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and five need less: `prune_clade_check.py` and
+library and `bte`, and six need less: `prune_clade_check.py` and
 `split_drivers.py` use `bte` only with `--input_tree`, and `null_by_size.py`,
-`branch_hits.py` and `split_confidence.py` read text files only.
+`branch_hits.py`, `split_confidence.py` and `split_composition.py` read text
+files only.
 
 ## Contents
 
@@ -36,6 +37,7 @@ library and `bte`, and five need less: `prune_clade_check.py` and
   - [`branch_hits.py`](#branch_hitspy)
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
+  - [`split_composition.py`](#split_compositionpy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
   - [`tb_resistance_genes.txt`, and a caution](#tb_resistance_genestxt-and-a-caution)
   - [`tb_repair_genes.txt`](#tb_repair_genestxt)
@@ -52,6 +54,7 @@ library and `bte`, and five need less: `prune_clade_check.py` and
 | [`branch_hits.py`](#branch_hitspy) | 8 | Are the highlighted-gene hits on the split branches more than chance, per branch, per gene on one branch, and per gene across branches? |
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10, 12 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
+| [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, several, or partly a laboratory strain? |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -197,7 +200,7 @@ matUtils summary -i tree.pb.gz -s samples_raw.txt
 matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
 prune_clade_check.py --samples samples_raw.txt --clades clades_raw.txt \
     --prune_report pruned_report.txt --threshold 250 \
-    --input_tree tree.pb.gz > prune_check.md
+    --exclude ReconstructedAncestor --input_tree tree.pb.gz > prune_check.md
 ```
 
 `prune_clade_check.py` writes, as markdown, every table in this step and the
@@ -234,8 +237,11 @@ pruned at 250 (smaller clades with no removals omitted):
 | lineage2 | 38,960 | 0 | 0 | — |
 | lineage3 | 11,187 | 0 | 0 | — |
 
-The overall rate was 0.046%. (`None` excludes `ReconstructedAncestor`, which
-`matUtils` lists as an unlabelled sample.) Read the ratio before explaining the gradient,
+The overall rate was 0.046%. (`None` excludes `ReconstructedAncestor`, a
+placeholder sample this tree carries on its root: it was given that name with
+`matUtils mask --rename-samples` when the tree was rerooted. The command
+above excludes it with `--exclude`; another tree will have its own such
+names, or none.) Read the ratio before explaining the gradient,
 because it is easy to get wrong: `total_mutations / total_tips` sums each
 branch in the subtree *including the node's own stem*, and no root-to-tip path
 is computed anywhere. It is a local measure. It is not distance from the
@@ -718,6 +724,18 @@ verdict rests on how much F varies between clades. That is measured two
 ways: as chi2/df around the clades' weighted mean, and as the z of the most
 extreme clade against the rest. Each clade's F is the mean of its two arms,
 so a clade whose mutations sit more on one arm is not penalised.
+
+The clades are the tree's annotated lineages, each holding the mutations
+below it that no smaller annotated lineage claims, and only those big enough
+to measure enter. "Big enough" is set by precision, not by a count:
+`--strand_max_se` (default 0.15) is the largest standard error allowed on a
+clade's log2 ratio for the rarest pair, and the report prints the clade size
+that implies for this tree's spectrum. Any lower and the smallest rows are
+mostly noise. On the round 3 tree that is 24,006 mutations, with TA|AT the
+rarest pair, which admits 26 clades. A larger SE admits more, smaller
+clades: the chi2/df already allows for their noise, but the single-clade z
+gets more chances to cross its limit by chance. `--strand_min_clade` sets a
+fixed size instead.
 
 *Worked example.* On the round 3 tree:
 
@@ -1470,16 +1488,60 @@ Steps 9 and 10 ask whether a split is robust. Neither asks what is inside it,
 and on a tree that mixes natural populations with laboratory material that is
 the question that decides whether a spectrum means anything.
 
-The check needs no tree access once you have the sample sets from step 8 and a
-`--sample-clades` table from step 4:
+Run it on every split you would interpret, which means tiers A and B: the
+tiers measure robustness, not composition, and a tier A split can still be a
+third laboratory strain. It needs no tree access once you have
+`split_clade_samples.tsv` from step 10 and a `--sample-clades` table
+(`matUtils summary -i tree.pruned.masked.pb.gz --sample-clades clades.txt`):
+
+```
+split_composition.py --clade_samples split_clade_samples.tsv \
+    --clades clades.txt --confidence split_confidence.tsv --lab_pattern BCG \
+    --output split_composition.tsv > split_composition.txt
+```
+
+For each split it counts the clades of the samples the split's *own*
+spectrum covers: its samples minus those of every split nested inside it,
+since `spectrumSplits.py` carves nested splits out of their parent's row.
+`matUtils extract -I` lists every sample below a node, so counting a parent
+that way borrows its children's clades: `node_14051`, all of lineage 2,
+would report 36,260 lineage 2.2.1 (Beijing) samples, but 35,044 of them
+belong to `node_14377`, nested inside it. Two flags pick out what needs reading:
+
+- **lab**: a clade matching `--lab_pattern` holds 1% or more of the split
+  (`--lab_share`). Part of its spectrum accumulated in culture rather than
+  in hosts. This is the one that calls for action. There is no default
+  pattern, because which labels mark laboratory strains depends on the
+  organism and on how the tree was annotated: for MTBC it is `BCG`, the
+  vaccine strain. Without it the flag is not tested.
+- **mixed**: 20% or more of the split lies outside the top clade's own
+  lineage (`--mixed_share`), judged by the dotted names, so a sublineage or
+  an ancestor label counts as the same lineage. A deep split often is
+  mixed: what remains after its sub-splits are carved out is several sister
+  sublineages. That is not a defect, but it says the spectrum is an average
+  over them, and a claim about one sublineage cannot rest on it.
+
+*Worked example.* Of the 62 tier A and B splits on the round 3 tree, 11 are
+mixed and one is lab. The mixed ones are mostly deep: `node_57318` is
+lineage 4.3.3 and 4.3.4 sublineages with 67% outside the top one, and
+`node_6`, the animal-adapted group, is La1.8.1, La1.7.1, La2 and others.
+The lab one is `node_10`:
+
+```
+  node     tier  samples  residual  clades  other  top 3 clades                            flags
+  node_10  A     913      913       4       13%    La1.2 49%, La1.2.BCG 37%, La1.3 13%     lab
+```
+
+To look at one split in detail, list all its clades from the same files
+(this counts every sample below the node, nested splits included):
 
 ```
 awk -F'\t' '$1=="node_N"{print $2}' split_clade_samples.tsv | sort > n.txt
 grep -Fwf n.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
 ```
 
-On the MTBC tree `node_10` is 913 tips, all *M. bovis* (La1) — and 336 of them
-(36.8%) are `La1.2.BCG`, the vaccine strain serially passaged in vitro since
+On the round 3 tree `node_10` is 913 tips, all *M. bovis* (La1) — and 336 of
+them (36.8%) are `La1.2.BCG`, the vaccine strain serially passaged in vitro since
 1908. Every BCG genome in the whole tree falls inside this one split and
 nowhere else. Its mutations accumulated under lab propagation and relaxed
 selection, not in a host, so `node_10`'s distinctive spectrum (the highest
@@ -1626,8 +1688,10 @@ and the maximum the terminus, which assumes the leading strand is G-rich, as
 it is in most bacteria. Without a reference, give `--terminus`; `--origin`
 defaults to 1. Either can override the estimate. In the per-clade table each
 mutation goes to its nearest annotated ancestor, so a parent clade's row
-leaves out its annotated subclades. Clades with fewer than
-`--strand_min_clade` mutations (default 25,000) are not listed, and the FOLD
+leaves out its annotated subclades. A clade is listed only if its rarest
+pair's log2 ratio would have a standard error of at most `--strand_max_se`
+(default 0.15); the report prints the clade size that implies for the tree's
+spectrum, and `--strand_min_clade` replaces it with a fixed size. The FOLD
 TEST uses the same clades. Its limits are `--fold_max_dispersion` (default 3)
 and `--fold_max_z` (default 5); step 5 explains both.
 
@@ -1644,7 +1708,7 @@ files; `bte` is needed only for `--input_tree`.
 ```
 prune_clade_check.py --samples samples_raw.txt --clades clades_raw.txt \
     --prune_report pruned_report.txt --threshold 250 \
-    [--input_tree tree.pb.gz] > prune_check.md
+    [--exclude ReconstructedAncestor] [--input_tree tree.pb.gz] > prune_check.md
 ```
 
 Inputs, all describing the **unpruned** tree:
@@ -1672,8 +1736,10 @@ lineage on either side.
   Without it, the stem and the internal branches below it are reported
   together as one remainder.
 - `--min_run` is the smallest unlabelled run listed (default 5).
-- `--exclude` names samples to ignore (default `ReconstructedAncestor`, which
-  `matUtils` lists as an unlabelled sample).
+- `--exclude` names samples to ignore, comma-separated (default none). On
+  the MTBC tree that is `ReconstructedAncestor`, a placeholder sample put on
+  the root when the tree was rerooted (`matUtils mask --rename-samples`).
+  Other trees will have their own such names, or none.
 
 ### `annotate_sites.py`
 
@@ -2017,6 +2083,35 @@ Output columns: `node`, `search_root`, `clade_parent`, `chi2`,
 `tested_in_mutations`, `null_ceiling`, `null_replicates`, `margin`,
 `support_exact`, `support_neighbourhood`, `tier`. `--selftest` runs the
 self-tests and exits.
+
+### `split_composition.py`
+
+Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism).
+
+```
+split_composition.py --clade_samples split_clade_samples.tsv \
+    --clades clades.txt --confidence split_confidence.tsv --lab_pattern BCG \
+    --output split_composition.tsv > split_composition.txt
+```
+
+Inputs: `--clade_samples` is the `node<TAB>sample` table from step 10,
+`--clades` the `sample<TAB>clade` table from `matUtils summary
+--sample-clades` (its header and `None` labels are skipped), and
+`--confidence` the `split_confidence.tsv` that supplies tiers and order.
+Nesting comes from sample membership, as in `split_confidence.py`, and each
+split is reduced to its residual samples before counting.
+
+Per split it prints the tier, all samples, residual samples, the number of
+distinct clades, `other` (the share outside the top clade's own lineage, by
+dotted names), the `--top` (default 3) clades with shares, and the flags
+`mixed` (`other` >= `--mixed_share`, default 0.2) and `lab` (clades matching
+`--lab_pattern` >= `--lab_share`, default 0.01). `--lab_pattern` has no
+default: give the regex for this tree's laboratory-strain labels, such as
+`BCG` for MTBC, or the lab flag is not tested. `--tiers` (default `A,B`)
+picks which tiers to list; `--tiers all` also lists tier C and the root, and
+works without `--confidence`. `--output` writes the same per split as a TSV, with the top
+clades as `clade:count`. `--selftest` checks the residual, the lineage
+naming and the flags on a constructed tree.
 
 ## Gene lists
 

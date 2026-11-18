@@ -70,8 +70,10 @@ def parse_args():
                    help="minimum size of an unlabelled run to list (default 5)")
     p.add_argument("--input_tree",
                    help="unpruned tree; adds exact stems and parent subtree sizes (needs bte)")
-    p.add_argument("--exclude", default="ReconstructedAncestor",
-                   help="comma-separated sample names to ignore (default: ReconstructedAncestor)")
+    p.add_argument("--exclude", default="",
+                   help="comma-separated sample names to ignore, such as a "
+                        "placeholder sample on the root of a rerooted tree "
+                        "(default: none)")
     return p.parse_args()
 
 

@@ -84,9 +84,14 @@ def parse_args():
                         help="FOLD TEST: recommend against --fold if any one clade's "
                         "forward-strand component deviates from the others by at "
                         "least this many standard errors")
-    parser.add_argument("--strand_min_clade", type=int, default=25000,
-                        help="Smallest clade, in mutations, listed in the per-clade "
-                        "strand asymmetry table")
+    parser.add_argument("--strand_max_se", type=float, default=0.15,
+                        help="Per-clade strand table and FOLD TEST: include a clade "
+                        "only if it is big enough that its rarest pair's log2 ratio "
+                        "has a standard error at or below this.  The size cut-off "
+                        "is computed from the tree's own spectrum and printed")
+    parser.add_argument("--strand_min_clade", type=int, default=None,
+                        help="Override --strand_max_se with a fixed minimum clade "
+                        "size, in mutations")
     return parser.parse_args()
 
 
@@ -293,6 +298,28 @@ def forward_component(by_arm, label):
     if lead is None or lag is None:
         return None
     return (lead[0] + lag[0]) / 2, (lead[1] + lag[1]) / 4
+
+
+def min_clade_for_se(spectrum, max_se):
+    """Smallest clade whose noisiest pair's log2-ratio SE is <= max_se.
+
+    For a clade of n mutations with the tree's proportions p_x and p_y for
+    a pair's two types, the SE of log2(x/y) is
+    sqrt(1/(n p_x) + 1/(n p_y)) / ln 2, so n = (1/p_x + 1/p_y) /
+    (ln 2 * max_se)^2.  The pair with the rarest types sets it.  Returns
+    (n, pair label), or (None, None) if a type never occurs.
+    """
+    total = sum(spectrum)
+    worst, label_w = None, None
+    for label in FOLDED_TYPES:
+        x, y = label.split("|")
+        a, b = spectrum[MUT_INDEX[x]], spectrum[MUT_INDEX[y]]
+        if not a or not b:
+            return None, None
+        need = total / a + total / b
+        if worst is None or need > worst:
+            worst, label_w = need, label
+    return math.ceil(worst / (math.log(2) * max_se) ** 2), label_w
 
 
 def homogeneity_chi2(pairs):
@@ -585,14 +612,25 @@ def main():
                   "strands left out)", file=out)
             print(file=out)
 
+        if args.strand_min_clade is not None:
+            min_clade = args.strand_min_clade
+            min_note = "set by --strand_min_clade"
+        else:
+            whole = [sum(s[i] for s in clade_leading.values()) for i in range(12)]
+            min_clade, min_pair = min_clade_for_se(whole, args.strand_max_se)
+            min_note = (f"the size at which {min_pair}, the rarest pair, has a "
+                        f"log2-ratio SE of {args.strand_max_se} (--strand_max_se)")
+            if min_clade is None:
+                min_clade, min_note = 0, "a mutation type is absent; no cut-off"
         clades = [(c, s) for c, s in clade_leading.items()
-                  if sum(s) >= args.strand_min_clade]
+                  if sum(s) >= min_clade]
         clades.sort(key=lambda cs: -sum(cs[1]))
         print("  Per clade, leading-strand orientation (lagging-arm mutations", file=out)
         print("  complemented), log2(first/second) for each pair.  Mutations are", file=out)
         print("  assigned to the nearest annotated ancestor, so a parent clade's", file=out)
         print("  row excludes its annotated subclades; (none) is mutations above", file=out)
-        print(f"  every annotation.  Clades with >= {args.strand_min_clade} mutations:", file=out)
+        print(f"  every annotation.  Clades with >= {min_clade} mutations,", file=out)
+        print(f"  {min_note}:", file=out)
         print("    clade\tmutations\t" + "\t".join(FOLDED_TYPES), file=out)
         for c, s in clades:
             vals = [f"{lr:+.3f}" for _, _, _, lr, _ in pair_rows(s)]
@@ -633,7 +671,7 @@ def main():
         print("  weighted mean; per-clade F uses arms only, so arm imbalance", file=out)
         print("  within a clade does not enter).", file=out)
         fold_clades = [c for c, s in clade_leading.items()
-                       if sum(s) >= args.strand_min_clade]
+                       if sum(s) >= min_clade]
         hdr = "    pair\tF\tSE\tz\tR"
         if gene_strands is not None:
             hdr += "\tT"
