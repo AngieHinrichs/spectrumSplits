@@ -325,33 +325,33 @@ def report(classes, rows, args, out):
               "mutations)", file=out)
         return
     tsv = args.output or "split_drivers.tsv"
+    v = COLUMNS.index("verdict") + 1
+    b = COLUMNS.index("branch_mutations") + 1
     print(file=out)
-    print("  Defining-branch mutations are the last column of "
-          f"{tsv}; to annotate one:", file=out)
+    print("  Branch mutations per split (a branch longer than "
+          "--max_branch_length was left", file=out)
+    print("  out of the spectrum, so it labels the lineage and is skipped "
+          "below):", file=out)
     print(file=out)
-    node = keep[0]["node"]
-    print(f"  annotate_sites.py --annotation {args.annotation} "
-          f"--reference {args.reference} \\", file=out)
-    print(f"      --highlight {args.highlight} --output {node}_branch.tsv \\",
-          file=out)
-    print(f"      --positions \"$(awk -F'\\t' '$1==\"{node}\" {{print $NF}}' "
-          f"{tsv})\"", file=out)
-    print(file=out)
-    long_note = False
     for r in keep:
         n = len(r["branch_mutations"].split(",")) if r["branch_mutations"] \
             else 0
-        flag = ""
-        if n > args.max_branch_length:
-            flag = "  (longer than --max_branch_length: not in its spectrum)"
-            long_note = True
-        print(f"  {r['node']}: {n} mutations on its branch{flag}", file=out)
-    if long_note:
-        print(file=out)
-        print("  A branch the spectrum skipped cannot have caused the split's "
-              "spectrum,\n  so its mutations are a lineage label, not a "
-              "candidate mechanism.", file=out)
-
+        flag = "  (longer than --max_branch_length: skipped)" \
+            if n > args.max_branch_length else ""
+        print(f"  {r['node']}: {n}{flag}", file=out)
+    print(file=out)
+    print("  To annotate every remaining split's defining branch:", file=out)
+    print(file=out)
+    loop = f"""\
+  awk -F'\\t' 'NR>1 && ${v}=="interpret" && split(${b}, m, ",") <= {args.max_branch_length} {{print $1}}' {tsv} |
+  while read n; do
+    echo "== $n" >&2
+    annotate_sites.py --annotation {args.annotation} --reference {args.reference} \\
+        --highlight {args.highlight} --output ${{n}}_branch.tsv \\
+        --positions "$(awk -F'\\t' -v n=$n '$1==n {{print $NF}}' {tsv})"
+  done 2> branch_annotation.log
+  awk '/^== /{{n=$2}} /HIGHLIGHTED/{{print n":"$0}}' branch_annotation.log"""
+    print(loop, file=out)
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(

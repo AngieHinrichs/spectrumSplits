@@ -1016,13 +1016,35 @@ of those per split, and labels it `interpret` only when it passes all three:
 Its `branch_mutations` column lists the mutations on each split's defining
 branch, comma-separated, which is the form `annotate_sites.py --positions`
 takes. Annotating them with `--highlight repair_genes.txt` is the first place
-to look for a mechanism, and the report prints the command:
+to look for a mechanism. Do it for the `interpret` splits only. A one-class
+or one-site split is more likely an artifact, and its defining branch is the
+wrong place to look: the `site` column names the recurrent site to annotate
+instead, as step 4 did for the sites that survived the mask. Skip, too, any
+branch longer than `--max_branch_length`: the search left it out of the
+spectrum, so it cannot have caused the split, and its mutations only label
+the lineage. The report ends with a loop that does all of this, filled in
+with your file names:
 
 ```
-annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --highlight repair_genes.txt --output node_N_branch.tsv \
-    --positions "$(awk -F'\t' '$1=="node_N" {print $NF}' split_drivers.tsv)"
+awk -F'\t' 'NR>1 && $14=="interpret" && split($15, m, ",") <= 250 {print $1}' split_drivers.tsv |
+while read n; do
+  echo "== $n" >&2
+  annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+      --highlight repair_genes.txt --output ${n}_branch.tsv \
+      --positions "$(awk -F'\t' -v n=$n '$1==n {print $NF}' split_drivers.tsv)"
+done 2> branch_annotation.log
+awk '/^== /{n=$2} /HIGHLIGHTED/{print n":"$0}' branch_annotation.log
 ```
+
+It writes one `node_N_branch.tsv` per split, and the last line lists the
+splits whose branch hits a highlighted gene.
+
+**Expect hits by chance.** A defining branch with hundreds of mutations will
+hit a repair gene whatever the mechanism. Before reading the hits, size the
+list: `annotate_sites.py --regions repair_genes.txt --mask_bed repair.bed`
+gives its length, and that length over the genome's is the hit rate per
+mutation under chance. Two things then carry weight: a nonsynonymous hit on a
+short branch, and the same gene hit independently on unrelated branches.
 
 *Worked example.* The round 3 search accepted 68 splits below the root. 63
 were labelled `interpret`. Three were one class, all driven by C>A|G>T:
@@ -1035,12 +1057,17 @@ rebuilds each split's mutation total from the tree, and every total matched
 the ones the search used. So the screen removes the obvious cases, and step
 10 ranks the rest.
 
-The defining branches are mostly short. `node_14377` has four mutations, and
-the one in a repair gene is `mutT4` R48G, discussed below. Two branches,
-`node_3594` (833 mutations) and `node_4609` (591), are longer than
-`--max_branch_length`, so the search left them out of the spectrum. The
-report marks them: such a branch cannot have caused its split's spectrum,
-and its mutations label the lineage rather than suggest a mechanism.
+Three `interpret` splits had branches longer than 250 and were skipped:
+`node_5011` (413 mutations), `node_3594` (833) and `node_4609` (591). The
+other 60 branches carry 1,718 mutations, and 23 of them hit a repair gene,
+40 hits in all. `tb_repair_genes.txt` resolves to 71 kb, 1.6% of the genome,
+so chance alone predicts about 28 hits. The excess is modest, and only 21 of
+the 40 change an amino acid, so most hits mean nothing. The long branches
+show it: `node_3821`, with 192 mutations, hits eight repair genes, once each.
+The short branches are where a hit stands out. `node_14377` has four
+mutations, and the one in a repair gene is `mutT4` R48G, discussed below.
+Recurrence points the same way: `polA` is hit on `node_13078` and three times
+on `node_14051`, and `dnaE2` on `node_7292`, `node_4385` and `node_76948`.
 
 **Check each split's lineage before reading a mechanism into it.** If the tree
 carries clade annotations, this is a few commands and it changes the
@@ -1737,7 +1764,9 @@ answers a different question: which classes separate the rows you will read.
 With `--input_tree`, each residual total is rebuilt from the tree and checked
 against `spectra.tsv`; a mismatch means a different tree or
 `--max_branch_length`, and is reported. `--annotation`, `--reference` and
-`--highlight` are only copied into the printed `annotate_sites.py` command.
+`--highlight` are only copied into the loop the report ends with, which
+annotates the defining branch of every `interpret` split short enough to be
+in its spectrum.
 `--selftest` checks the chi-squared arithmetic, the residual walk and the
 one-site test on a constructed tree.
 
