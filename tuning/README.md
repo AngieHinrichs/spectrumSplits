@@ -533,11 +533,11 @@ without `^maturase$`. Six of the top 20 surviving sites are then flanks:
 Both genes were on the list and both were masked; the recurrence clusters
 simply extend past the pad. `Rv2019` is the clear case: three sites within 3
 bp of each other, 103 to 106 bp past the gene's end, holding 585 mutations
-between them, all three among the ten largest sites left. A cluster
-straddling the edge of a masked gene is what a pad is for, and every gap was
-under 50 bp, so `--mask_pad 150` covers all six. The cost was 17 kb more
+between them, all three among the ten largest sites left. Every
+gap was under 50 bp, so `--mask_pad 150` covers all six. The cost was 17 kb more
 masked sequence, 0.4% of the genome, since the pad widens every feature on
-the alignment list, not just these two.
+the alignment list, not just these two. Whether a global pad was the right
+tool is taken up below, under "Hindsight".
 
 Not every survivor of that run was a flank. The second largest, `79558` with
 224 mutations, is codon 25 of `Rv0071`, whose only annotation is the product
@@ -565,13 +565,51 @@ further out:
   prophages and mobile elements on `tb_alignment_loci.txt`, and it was simply
   not on the list.
 
-This time, resist widening. The first widening caught a tight cluster just
-outside the edge; the second would chase one that keeps going. The four
-`Rv2019` flank sites hold ~600 mutations out of 2.8M, the whole top 20 holds
-0.12%, and each round costs hours. Raising `--mask_pad` globally to catch a
-69 bp overhang would delete far more real sequence than it recovers in
-cleanliness. Record the finding, widen the pad next time you rebuild from
-scratch, and stop.
+**Hindsight: a global pad for a local problem.** The 50 bp that round 3
+added to every alignment locus came to 17,556 bp, holding 15,491 mutations
+on the pruned tree:
+
+- 1,669 were the `Rv2019` and `Rv0794c` flanks the change was aimed at.
+- About 430 were lesser hotspots at `Rv1313c`, `PE29`, `PE6` and `whiB6`.
+- The other ~13,400 ran at 0.77/bp, about the tree's background rate
+  (0.73/bp).
+
+It also didn't finish the job. `Rv2019`'s recurrence sits 82 to 219 bp past
+the gene's end: about 2,200 mutations in one block, back to background by
+245 bp. A pad of 150 caught only half of it.
+
+The two widenings answered different evidence. Round 1's survivors were
+flanks 1 to 56 bp outside many unrelated features. That is a genome-wide
+pattern, and a global pad is the right fix. Round 2's were two specific loci,
+and the right fix for a specific locus is a targeted interval. About 245 bp
+past `Rv2019` and a few tens of bp past `Rv0794c` would have cost under
+0.3 kb instead of 17 kb. Neither choice moves the results much, since the
+pad's cost is 0.5% of mutations, all ordinary. So the walkthrough keeps 150
+rather than spend another round of masking on it.
+
+The rule, then:
+
+- If the flank survivors sit at many unrelated loci, widen `--mask_pad`.
+- If they cluster at one or two, extend those loci by hand.
+
+`tb_alignment_loci.txt` takes names, not coordinates, so a targeted extension
+means adding positions to the mask in your reference's coordinates. For
+`Rv2019` on NC_000962.3, run this before the `sort -un` in step 3:
+
+```
+seq 2266406 2266650 >> alignment_pos.txt
+printf 'NC_000962.3\t2266405\t2266650\n' >> alignment_loci.bed
+```
+
+The BED line keeps `--near_mask` in step 4 consistent with the mask. Record
+the extension next to the commands, because it won't carry over to another
+reference.
+
+Either way, don't chase a cluster round after round. The four `Rv2019`
+sites left at 150 hold ~600 mutations out of 2.8M, and the whole top 20
+holds 0.12%. Each round costs hours, over six on a slower server, for
+`matUtils mask` alone. Record the finding, put the targeted extension into
+the next rebuild from scratch, and stop.
 
 The signal to stop is this: when the surviving top sites are flanks of loci you
 already masked, and the folded spectrum has stopped moving, the mask is done.

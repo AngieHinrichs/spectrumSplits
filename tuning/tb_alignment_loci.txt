@@ -278,7 +278,10 @@ mapB
 # independent recurrence:
 #   Rv2081c/Rv2082  four sites in ~700 bp, 1,056 events together
 #   Rv2019          three sites within 5 bp, 100-105 bp outside the gene,
-#                   589 events -- just past a 100 bp pad, so widen to 150
+#                   589 events -- just past a 100 bp pad.  Round 3 widened
+#                   the pad to 150 globally; the cluster runs 82-219 bp
+#                   past the gene, so a targeted extension would have been
+#                   better (tuning/README.md step 4, "Hindsight")
 #   whiB6           CDS codon 53 plus promoter -75, 456 events
 #   Rv0794c         intergenic -367 plus promoter -138, 415 events
 #
