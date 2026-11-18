@@ -352,6 +352,14 @@ def report(classes, rows, args, out):
   done 2> branch_annotation.log
   awk '/^== /{{n=$2}} /HIGHLIGHTED/{{print n":"$0}}' branch_annotation.log"""
     print(loop, file=out)
+    print(file=out)
+    print("  Then test the hits against chance (the mask BEDs are the "
+          "--mask_bed outputs of step 3):", file=out)
+    print(file=out)
+    print(f"  branch_hits.py --branches node_*_branch.tsv --annotation "
+          f"{args.annotation} \\", file=out)
+    print(f"      --highlight {args.highlight} --mask <mask BEDs> "
+          f"--reference {args.reference}", file=out)
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(

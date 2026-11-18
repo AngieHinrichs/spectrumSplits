@@ -3,9 +3,9 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and four need less: `prune_clade_check.py` and
-`split_drivers.py` use `bte` only with `--input_tree`, and `null_by_size.py`
-and `split_confidence.py` read text files only.
+library and `bte`, and five need less: `prune_clade_check.py` and
+`split_drivers.py` use `bte` only with `--input_tree`, and `null_by_size.py`,
+`branch_hits.py` and `split_confidence.py` read text files only.
 
 ## Contents
 
@@ -33,6 +33,7 @@ and `split_confidence.py` read text files only.
   - [`permutation_null.py`](#permutation_nullpy)
   - [`null_by_size.py`](#null_by_sizepy)
   - [`split_drivers.py`](#split_driverspy)
+  - [`branch_hits.py`](#branch_hitspy)
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
@@ -48,6 +49,7 @@ and `split_confidence.py` read text files only.
 | [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
 | [`null_by_size.py`](#null_by_sizepy) | 7 | How does that chance ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
 | [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, and what mutations define the ones worth interpreting? |
+| [`branch_hits.py`](#branch_hitspy) | 8 | Are the highlighted-gene hits on the split branches more than chance, per branch, per gene on one branch, and per gene across branches? |
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10, 12 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 
@@ -1040,11 +1042,26 @@ It writes one `node_N_branch.tsv` per split, and the last line lists the
 splits whose branch hits a highlighted gene.
 
 **Expect hits by chance.** A defining branch with hundreds of mutations will
-hit a repair gene whatever the mechanism. Before reading the hits, size the
-list: `annotate_sites.py --regions repair_genes.txt --mask_bed repair.bed`
-gives its length, and that length over the genome's is the hit rate per
-mutation under chance. Two things then carry weight: a nonsynonymous hit on a
-short branch, and the same gene hit independently on unrelated branches.
+hit a gene list covering 1-2% of the genome whatever the mechanism, so a hit
+means something only against its expectation. `branch_hits.py` computes it:
+
+```
+branch_hits.py --branches node_*_branch.tsv \
+    --annotation NC_012345.1.gff3.gz --highlight repair_genes.txt \
+    --mask selection_loci.bed,alignment_loci.bed --reference NC_012345.1.fna \
+    --output branch_hits.tsv > branch_hits.txt
+```
+
+The chance rate per mutation is the genes' length outside the mask over the
+genome's length outside the mask, since masked sites cannot carry a mutation.
+Every P is a Poisson tail, and each comes with a count of how many of the
+tests made would reach it by chance (`chance_branches`, `chance_pairs`,
+`chance_genes`). A count near or above 1 means the result is what the best of
+that many draws looks like. Three kinds of result carry weight: a branch with
+more hits than its length predicts, one gene hit several times on one branch,
+and one gene hit on several unrelated branches. The last is the strongest,
+because a single branch cannot separate a mechanism from everything else
+that defines its lineage.
 
 *Worked example.* The round 3 search accepted 68 splits below the root. 63
 were labelled `interpret`. Three were one class, all driven by C>A|G>T:
@@ -1059,15 +1076,37 @@ the ones the search used. So the screen removes the obvious cases, and step
 
 Three `interpret` splits had branches longer than 250 and were skipped:
 `node_5011` (413 mutations), `node_3594` (833) and `node_4609` (591). The
-other 60 branches carry 1,718 mutations, and 23 of them hit a repair gene,
-40 hits in all. `tb_repair_genes.txt` resolves to 71 kb, 1.6% of the genome,
-so chance alone predicts about 28 hits. The excess is modest, and only 21 of
-the 40 change an amino acid, so most hits mean nothing. The long branches
-show it: `node_3821`, with 192 mutations, hits eight repair genes, once each.
-The short branches are where a hit stands out. `node_14377` has four
-mutations, and the one in a repair gene is `mutT4` R48G, discussed below.
-Recurrence points the same way: `polA` is hit on `node_13078` and three times
-on `node_14051`, and `dnaE2` on `node_7292`, `node_4385` and `node_76948`.
+other 60 were annotated, and `branch_hits.py` reported:
+
+```
+  chance rate per mutation: 70,579 / 3,907,786 = 1.806%
+
+ALL BRANCHES
+  60 branches, 1,718 mutations, 40 hits, 31.0 expected, P(>=40) = 0.0685
+  hits that change an amino acid: 21 of 40 (52%), against 973 of 1,519 (64%) for every coding mutation on these branches
+```
+
+Overall, then, nothing: 40 hits against 31 expected, and repair-gene hits
+change an amino acid *less* often than the branches' other coding mutations.
+Three results stand out from that background:
+
+| result | observed | expected | P | by chance |
+|---|---|---|---|---|
+| `node_3821`: hits on its branch | 8 in 192 mutations | 3.47 | 0.026 | 0.53 of 60 branches |
+| `node_14051`: hits in `polA` | 3 in 106 mutations | 0.073 | 6.0e-05 | 0.023 of 3,060 pairs |
+| `ligC`: branches hitting it | 3 (`node_14051`, `node_4385`, `node_5014`) | 0.47 | 0.012 | 0.25 of 51 genes |
+
+`node_3821`'s eight hits fall in eight different genes, half of them
+synonymous, so they look diffuse rather than like one disabled gene. The
+`polA` hits are T186P, R188G and P208P, all within 68 bp
+(1,831,220-1,831,288). That clustering is what makes them improbable, and it
+is also what a single multi-base event or a local misalignment would look
+like. They are not near the mask and not among the recurrent sites, so it is
+a lead to check in the reads, not a result. `ligC` is the cleanest of the
+three: three unrelated branches, none of them long. `node_14377`'s `mutT4`
+R48G, discussed below, is one hit on a four-mutation branch (P = 0.07):
+striking to read, but the arithmetic cannot separate it from chance, and its
+lineage explains it.
 
 **Check each split's lineage before reading a mechanism into it.** If the tree
 carries clade annotations, this is a few commands and it changes the
@@ -1769,6 +1808,36 @@ annotates the defining branch of every `interpret` split short enough to be
 in its spectrum.
 `--selftest` checks the chi-squared arithmetic, the residual walk and the
 one-site test on a constructed tree.
+
+### `branch_hits.py`
+
+Used in [step 8](#8-run-the-search-with-bootstrap-and-check-where-it-saturates).
+
+```
+branch_hits.py --branches node_*_branch.tsv \
+    --annotation NC_012345.1.gff3.gz --highlight repair_genes.txt \
+    --mask selection_loci.bed,alignment_loci.bed --reference NC_012345.1.fna \
+    --output branch_hits.tsv > branch_hits.txt
+```
+
+Reads the `annotate_sites.py --highlight` output for each branch, which
+`split_drivers.py`'s loop writes as `node_N_branch.tsv`. `--annotation` and
+`--highlight` must be the ones that run used: the gene lengths come from
+resolving the same names the same way. A hit is a site inside a named gene;
+sites `--highlight_flank` labels as `name@+N` are not counted.
+`--genome_size` can replace `--reference`.
+
+| Section | What to do with it |
+| --- | --- |
+| Chance rate | Highlighted genes' length outside the mask over the genome's. Check the names reported as not found |
+| All branches | Hits against expectation summed over every branch, and the share of hits that change an amino acid beside the share for every coding mutation on the branches |
+| Per branch | Each branch with hits, by P. `chance_branches` is how many of the branches would reach that P by chance, from each one's own length, so short branches that cannot reach it do not inflate it |
+| One gene, one branch | Genes hit more than once on a branch, with the mutations. Hits a few bases apart may be one event; check them in the reads before believing them |
+| One gene, several branches | Genes hit on two or more branches, against the branches expected to hit them from the gene's length and each branch's. `chance_genes` corrects across the gene list |
+
+`--output` writes the per-branch numbers as a TSV. `--selftest` checks the
+Poisson tails, the chance counts, the hit counting and the mask arithmetic on
+constructed files.
 
 ### `branch_class_spectra.py`
 
