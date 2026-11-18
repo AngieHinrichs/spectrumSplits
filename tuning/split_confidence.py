@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rank spectrumSplits.py splits by null margin and bootstrap support.
 
-This is step 11 of parameter tuning: deciding which of the accepted splits
+This is step 10 of parameter tuning: deciding which of the accepted splits
 are worth interpreting.  It reads only files the search and the null already
 produce, so it adds no new computation on the tree.
 

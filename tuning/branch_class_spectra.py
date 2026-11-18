@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare internal-branch and terminal-branch spectra within each split.
 
-This is step 10 of parameter tuning: a check on whether a spectrum split is
+This is step 9 of parameter tuning: a check on whether a spectrum split is
 biology or sequencing quality.
 
 The problem it addresses.  On a sparsely sampled tree most mutations sit on

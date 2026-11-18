@@ -14,8 +14,8 @@ files only.
 | [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
 | [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
 | [`null_by_size.py`](#null_by_sizepy) | 7 | How does that chance ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
-| [`branch_class_spectra.py`](#branch_class_spectrapy) | 10 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
-| [`split_confidence.py`](#split_confidencepy) | 11, 13 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
+| [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
+| [`split_confidence.py`](#split_confidencepy) | 10, 12 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -421,7 +421,7 @@ here because the worked examples compare against them, and because on a
 different tree you will need rounds of your own: you can't write an artifact
 list until you have seen which sites recur. Step 4's "Three rounds, and when
 to stop" has what each round bought and how to tell when you are done. After
-round 3 the BCG samples were also pruned (step 13); that is a prune, not a
+round 3 the BCG samples were also pruned (step 12); that is a prune, not a
 mask round.
 
 *Worked example.* In round 1, the resistance list resolved to 41 intervals
@@ -856,7 +856,7 @@ It groups the null splits by the size of the table each was scored on
 (`mutations_below + mutations_above`), giving the whole-tree pass a row of its
 own and putting the rest in factor-of-2 bins. It then compares each observed
 split with the highest null from subtrees within 1.5x of its size. That is the
-same ceiling `split_confidence.py` uses in step 11, so the two agree. With
+same ceiling `split_confidence.py` uses in step 10, so the two agree. With
 `--min_chi`, it flags the splits that threshold rejects even though they clear
 their size-matched null by `--margin` (default 2x), and any it accepts that
 don't clear their null at all. It ends with the hotspot check described at the
@@ -912,39 +912,7 @@ replicates because the permutation changes only mutation types, never the
 tree. Here no node is the maximum in more than 2 of the 20 replicates, which
 is what an absence of such a hotspot looks like.
 
-### 8. Run the search and find where it saturates
-
-```
-spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_chi 30 --min_mutations 10000 --max_branch_length 250 \
-    --output_spectrum spectra.tsv 2> splits.log
-```
-
-`--min_chi 30` is 2x the size-matched null ceiling for deep subtrees (about
-15 in step 7), not 2x the whole-tree ceiling (65). A threshold set at the
-root would reject splits that clear their own null several times over. The
-low threshold costs nothing in rigour, because step 11 scores every accepted
-split against the null for its own size and ranks it by that margin.
-
-*Worked example (hypothetical — this run has not been done).* Suppose
-`splits.log` records each accepted split's chi-squared as 17827, 4100, 1900,
-640, 310, 120, 60, 33. The run is still finding splits just above the
-threshold, so the curve has not bent yet — either raise `--min_chi` and keep
-the splits that clear the higher bar, or keep the rest and label them
-marginal. A run that instead stopped at 17827, 4100, 1900 with nothing under
-1000 has found its own ceiling, and the threshold is not what is limiting it.
-
-One `--min_chi` governs every split, but the chance ceiling depends on
-subtree size: 32 for the whole tree and 13 to 16 below about 1M (step 7). So
-any single value is a compromise. Set from the root (65), it is too strict
-for every split but the first few. Set from deep subtrees (30), it is lenient
-at the root, but the splits found there clear 30 by orders of magnitude, and
-step 11 checks each against its own size anyway. Whatever the value, a run
-whose last split sits a fraction above it has not saturated. It has hit the
-bar, and splits below it are going unexamined. `null_by_size.py --min_chi`
-in step 7 lists which ones.
-
-### 9. Confirm, then interpret
+### 8. Run the search with bootstrap, and check where it saturates
 
 ```
 spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
@@ -953,9 +921,49 @@ spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
     2> splits.log
 ```
 
-Then read each split's per-class proportions out of `spectra.tsv`. A split
-driven almost entirely by one mutation class is usually an artifact or a single
-over-mutated site; one spread across several classes that survives the
+`--min_chi 30` is 2x the size-matched null ceiling for deep subtrees (about
+15 in step 7), not 2x the whole-tree ceiling (65). A threshold set at the
+root would reject splits that clear their own null several times over. The
+low threshold costs nothing in rigour, because step 10 scores every accepted
+split against the null for its own size and ranks it by that margin.
+
+**One run does both jobs, in order.** It first does the ordinary search: a
+`New split found at node_N with x2 X` line in `splits.log` for each accepted
+split, then `spectra.tsv` and a `Spectra written to spectra.tsv` line. Only
+then does it print `Bootstrapping splits with 100 replicates using 8
+threads.` and start the replicates. Each replicate is a full search on
+resampled sites and writes its own `bootstrap_N_splits_output.tsv` in the
+current directory. The replicates are where the time goes: with 8 threads,
+about 12 times the ordinary search. So check saturation on the lines above
+that marker as soon as it appears, while the replicates run. If the check
+says the threshold should change, kill the run and restart it, and you lose
+only the replicates already started. The ordinary search is deterministic, so
+a separate run without `--bootstrap_splits` would find the same splits and
+buy nothing. Step 10 likewise reads only the lines above the marker.
+
+*Worked example (hypothetical — this run has not been done).* Suppose the
+lines above the marker record each accepted split's chi-squared as 17827,
+4100, 1900, 640, 310, 120, 60, 33. The run is still finding splits just above
+the threshold, so the curve has not bent yet — either raise `--min_chi` and
+keep the splits that clear the higher bar, or keep the rest and label them
+marginal. A run that instead stopped at 17827, 4100, 1900 with nothing under
+1000 has found its own ceiling, and the threshold is not what is limiting it.
+
+One `--min_chi` governs every split, but the chance ceiling depends on
+subtree size: 32 for the whole tree and 13 to 16 below about 1M (step 7). So
+any single value is a compromise. Set from the root (65), it is too strict
+for every split but the first few. Set from deep subtrees (30), it is lenient
+at the root, but the splits found there clear 30 by orders of magnitude, and
+step 10 checks each against its own size anyway. Whatever the value, a run
+whose last split sits a fraction above it has not saturated. It has hit the
+bar, and splits below it are going unexamined. `null_by_size.py --min_chi`
+in step 7 lists which ones.
+
+#### Then interpret
+
+When the run finishes, read each split's per-class proportions out of
+`spectra.tsv`. A split driven almost entirely by one mutation class is usually
+an artifact or a single over-mutated site; one spread across several classes that survives the
 bootstrap is the thing worth explaining. Running `annotate_sites.py --highlight
 repair_genes.txt` on the mutations of the split's defining branch is the first
 place to look for a mechanism.
@@ -991,7 +999,7 @@ lineage-defining mutations, so co-occurrence is guaranteed. What would be
 evidence is independent recurrence: the same gene disrupted on an unrelated
 branch with the same shift.
 
-The quality reading collapses too, more thoroughly than step 10 could show.
+The quality reading collapses too, more thoroughly than step 9 could show.
 The clade that broke the divergence correlation — high mutations per tip, but
 a spectrum matching its low-divergence parent — is `node_3616`, with 269
 tips. La3 also has exactly 269 samples, so that clade *is* La3, a distinct
@@ -1019,7 +1027,7 @@ matUtils extract -i tree.pruned.masked.pb.gz -I node_5045 -u split_samples.txt
 for annotated clades — the lineage labels stored as node annotations in a MAT,
 such as Pango names — and will not find a `node_N` ID.
 
-### 10. Check the splits against sequencing quality
+### 9. Check the splits against sequencing quality
 
 A split can be real biology or it can be a quality gradient, and the two look
 identical in `spectra.tsv`. On a sparsely sampled tree most mutations sit on
@@ -1097,9 +1105,9 @@ addresses those, which is why it comes first. A clean result here means the
 splits are not a sequencing-quality gradient; it does not by itself make them
 biology.
 
-### 11. Rank the splits before interpreting them
+### 10. Rank the splits before interpreting them
 
-`split_confidence.py` reads the files steps 7, 8 and 10 already produced and
+`split_confidence.py` reads the files steps 7, 8 and 9 already produced and
 answers two questions that fail independently. It runs nothing on the tree.
 
 ```
@@ -1222,15 +1230,15 @@ failures.
 Note what this step does *not* establish. Both measures ask whether a split
 is statistically robust, not whether it is biology. A shared alignment
 artifact spanning a whole lineage is present in most position-resamples and
-clears any size-matched null; steps 3 and 10 are what address it.
+clears any size-matched null; steps 3 and 9 are what address it.
 
-### 12. Check what each split *contains* before claiming a mechanism
+### 11. Check what each split *contains* before claiming a mechanism
 
-Steps 10 and 11 ask whether a split is robust. Neither asks what is inside it,
+Steps 9 and 10 ask whether a split is robust. Neither asks what is inside it,
 and on a tree that mixes natural populations with laboratory material that is
 the question that decides whether a spectrum means anything.
 
-The check needs no tree access once you have the sample sets from step 9 and a
+The check needs no tree access once you have the sample sets from step 8 and a
 `--sample-clades` table from step 4:
 
 ```
@@ -1299,7 +1307,7 @@ More generally: treat the top of the per-clade composition table as part of
 reading any split. A clade that is one named sublineage plus one named lab
 derivative is not a population.
 
-### 13. Replicate the search on a changed tree, and match by membership
+### 12. Replicate the search on a changed tree, and match by membership
 
 A mask round or a prune gives you a second, independent search over nearly the
 same data. That is the strongest check available on this pipeline, and it is
@@ -1627,7 +1635,7 @@ ceilings, the flags and the hotspot rule on a constructed cascade.
 
 ### `branch_class_spectra.py`
 
-Used in [step 10](#10-check-the-splits-against-sequencing-quality). Splits
+Used in [step 9](#9-check-the-splits-against-sequencing-quality). Splits
 each accepted split's mutations into those on internal branches and those on
 terminal branches, and compares the two, to tell a lineage signal from a
 per-genome quality gradient. Needs `bte`.
@@ -1658,8 +1666,8 @@ partitioning, and exits.
 
 ### `split_confidence.py`
 
-Used in [step 11](#11-rank-the-splits-before-interpreting-them), and again in
-step 13. Ranks the accepted splits by two independent measures, margin over a
+Used in [step 10](#10-rank-the-splits-before-interpreting-them), and again in
+step 12. Ranks the accepted splits by two independent measures, margin over a
 size-matched null and bootstrap support. It reads only files earlier steps
 produce, runs nothing on the tree, and needs nothing beyond the standard
 library.
