@@ -1,0 +1,14 @@
+__pycache__
+*.tsv
+*.bed
+*.log
+*.pb.gz
+*.fa
+*.fna
+*.gff
+*.gff3
+*.gff.gz
+*.gff3.gz
+*.txt
+!tb_*.txt
+prune_check.md
