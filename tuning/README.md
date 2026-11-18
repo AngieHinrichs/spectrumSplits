@@ -1130,8 +1130,9 @@ left after nested splits are carved out, so the two differ whenever a split
 has splits below it.
 
 *Worked example.* Every split carrying a repair-gene result in
-`branch_hits.py` turned out to be a recognised lineage, and two pairs of
-them are nested (checked with `comm -12` on the sorted sample files):
+`branch_hits.py`, and the two that step 9 points to, turned out to be a
+recognised lineage. Three pairs of them are nested (checked with `comm -12`
+on the sorted sample files):
 
 | split | clades | samples | `Number_Tips` | hit on its branch |
 |---|---|---|---|---|
@@ -1140,9 +1141,11 @@ them are nested (checked with `comm -12` on the sorted sample files):
 | `node_12343` | lineage 1.2.2 | 2,132 | 444 | `recA` R540Q |
 | `node_13078`, inside `node_12343` | lineage 1.2.2.2 | 565 | 565 | `polA` G795D |
 | `node_3821` | lineage 6, with 27 lineage 9 samples | 993 | 209 | `uvrA`, `recA`, `nudC`, `mutY`: one each in 192 mutations |
+| `node_6` | the animal-adapted lineages: La1 (77%), La1.2.BCG, La2, La3 | 8,729 | 3,178 | `recF` L158V |
+| `node_3594`, inside `node_6` | La3 | 269 | 269 | none counted: its 833-mutation branch is longer than `--max_branch_length` |
 
-Every one of those hits is lineage-defining, so in every case the lineage is
-the explanation to beat.
+Every one of those repair-gene hits is lineage-defining, so in every case
+the lineage is the explanation to beat.
 
 The repair-gene reading collapses for `node_14377`. One of only four
 mutations on its defining branch is `mutT4` R48G, and it is lineage 2.2.1,
@@ -1170,19 +1173,15 @@ separate it from lineage either.
 and its four protein-changing hits against 2.2 expected are well within
 chance. Its spectrum is the lineage's spectrum.
 
-The rest of this example is from the round 2 tree and has not yet been
-redone on round 3.
-
 The quality reading collapses too, more thoroughly than step 9 could show.
 The clade that broke the divergence correlation — high mutations per tip, but
-a spectrum matching its low-divergence parent — is `node_3616`, with 269
-tips. La3 also has exactly 269 samples, so that clade *is* La3, a distinct
-animal-adapted species. Its long branches are sparse sampling of a diverged
+a spectrum matching its low-divergence parent — is `node_3594`, and all 269
+of its samples are La3, a distinct animal-adapted species. Its long branches are sparse sampling of a diverged
 species, and its spectrum matches its parent because it belongs to the
 animal-adapted group. The anomaly has a phylogenetic explanation, which is
 the strongest single sign that these spectra track lineage.
 
-One caveat on `node_6`: 336 of its 8,729 tips are `La1.2.BCG`, a
+One caveat on `node_6`: 336 of its 8,729 samples are `La1.2.BCG`, a
 laboratory-passaged vaccine strain. That is 3.9%, so it will not dominate,
 but serial passage is not natural evolution and it is worth excluding before
 making a quantitative claim about the animal-adapted spectrum.
@@ -1205,7 +1204,7 @@ such as Pango names — and will not find a `node_N` ID.
 
 A split can be real biology or it can be a quality gradient, and the two look
 identical in `spectra.tsv`. On a sparsely sampled tree most mutations sit on
-terminal branches — 63% on the tree described here — and a terminal branch
+terminal branches — 64% on the tree described here — and a terminal branch
 carries everything wrong with one genome: mapping error in repeats,
 deamination damage, contamination, assembly artifacts. Those have their own
 spectrum, usually enriched for C>T and G>A. So a clade whose genomes are
@@ -1221,7 +1220,7 @@ rather than instead of it.
 ```
 branch_class_spectra.py --input_tree tree.pruned.masked.pb.gz \
     --spectra spectra.tsv --fold --max_branch_length 250 \
-    --output branch_class.tsv
+    --output branch_class.tsv > branch_class_summary.txt
 ```
 
 Pass the same `--fold` and `--max_branch_length` as the search, and the
@@ -1246,31 +1245,38 @@ divergence per tip but a spectrum resembling its low-divergence parent rather
 than the other high-divergence clades. That is one clade rather than a
 pattern, so treat it as a reason to run this step, not a substitute for it.
 
-*Worked example*, the 30 splits from the run above. The correlations with
+*Worked example*, the 69 rows of the round 3 `spectra.tsv` (68 splits and
+the root), from `branch_class_summary.txt`. The correlations with
 divergence per tip are the same on both branch classes:
 
 | class | internal r | terminal r | internal rho | terminal rho |
 |---|---|---|---|---|
-| `CA\|GT` | 0.429 | 0.461 | 0.450 | 0.347 |
-| `CG\|GC` | -0.327 | -0.378 | -0.253 | -0.274 |
-| `CT\|GA` | **0.644** | **0.643** | 0.646 | 0.636 |
-| `TA\|AT` | -0.040 | -0.132 | -0.252 | -0.289 |
-| `TC\|AG` | **-0.523** | **-0.524** | -0.644 | -0.648 |
-| `TG\|AC` | **-0.691** | **-0.712** | -0.674 | -0.709 |
+| `CA\|GT` | 0.493 | 0.533 | 0.503 | 0.496 |
+| `CG\|GC` | -0.304 | -0.323 | -0.233 | -0.235 |
+| `CT\|GA` | **0.595** | **0.578** | 0.587 | 0.579 |
+| `TA\|AT` | -0.090 | -0.246 | -0.221 | -0.358 |
+| `TC\|AG` | **-0.528** | **-0.547** | -0.616 | -0.660 |
+| `TG\|AC` | **-0.624** | **-0.635** | -0.600 | -0.602 |
 
-Within each clade, internal and terminal spectra differ by a median of 0.1 to
-0.4 percentage points per class, with a single maximum of 2.28. So the
-spectrum is a property of the clade and not of the branch class: terminal
-branches are not carrying a distinct artifact spectrum, even though they hold
-63% of the mutations. The quality explanation is ruled out for this tree.
+Over the whole tree, the terminal spectrum is within 3% of the internal one
+in every class. The summary's internal-versus-terminal chi-squared of 212.4
+is large only because the counts are: 1.0M internal and 1.8M terminal
+mutations. Within each clade, internal and terminal spectra differ by a
+median of 0.12 to 0.55 percentage points per class, with a single maximum
+of 2.31 (`CT|GA` in `node_74367`). So the spectrum is a property of the
+clade and not of the branch class: terminal branches are not carrying a
+distinct artifact spectrum, even though they hold 64% of the mutations. The
+quality explanation is ruled out for this tree.
 
 The between-clade separation therefore stands on internal branches alone,
-where per-genome error cannot reach: `TC|AG` runs 0.131 to 0.273 across
-clades, a 2.08x spread on counts of 4,000 to 63,000 internal mutations each.
-And the clade that broke the divergence correlation holds up — at a
-divergence ratio of 46.3, close to the 54.3 of the most extreme clade, its
-internal-only `TC|AG` of 0.230 matches its low-divergence parent's 0.246
-rather than that clade's 0.142.
+where per-genome error cannot reach: `TC|AG` runs 0.109 to 0.276 across
+clades, a 2.5x spread on counts of 3,000 to 99,000 internal mutations each.
+And one clade breaks the divergence correlation and holds up. `node_3594`
+has a divergence ratio of 45.8, among the highest, but its internal-only
+`TC|AG` of 0.229 matches its low-divergence parent `node_6` (0.250, ratio
+16.4), not the 0.109 to 0.157 of 22 of the other 23 splits above a ratio of
+40 (the exception, `node_3979`, is at 0.191). Step 8's lineage check says
+why: all 269 of its samples are La3, inside the animal-adapted `node_6`.
 
 Note what this step does *not* establish. It rules out per-genome artifacts,
 not shared ones: a repeat that misaligns the same way in every genome of a
@@ -1886,7 +1892,7 @@ per-genome quality gradient. Needs `bte`.
 ```
 branch_class_spectra.py --input_tree tree.pruned.masked.pb.gz \
     --spectra spectra.tsv --fold --max_branch_length 250 \
-    --output branch_class.tsv
+    --output branch_class.tsv > branch_class_summary.txt
 ```
 
 - `--input_tree` must be the same file the search ran on, because node IDs are
