@@ -116,7 +116,9 @@ def parse_args():
                           "second column is a count, and a token like C2155168T "
                           "anywhere in the row is used as the mutation")
     src.add_argument("--positions", type=str, default=None,
-                     help="Comma-separated positions")
+                     help="Comma-separated positions, or mutations such as "
+                          "C2155168T (split_drivers.py's branch_mutations "
+                          "column), or a mix")
     src.add_argument("--from_profile", type=str, default=None,
                      help="profile_tree.py output; reads its SITE RECURRENCE table")
 
@@ -1021,7 +1023,10 @@ def main():
     elif args.positions:
         for tok in args.positions.split(","):
             tok = tok.strip()
-            if tok:
+            m = MUT_RE.match(tok)
+            if m:
+                sites.append((int(m.group(2)), None, tok.upper()))
+            elif tok:
                 sites.append((int(tok), None, None))
 
     if sites:

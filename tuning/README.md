@@ -3,9 +3,9 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and three need less: `prune_clade_check.py` uses `bte` only
-with `--input_tree`, and `null_by_size.py` and `split_confidence.py` read text
-files only.
+library and `bte`, and four need less: `prune_clade_check.py` and
+`split_drivers.py` use `bte` only with `--input_tree`, and `null_by_size.py`
+and `split_confidence.py` read text files only.
 
 ## Contents
 
@@ -32,6 +32,7 @@ files only.
   - [`annotate_sites.py`](#annotate_sitespy)
   - [`permutation_null.py`](#permutation_nullpy)
   - [`null_by_size.py`](#null_by_sizepy)
+  - [`split_drivers.py`](#split_driverspy)
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
@@ -46,6 +47,7 @@ files only.
 | [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
 | [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
 | [`null_by_size.py`](#null_by_sizepy) | 7 | How does that chance ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
+| [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, and what mutations define the ones worth interpreting? |
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10, 12 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 
@@ -983,12 +985,62 @@ in step 7 lists which ones.
 
 #### Then interpret
 
-When the run finishes, read each split's per-class proportions out of
-`spectra.tsv`. A split driven almost entirely by one mutation class is usually
-an artifact or a single over-mutated site; one spread across several classes that survives the
-bootstrap is the thing worth explaining. Running `annotate_sites.py --highlight
-repair_genes.txt` on the mutations of the split's defining branch is the first
-place to look for a mechanism.
+When the run finishes, `split_drivers.py` reads `spectra.tsv` the way you
+would by eye, and lists the splits worth explaining:
+
+```
+split_drivers.py --spectra spectra.tsv --splits_log splits.log \
+    --bootstrap bootstrap_*_splits_output.tsv \
+    --input_tree tree.pruned.masked.pb.gz --max_branch_length 250 \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --highlight repair_genes.txt \
+    --output split_drivers.tsv > split_drivers.txt
+```
+
+A split driven almost entirely by one mutation class is usually an artifact
+or a single over-mutated site; one spread across several classes that
+survives the bootstrap is the thing worth explaining. The script tests each
+of those per split, and labels it `interpret` only when it passes all three:
+
+- **one class**: the split's row is set against its parent's row (the
+  subtree it was found in, from `splits.log`) as a chi-squared table, and the
+  statistic is divided among the classes. Flagged when the top class carries
+  80% or more (`--one_class_share`).
+- **one site**: each of the split's five most recurrent sites is removed from
+  both rows in turn. Flagged when one removal takes away half the
+  chi-squared or more (`--one_site_loss`).
+- **weak support**: fewer than half the bootstrap replicates split the node,
+  or one within 10 node numbers of it (`--min_support`, `--neighbourhood`,
+  the same window as step 10).
+
+Its `branch_mutations` column lists the mutations on each split's defining
+branch, comma-separated, which is the form `annotate_sites.py --positions`
+takes. Annotating them with `--highlight repair_genes.txt` is the first place
+to look for a mechanism, and the report prints the command:
+
+```
+annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --highlight repair_genes.txt --output node_N_branch.tsv \
+    --positions "$(awk -F'\t' '$1=="node_N" {print $NF}' split_drivers.tsv)"
+```
+
+*Worked example.* The round 3 search accepted 68 splits below the root. 63
+were labelled `interpret`. Three were one class, all driven by C>A|G>T:
+`node_7984` (83% of its chi-squared), `node_76478` (85%) and `node_72955`
+(80%). Two had weak support: `node_69997` (48%) and `node_56835` (41%). No
+split hung on one site. The largest loss from removing one was 18%
+(`node_21060`, position 2,544,938), so the mask had done its job. The script
+rebuilds each split's mutation total from the tree, and every total matched
+`spectra.tsv`. That is the check that the tree and `--max_branch_length` are
+the ones the search used. So the screen removes the obvious cases, and step
+10 ranks the rest.
+
+The defining branches are mostly short. `node_14377` has four mutations, and
+the one in a repair gene is `mutT4` R48G, discussed below. Two branches,
+`node_3594` (833 mutations) and `node_4609` (591), are longer than
+`--max_branch_length`, so the search left them out of the spectrum. The
+report marks them: such a branch cannot have caused its split's spectrum,
+and its mutations label the lineage rather than suggest a mechanism.
 
 **Check each split's lineage before reading a mechanism into it.** If the tree
 carries clade annotations, this is a few commands and it changes the
@@ -1655,6 +1707,40 @@ same margin for the same size. `--min_nulls` (default 10) marks a ceiling drawn
 from too few null splits to trust. `--selftest` checks the binning, the
 ceilings, the flags and the hotspot rule on a constructed cascade.
 
+### `split_drivers.py`
+
+Used in [step 8](#8-run-the-search-with-bootstrap-and-check-where-it-saturates).
+
+```
+split_drivers.py --spectra spectra.tsv --splits_log splits.log \
+    --bootstrap bootstrap_*_splits_output.tsv \
+    --input_tree tree.pruned.masked.pb.gz --max_branch_length 250 \
+    --output split_drivers.tsv > split_drivers.txt
+```
+
+Prints a table of every split, with the splits to interpret listed below it.
+`--output` writes the same per split as a TSV:
+
+| Column | Meaning |
+| --- | --- |
+| `parent`, `chi_logged` | The subtree the split was found in, and its chi-squared, from the lines of `splits.log` above the bootstrap marker |
+| `chi2_residual`, `drivers`, `top_share`, `classes_80` | The split's `spectra.tsv` row against its parent's, as a 2 x K table (K = 6 folded classes when `spectra.tsv` has them, else 12). `drivers` lists the top three classes with `+` or `-` for the direction in the split and each class's share of the chi-squared. `classes_80` is how many classes it takes to reach 80% |
+| `site`, `site_mutations`, `site_loss` | With `--input_tree`: among the split's `--top_sites` (default 5) most recurrent sites, the one whose removal from both rows loses the most chi-squared, and that fraction |
+| `support` | With `--bootstrap`: fraction of replicates splitting the node or one within `--neighbourhood` (default 10) node numbers |
+| `verdict` | `interpret`, or the flags it failed: `one class` (`top_share` >= `--one_class_share`, default 0.8), `one site` (`site_loss` >= `--one_site_loss`, default 0.5), `weak support` (`support` < `--min_support`, default 0.5) |
+| `branch_mutations` | With `--input_tree`: the mutations on the split's own branch, comma-separated for `annotate_sites.py --positions` |
+
+The rows are residuals: each split minus the splits nested in it, which is
+what `spectra.tsv` reports. The search scored each split before later splits
+were carved out of either side, so `chi2_residual` is not `chi_logged`. It
+answers a different question: which classes separate the rows you will read.
+With `--input_tree`, each residual total is rebuilt from the tree and checked
+against `spectra.tsv`; a mismatch means a different tree or
+`--max_branch_length`, and is reported. `--annotation`, `--reference` and
+`--highlight` are only copied into the printed `annotate_sites.py` command.
+`--selftest` checks the chi-squared arithmetic, the residual walk and the
+one-site test on a constructed tree.
+
 ### `branch_class_spectra.py`
 
 Used in [step 9](#9-check-the-splits-against-sequencing-quality). Splits
@@ -1773,7 +1859,7 @@ and counts them, changing nothing else:
 
 ```
 annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --positions <mutations on the clade's defining branch> \
+    --positions <split_drivers.py's branch_mutations for the clade> \
     --highlight tb_repair_genes.txt
 ```
 
