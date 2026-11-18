@@ -5,35 +5,41 @@ This belongs to step 8 of parameter tuning, after split_drivers.py's loop has
 run annotate_sites.py --highlight on each split's defining branch.  A branch
 with hundreds of mutations will hit a gene list covering 1-2% of the genome
 whatever the mechanism, so a hit means something only against its
-expectation.  This script computes that expectation and reports:
+expectation.  This script computes that expectation.
 
-  1. THE CHANCE RATE.  The highlighted genes' length outside the mask, over
-     the genome's length outside the mask.  Masked sites cannot carry a
+By default only hits that change the protein count: nonsynonymous changes,
+stop gains included.  A synonymous change cannot disable a repair gene, so
+counting it adds noise and, worse, can promote a mutational hotspot into a
+"recurrent hit".  The expected rate is scaled to match: the genes' share of
+the searchable genome times the share of coding mutations on these branches
+that are nonsynonymous.  --count all counts every hit, unscaled.
+
+Every result comes with a chance count: how many of the tests made would
+reach its P by chance, from each test's own expectation (a short branch or a
+short gene cannot reach a small P at all, so it adds almost nothing).  Read
+that column first.  Near or above 1, the result is what the best of that
+many draws looks like, and its rank among the others means nothing.
+
+Reports:
+
+  1. THE CHANCE RATE, from the highlighted genes' length outside the mask
+     over the genome's length outside the mask.  Masked sites cannot carry a
      mutation, so the whole genome is the wrong denominator.
 
-  2. ALL BRANCHES.  Mutations, hits and expected hits summed over every
-     branch file, with the Poisson tail P(>= observed).  Also the share of
-     hits that change an amino acid, beside the same share for every coding
-     mutation on the branches: a mechanism that disables genes should raise
-     the first above the second.
+  2. ALL BRANCHES.  Hits against expectation summed over every branch, and
+     the nonsynonymous share of all hits beside the same share for every
+     coding mutation on the branches.
 
-  3. PER BRANCH.  The same per branch, sorted by P.  chance_branches is how
-     many of the branches tested would reach that P by chance, computed from
-     each branch's own length (a short branch cannot reach a small P at all).
-     A value near or above 1 means the branch looks like the best of that
-     many draws, not like a mechanism.
+  3. PER BRANCH, branches with counted hits.  On a short branch any one hit
+     gives P of about (mutations x rate), so the P of such a branch mostly
+     reflects how short it is.
 
-  4. GENES HIT MORE THAN ONCE ON ONE BRANCH.  Several hits in one gene on
-     one branch is either a strong signal or one event: hits a few bases
-     apart are often a single multi-base change or a local misalignment, so
-     the positions are listed.  chance_pairs is the correction across every
-     branch and gene pair.
+  4. ONE GENE, ONE BRANCH.  Genes with several counted hits on one branch,
+     with the mutations.  Hits a few bases apart may be a single multi-base
+     change or a local misalignment; check them in the reads.
 
-  5. GENES HIT ON MORE THAN ONE BRANCH.  Independent recurrence is the
-     evidence a single branch cannot give.  For each gene hit on two or more
-     branches: the branches expected to hit it by chance, from the gene's
-     length and each branch's mutation count, the Poisson tail, and
-     chance_genes, the same correction across every gene in the list.
+  5. ONE GENE, SEVERAL BRANCHES.  Independent recurrence, the evidence a
+     single branch cannot give.
 
 A hit is a site INSIDE a highlighted gene.  annotate_sites.py --highlight_flank
 also labels nearby sites as name@+N; those are not counted.
@@ -127,11 +133,13 @@ def gene_intervals(features, names):
 
 
 def read_branch(path):
-    """Summarise one annotate_sites.py output file."""
+    """Summarise one annotate_sites.py output file.
+
+    hits: (gene, mutation, aa_change, nonsynonymous) per site inside a
+    highlighted gene.
+    """
     n = coding = nonsyn = 0
-    hits, hit_nonsyn = 0, 0
-    genes = defaultdict(int)
-    positions = defaultdict(list)
+    hits = []
     with open(path) as fh:
         header = fh.readline().rstrip("\n").split("\t")
         col = {h: i for i, h in enumerate(header)}
@@ -147,21 +155,16 @@ def read_branch(path):
                 nonsyn += is_nonsyn
             hl = f[col["highlight"]] if col["highlight"] < len(f) else ""
             if hl and "@" not in hl:
-                hits += 1
-                hit_nonsyn += is_nonsyn
-                genes[hl] += 1
-                positions[hl].append(f[col["mutation"]] or f[col["position"]])
-    return {"mutations": n, "coding": coding, "nonsyn": nonsyn,
-            "hits": hits, "hit_nonsyn": hit_nonsyn, "genes": dict(genes),
-            "positions": dict(positions)}
+                mut = f[col["mutation"]] or f[col["position"]]
+                hits.append((hl, mut, aa.split(" ")[0], is_nonsyn))
+    return {"mutations": n, "coding": coding, "nonsyn": nonsyn, "hits": hits}
 
 
 def branch_name(path):
-    base = os.path.basename(path)
-    return re.sub(r"_branch\.tsv$", "", base)
+    return re.sub(r"_branch\.tsv$", "", os.path.basename(path))
 
 
-def analyse(branches, gene_ivs, mask, genome_size):
+def analyse(branches, gene_ivs, mask, genome_size, count="nonsyn"):
     """All the numbers the report prints, as a dict."""
     masked = length([(s, min(e, genome_size)) for s, e in mask
                      if s <= genome_size])
@@ -169,129 +172,82 @@ def analyse(branches, gene_ivs, mask, genome_size):
     union = merge_intervals([iv for ivs in gene_ivs.values() for iv in ivs])
     hl_bp = length(union)
     hl_free = hl_bp - overlap(union, mask)
-    rate = hl_free / searchable
     gene_free = {g: length(ivs) - overlap(ivs, mask)
                  for g, ivs in gene_ivs.items()}
 
+    all_hits = sum(len(d["hits"]) for d in branches.values())
+    hit_nonsyn = sum(h[3] for d in branches.values() for h in d["hits"])
+    coding = sum(d["coding"] for d in branches.values())
+    nonsyn = sum(d["nonsyn"] for d in branches.values())
+    ### P(a mutation is counted | it lands in a highlighted gene).
+    frac = 1.0 if count == "all" else (nonsyn / coding if coding else 0.0)
+    rate = hl_free / searchable * frac
+
+    counted = {b: [h for h in d["hits"] if count == "all" or h[3]]
+               for b, d in branches.items()}
     lams = {b: d["mutations"] * rate for b, d in branches.items()}
     rows = []
     for b, d in branches.items():
-        p = poisson_tail(d["hits"], lams[b])
-        rows.append(dict(d, branch=b, expected=lams[b], p=p))
+        k = len(counted[b])
+        genes = defaultdict(list)
+        for h in counted[b]:
+            genes[h[0]].append(h)
+        rows.append({"branch": b, "mutations": d["mutations"], "hits": k,
+                     "expected": lams[b], "p": poisson_tail(k, lams[b]),
+                     "genes": dict(genes)})
     for r in rows:
-        r["chance"] = chance_count(r["p"], lams.values()) \
-            if r["hits"] else None
+        r["chance"] = chance_count(r["p"], lams.values()) if r["hits"] \
+            else None
     rows.sort(key=lambda r: (r["p"], -r["hits"]))
 
-    tot = {k: sum(d[k] for d in branches.values())
-           for k in ("mutations", "coding", "nonsyn", "hits", "hit_nonsyn")}
-    tot["expected"] = tot["mutations"] * rate
-    tot["p"] = poisson_tail(tot["hits"], tot["expected"])
+    n_mut = sum(d["mutations"] for d in branches.values())
+    n_counted = sum(len(v) for v in counted.values())
+    tot = {"mutations": n_mut, "hits": n_counted, "expected": n_mut * rate,
+           "all_hits": all_hits, "hit_nonsyn": hit_nonsyn, "coding": coding,
+           "nonsyn": nonsyn}
+    tot["p"] = poisson_tail(n_counted, tot["expected"])
 
-    ### Recurrence: per gene, how many branches hit it, against how many
-    ### would by chance given each branch's length and the gene's.
-    gene_lams = {}
-    for g, bp in gene_free.items():
-        gene_lams[g] = sum(1 - math.exp(-d["mutations"] * bp / searchable)
-                           for d in branches.values())
+    ### One gene, one branch.
+    pair_lams = {(b, g): d["mutations"] * frac * bp / searchable
+                 for b, d in branches.items() for g, bp in gene_free.items()}
+    cluster = []
+    for r in rows:
+        for g, hs in r["genes"].items():
+            if len(hs) < 2 or g not in gene_free:
+                continue
+            lam = pair_lams[(r["branch"], g)]
+            p = poisson_tail(len(hs), lam)
+            cluster.append({"branch": r["branch"], "gene": g, "hits": hs,
+                            "expected": lam, "p": p,
+                            "chance": chance_count(p, pair_lams.values())})
+    cluster.sort(key=lambda r: r["p"])
+
+    ### One gene, several branches.
+    gene_lams = {g: sum(1 - math.exp(-d["mutations"] * frac * bp / searchable)
+                        for d in branches.values())
+                 for g, bp in gene_free.items()}
     recur = []
     for g in gene_free:
-        hit_by = sorted(b for b, d in branches.items() if g in d["genes"])
+        hit_by = [(r["branch"], r["genes"][g]) for r in rows if g in r["genes"]]
         if len(hit_by) < 2:
             continue
         p = poisson_tail(len(hit_by), gene_lams[g])
-        recur.append({"gene": g, "bp": gene_free[g], "branches": hit_by,
+        recur.append({"gene": g, "bp": gene_free[g], "hit_by": hit_by,
                       "expected": gene_lams[g], "p": p,
                       "chance": chance_count(p, gene_lams.values())})
     recur.sort(key=lambda r: r["p"])
-
-    ### Clustering: one gene hit more than once on one branch.
-    pair_lams = {(b, g): d["mutations"] * bp / searchable
-                 for b, d in branches.items() for g, bp in gene_free.items()}
-    cluster = []
-    for b, d in branches.items():
-        for g, k in d["genes"].items():
-            if k < 2 or g not in gene_free:
-                continue
-            p = poisson_tail(k, pair_lams[(b, g)])
-            cluster.append({"branch": b, "gene": g, "hits": k,
-                            "mutations": d["positions"].get(g, []),
-                            "expected": pair_lams[(b, g)], "p": p,
-                            "chance": chance_count(p, pair_lams.values())})
-    cluster.sort(key=lambda r: r["p"])
-    return {"cluster": cluster, "genome": genome_size, "masked": masked, "searchable": searchable,
-            "hl_bp": hl_bp, "hl_free": hl_free, "rate": rate, "rows": rows,
-            "total": tot, "recur": recur, "n_genes": len(gene_free)}
+    return {"genome": genome_size, "masked": masked, "searchable": searchable,
+            "hl_bp": hl_bp, "hl_free": hl_free, "frac": frac, "rate": rate,
+            "count": count, "rows": rows, "total": tot, "cluster": cluster,
+            "recur": recur, "n_genes": len(gene_free)}
 
 
 def pct(a, b):
     return f"{100 * a / b:.0f}%" if b else "n/a"
 
 
-def report(res, names_file, n_names, missing, out):
-    t = res["total"]
-    print(f"BRANCH HITS: genes from {names_file}", file=out)
-    print(f"  {res['n_genes']} of {n_names} names found in the annotation"
-          + (f"; not found: {', '.join(missing)}" if missing else ""), file=out)
-    print(f"  highlighted genes: {res['hl_bp']:,} bp, {res['hl_free']:,} "
-          f"outside the mask", file=out)
-    print(f"  genome: {res['genome']:,} bp, {res['masked']:,} masked, "
-          f"{res['searchable']:,} searchable", file=out)
-    print(f"  chance rate per mutation: {res['hl_free']:,} / "
-          f"{res['searchable']:,} = {100 * res['rate']:.3f}%", file=out)
-    print(file=out)
-    print("ALL BRANCHES", file=out)
-    print(f"  {len(res['rows'])} branches, {t['mutations']:,} mutations, "
-          f"{t['hits']} hits, {t['expected']:.1f} expected, "
-          f"P(>={t['hits']}) = {t['p']:.3g}", file=out)
-    print(f"  hits that change an amino acid: {t['hit_nonsyn']} of {t['hits']} "
-          f"({pct(t['hit_nonsyn'], t['hits'])}), against {t['nonsyn']:,} of "
-          f"{t['coding']:,} ({pct(t['nonsyn'], t['coding'])}) for every coding "
-          f"mutation on these branches", file=out)
-    print(file=out)
-    print("PER BRANCH, branches with hits, by P (chance_branches: how many of "
-          f"the {len(res['rows'])} would", file=out)
-    print("reach this P by chance)", file=out)
-    head = ["branch", "mutations", "hits", "nonsyn", "expected", "P",
-            "chance_branches", "genes"]
-    table = [head]
-    for r in res["rows"]:
-        if not r["hits"]:
-            continue
-        genes = ", ".join(f"{g}={k}" if k > 1 else g
-                          for g, k in sorted(r["genes"].items()))
-        table.append([r["branch"], str(r["mutations"]), str(r["hits"]),
-                      str(r["hit_nonsyn"]), f"{r['expected']:.2f}",
-                      f"{r['p']:.3g}", f"{r['chance']:.2f}", genes])
-    print_table(table, out)
-    print(file=out)
-    print("GENES HIT MORE THAN ONCE ON ONE BRANCH (chance_pairs: how many of "
-          f"the {len(res['rows']) * res['n_genes']:,}", file=out)
-    print("branch-gene pairs would reach this P by chance)", file=out)
-    if res["cluster"]:
-        table = [["branch", "gene", "hits", "expected", "P", "chance_pairs",
-                  "mutations"]]
-        for r in res["cluster"]:
-            table.append([r["branch"], r["gene"], str(r["hits"]),
-                          f"{r['expected']:.3f}", f"{r['p']:.3g}",
-                          f"{r['chance']:.3g}", " ".join(r["mutations"])])
-        print_table(table, out)
-    else:
-        print("  none", file=out)
-    print(file=out)
-    print("GENES HIT ON MORE THAN ONE BRANCH (chance_genes: how many of the "
-          f"{res['n_genes']} genes", file=out)
-    print("would reach this P by chance)", file=out)
-    if not res["recur"]:
-        print("  none", file=out)
-        return
-    table = [["gene", "bp", "branches", "expected", "P", "chance_genes",
-              "hit on"]]
-    for r in res["recur"]:
-        table.append([r["gene"], f"{r['bp']:,}", str(len(r["branches"])),
-                      f"{r['expected']:.2f}", f"{r['p']:.3g}",
-                      f"{r['chance']:.2f}", " ".join(r["branches"])])
-    print_table(table, out)
+def hit_label(h):
+    return f"{h[0]} {h[2]}" if h[2] else f"{h[0]} {h[1]}"
 
 
 def print_table(table, out):
@@ -301,17 +257,101 @@ def print_table(table, out):
               file=out)
 
 
+def report(res, names_file, n_names, missing, out):
+    t = res["total"]
+    what = "nonsynonymous hits" if res["count"] == "nonsyn" else "hits"
+    print(f"BRANCH HITS: genes from {names_file}; counting {what}", file=out)
+    print(f"  {res['n_genes']} of {n_names} names found in the annotation"
+          + (f"; not found: {', '.join(missing)}" if missing else ""), file=out)
+    print(f"  highlighted genes: {res['hl_bp']:,} bp, {res['hl_free']:,} "
+          f"outside the mask", file=out)
+    print(f"  genome: {res['genome']:,} bp, {res['masked']:,} masked, "
+          f"{res['searchable']:,} searchable", file=out)
+    line = (f"  chance rate per mutation: {res['hl_free']:,} / "
+            f"{res['searchable']:,}")
+    if res["count"] == "nonsyn":
+        line += (f" x {t['nonsyn']:,}/{t['coding']:,} nonsynonymous "
+                 f"coding mutations")
+    print(f"{line} = {100 * res['rate']:.3f}%", file=out)
+    print(file=out)
+    print("  'by chance' is how many of the tests made would reach that P by "
+          "chance. Read it", file=out)
+    print("  first: near or above 1, the result is what the best of that many "
+          "draws looks", file=out)
+    print("  like, and its rank means nothing.", file=out)
+    print(file=out)
+
+    print("ALL BRANCHES", file=out)
+    print(f"  {len(res['rows'])} branches, {t['mutations']:,} mutations, "
+          f"{t['hits']} {what}, {t['expected']:.1f} expected, "
+          f"P(>={t['hits']}) = {t['p']:.3g}", file=out)
+    print(f"  nonsynonymous share: {t['hit_nonsyn']} of {t['all_hits']} hits "
+          f"({pct(t['hit_nonsyn'], t['all_hits'])}), against {t['nonsyn']:,} "
+          f"of {t['coding']:,} ({pct(t['nonsyn'], t['coding'])}) coding "
+          f"mutations on these branches", file=out)
+    print(file=out)
+
+    n = len(res["rows"])
+    print(f"PER BRANCH ('by chance' out of {n} branches)", file=out)
+    table = [["branch", "by chance", "P", what.split()[0] if
+              res["count"] == "nonsyn" else "hits", "expected", "mutations",
+              "genes"]]
+    for r in res["rows"]:
+        if not r["hits"]:
+            continue
+        genes = ", ".join(hit_label(h) for hs in r["genes"].values()
+                          for h in hs)
+        table.append([r["branch"], f"{r['chance']:.2f}", f"{r['p']:.3g}",
+                      str(r["hits"]), f"{r['expected']:.2f}",
+                      str(r["mutations"]), genes])
+    if len(table) > 1:
+        print_table(table, out)
+    else:
+        print("  none", file=out)
+    print(file=out)
+
+    pairs = n * res["n_genes"]
+    print(f"ONE GENE, ONE BRANCH ('by chance' out of {pairs:,} branch-gene "
+          f"pairs)", file=out)
+    if res["cluster"]:
+        table = [["branch", "gene", "by chance", "P", "hits", "expected",
+                  "mutations"]]
+        for r in res["cluster"]:
+            table.append([r["branch"], r["gene"], f"{r['chance']:.3g}",
+                          f"{r['p']:.3g}", str(len(r["hits"])),
+                          f"{r['expected']:.3f}",
+                          ", ".join(f"{h[1]} {h[2]}" for h in r["hits"])])
+        print_table(table, out)
+    else:
+        print("  none", file=out)
+    print(file=out)
+
+    print(f"ONE GENE, SEVERAL BRANCHES ('by chance' out of {res['n_genes']} "
+          f"genes)", file=out)
+    if res["recur"]:
+        table = [["gene", "by chance", "P", "branches", "expected", "bp",
+                  "hits"]]
+        for r in res["recur"]:
+            hits = "; ".join(f"{b} " + ", ".join(h[2] or h[1] for h in hs)
+                             for b, hs in r["hit_by"])
+            table.append([r["gene"], f"{r['chance']:.2f}", f"{r['p']:.3g}",
+                          str(len(r["hit_by"])), f"{r['expected']:.2f}",
+                          f"{r['bp']:,}", hits])
+        print_table(table, out)
+    else:
+        print("  none", file=out)
+
+
 def write_tsv(res, path):
-    cols = ["branch", "mutations", "coding", "nonsyn", "hits", "hit_nonsyn",
-            "expected", "p", "chance"]
     with open(path, "w") as fh:
-        fh.write("\t".join(cols + ["genes"]) + "\n")
+        fh.write("branch\tmutations\thits\texpected\tp\tby_chance\tgenes\n")
         for r in res["rows"]:
-            vals = [r[c] for c in cols]
-            vals = ["" if v is None else (f"{v:.4g}" if isinstance(v, float)
-                                          else str(v)) for v in vals]
-            genes = ",".join(f"{g}={k}" for g, k in sorted(r["genes"].items()))
-            fh.write("\t".join(vals + [genes]) + "\n")
+            vals = [r["branch"], str(r["mutations"]), str(r["hits"]),
+                    f"{r['expected']:.4g}", f"{r['p']:.4g}",
+                    "" if r["chance"] is None else f"{r['chance']:.4g}",
+                    ",".join(f"{h[0]}:{h[1]}" for hs in r["genes"].values()
+                             for h in hs)]
+            fh.write("\t".join(vals) + "\n")
 
 
 def parse_args(argv=None):
@@ -331,6 +371,8 @@ def parse_args(argv=None):
     g.add_argument("--reference", help="Reference FASTA, for the genome length")
     g.add_argument("--genome_size", type=int)
     p.add_argument("--seqid", default=None)
+    p.add_argument("--count", choices=("nonsyn", "all"), default="nonsyn",
+                   help="Count only protein-changing hits (default), or all")
     p.add_argument("--output", help="Per-branch TSV")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args(argv)
@@ -359,7 +401,7 @@ def main():
     mask = read_bed_intervals([m for m in args.mask.split(",") if m]) \
         if args.mask else []
     branches = {branch_name(p): read_branch(p) for p in args.branches}
-    res = analyse(branches, gene_ivs, mask, genome)
+    res = analyse(branches, gene_ivs, mask, genome, args.count)
     if args.output:
         write_tsv(res, args.output)
     report(res, args.highlight, len(names), missing, sys.stdout)
@@ -377,48 +419,57 @@ def selftest():
     check(abs(poisson_tail(8, 3.16) - 0.0158) < 0.001,
           f"P(X>=8 | 3.16) = {poisson_tail(8, 3.16):.4f}")
     check(poisson_tail(0, 2.0) == 1.0, "P(X>=0) is 1")
-    ### A test that cannot reach p adds nothing; one that always can adds 1.
     check(chance_count(0.01, [0.0001]) < 0.01, "a short branch adds ~0")
     check(abs(chance_count(0.5, [5.0]) - poisson_tail(6, 5.0)) < 1e-12,
           "discrete tail used, not p")
     check(overlap([(10, 20)], [(15, 30)]) == 6, "overlap is inclusive")
 
+    import io
     import tempfile
     d = tempfile.mkdtemp()
     hdr = ("position\tcount\tmutation\tcontext\tfeature_type\tgene\t"
            "locus_tag\tstrand\tcodon\tcodon_pos\tref_codon\tref_aa\t"
            "aa_change\tdistance\tproduct\thighlight\n")
     rows = ["1\t\tA1G\tCDS\tCDS\tx\tR1\t+\t1\t1\tATG\tM\tM1V (nonsyn)\t0\tp\trecA\n",
-            "2\t\tA2G\tCDS\tCDS\tx\tR1\t+\t1\t2\tATG\tM\tM1M (syn)\t0\tp\trecA\n",
-            "3\t\tA3G\tCDS\tCDS\ty\tR2\t+\t1\t3\tATG\tM\tM1I (nonsyn)\t0\tp\t\n",
-            "4\t\tA4G\tpromoter\t\t\t\t\t\t\t\t\t\t-5\t\tmutY@-5\n"]
+            "2\t\tA2G\tCDS\tCDS\tx\tR1\t+\t1\t2\tATG\tM\tM1I (nonsyn)\t0\tp\trecA\n",
+            "3\t\tA3G\tCDS\tCDS\tx\tR1\t+\t1\t3\tATG\tM\tM1M (syn)\t0\tp\trecA\n",
+            "4\t\tA4G\tCDS\tCDS\ty\tR2\t+\t2\t1\tATG\tM\tM2V (nonsyn)\t0\tp\t\n",
+            "5\t\tA5G\tpromoter\t\t\t\t\t\t\t\t\t\t-5\t\tmutY@-5\n"]
     path = os.path.join(d, "node_7_branch.tsv")
     with open(path, "w") as fh:
         fh.write(hdr + "".join(rows))
     b = read_branch(path)
     check(branch_name(path) == "node_7", "branch name from file name")
-    check(b["mutations"] == 4 and b["hits"] == 2 and b["hit_nonsyn"] == 1
-          and b["coding"] == 3 and b["nonsyn"] == 2,
-          "hits inside the gene only; flank labels not counted")
+    check(b["mutations"] == 5 and len(b["hits"]) == 3 and b["coding"] == 4
+          and b["nonsyn"] == 3, "hits inside the gene only; flank not counted")
 
     gene_ivs = {"recA": [(1, 100)], "mutY": [(201, 300)]}
-    branches = {"node_7": b,
-                "node_9": {"mutations": 10, "coding": 10, "nonsyn": 5,
-                           "hits": 1, "hit_nonsyn": 1, "genes": {"recA": 1},
-                           "positions": {"recA": ["A5G"]}}}
+    syn_only = {"mutations": 10, "coding": 10, "nonsyn": 5,
+                "hits": [("mutY", "C250T", "L5L", False)]}
+    branches = {"node_7": b, "node_9": {"mutations": 10, "coding": 10,
+                                        "nonsyn": 5,
+                                        "hits": [("recA", "A9G", "K3E", True),
+                                                 ("mutY", "C251T", "L6L",
+                                                  False)]},
+                "node_80": syn_only}
     res = analyse(branches, gene_ivs, [(51, 100), (901, 1000)], 1000)
     check(res["searchable"] == 850 and res["hl_free"] == 150,
           f"mask removed from both: {res['hl_free']}/{res['searchable']}")
-    check(abs(res["rate"] - 150 / 850) < 1e-12, "rate")
+    check(abs(res["frac"] - 13 / 24) < 1e-12, "nonsyn fraction pooled")
+    check(abs(res["rate"] - 150 / 850 * 13 / 24) < 1e-12, "rate scaled")
+    check(res["total"]["hits"] == 3, "synonymous hits not counted")
     check([r["gene"] for r in res["recur"]] == ["recA"],
-          "recurrence across branches")
-    check([(r["branch"], r["gene"], r["mutations"]) for r in res["cluster"]]
-          == [("node_7", "recA", ["A1G", "A2G"])], "clustering on one branch")
-    import io
+          "a synonymous-only gene does not recur")
+    check([(r["branch"], r["gene"], len(r["hits"])) for r in res["cluster"]]
+          == [("node_7", "recA", 2)], "clustering counts nonsyn only")
+    res_all = analyse(branches, gene_ivs, [(51, 100), (901, 1000)], 1000,
+                      "all")
+    check(res_all["total"]["hits"] == 6 and res_all["frac"] == 1.0
+          and {r["gene"] for r in res_all["recur"]} == {"recA", "mutY"},
+          "--count all counts every hit, unscaled")
     buf = io.StringIO()
     report(res, "genes.txt", 2, [], buf)
-    check("GENES HIT ON MORE THAN ONE BRANCH" in buf.getvalue(),
-          "report renders")
+    check("ONE GENE, SEVERAL BRANCHES" in buf.getvalue(), "report renders")
     print("selftest " + ("passed" if ok else "FAILED"))
     return 0 if ok else 1
 

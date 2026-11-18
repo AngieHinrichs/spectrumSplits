@@ -1052,16 +1052,24 @@ branch_hits.py --branches node_*_branch.tsv \
     --output branch_hits.tsv > branch_hits.txt
 ```
 
-The chance rate per mutation is the genes' length outside the mask over the
-genome's length outside the mask, since masked sites cannot carry a mutation.
-Every P is a Poisson tail, and each comes with a count of how many of the
-tests made would reach it by chance (`chance_branches`, `chance_pairs`,
-`chance_genes`). A count near or above 1 means the result is what the best of
-that many draws looks like. Three kinds of result carry weight: a branch with
-more hits than its length predicts, one gene hit several times on one branch,
-and one gene hit on several unrelated branches. The last is the strongest,
-because a single branch cannot separate a mechanism from everything else
-that defines its lineage.
+Only hits that change the protein count, by default: a synonymous change
+cannot disable a repair gene, and counting it lets a mutational hotspot pass
+for a recurrent hit. The chance rate per mutation is the genes' length
+outside the mask over the genome's length outside the mask (masked sites
+cannot carry a mutation), times the share of the branches' coding mutations
+that are nonsynonymous. `--count all` counts every hit instead.
+
+Every P comes with a "by chance" count: how many of the tests made would
+reach that P by chance, from each test's own expectation. Read it first.
+Near or above 1, a result is what the best of that many draws looks like,
+and its rank among the others means nothing. That matters most on short
+branches, where any single hit gives P of about the branch's mutations times
+the rate, so the per-branch ranking there mostly sorts branches by length.
+Three kinds of result can carry weight: a branch with more hits than its
+length predicts, one gene hit several times on one branch, and one gene hit
+on several unrelated branches. The last is the strongest, because a single
+branch cannot separate a mechanism from everything else that defines its
+lineage.
 
 *Worked example.* The round 3 search accepted 68 splits below the root. 63
 were labelled `interpret`. Three were one class, all driven by C>A|G>T:
@@ -1079,34 +1087,32 @@ Three `interpret` splits had branches longer than 250 and were skipped:
 other 60 were annotated, and `branch_hits.py` reported:
 
 ```
-  chance rate per mutation: 70,579 / 3,907,786 = 1.806%
+  chance rate per mutation: 70,579 / 3,907,786 x 973/1,519 nonsynonymous coding mutations = 1.157%
 
 ALL BRANCHES
-  60 branches, 1,718 mutations, 40 hits, 31.0 expected, P(>=40) = 0.0685
-  hits that change an amino acid: 21 of 40 (52%), against 973 of 1,519 (64%) for every coding mutation on these branches
+  60 branches, 1,718 mutations, 21 nonsynonymous hits, 19.9 expected, P(>=21) = 0.43
+  nonsynonymous share: 21 of 40 hits (52%), against 973 of 1,519 (64%) coding mutations on these branches
 ```
 
-Overall, then, nothing: 40 hits against 31 expected, and repair-gene hits
-change an amino acid *less* often than the branches' other coding mutations.
-Three results stand out from that background:
+Nothing here beats chance. Repair-gene hits change an amino acid *less* often
+than the branches' other coding mutations, and the protein-changing ones
+number what the genes' length predicts. The best single results:
 
 | result | observed | expected | P | by chance |
 |---|---|---|---|---|
-| `node_3821`: hits on its branch | 8 in 192 mutations | 3.47 | 0.026 | 0.53 of 60 branches |
-| `node_14051`: hits in `polA` | 3 in 106 mutations | 0.073 | 6.0e-05 | 0.023 of 3,060 pairs |
-| `ligC`: branches hitting it | 3 (`node_14051`, `node_4385`, `node_5014`) | 0.47 | 0.012 | 0.25 of 51 genes |
+| `polA` on `node_14051` | T186P, R188G | 0.047 | 0.0011 | 0.67 of 3,060 branch-gene pairs |
+| `node_13078` (`polA` G795D) and `node_14377` (`mutT4` R48G) | 1 hit in 4 mutations | 0.05 | 0.045 | 1.19 of 60 branches |
+| `recA` (`node_3821`, `node_12343`) | 2 branches | 0.66 | 0.14 | 2.88 of 51 genes |
 
-`node_3821`'s eight hits fall in eight different genes, half of them
-synonymous, so they look diffuse rather than like one disabled gene. The
-`polA` hits are T186P, R188G and P208P, all within 68 bp
-(1,831,220-1,831,288). That clustering is what makes them improbable, and it
-is also what a single multi-base event or a local misalignment would look
-like. They are not near the mask and not among the recurrent sites, so it is
-a lead to check in the reads, not a result. `ligC` is the cleanest of the
-three: three unrelated branches, none of them long. `node_14377`'s `mutT4`
-R48G, discussed below, is one hit on a four-mutation branch (P = 0.07):
-striking to read, but the arithmetic cannot separate it from chance, and its
-lineage explains it.
+The `polA` pair is the only result below 1, and only just. Its two changes
+are 6 bp apart, which is also what a single multi-base event or a local
+misalignment looks like, so check it in the reads before anything else.
+`node_14377`'s `mutT4` R48G is one hit on a four-mutation branch, which
+chance produces about once in a run of this size. What makes it notable is
+outside knowledge the script cannot use, and its lineage explains it (see
+below). Counting synonymous hits too (`--count all`) gives a different and
+misleading picture: `ligC` then looks recurrent on three branches (0.25 by
+chance), but all three of its hits are synonymous.
 
 **Check each split's lineage before reading a mechanism into it.** If the tree
 carries clade annotations, this is a few commands and it changes the
@@ -1824,16 +1830,19 @@ Reads the `annotate_sites.py --highlight` output for each branch, which
 `split_drivers.py`'s loop writes as `node_N_branch.tsv`. `--annotation` and
 `--highlight` must be the ones that run used: the gene lengths come from
 resolving the same names the same way. A hit is a site inside a named gene;
-sites `--highlight_flank` labels as `name@+N` are not counted.
+sites `--highlight_flank` labels as `name@+N` are not counted. Only
+nonsynonymous hits, stop gains included, count unless `--count all` is
+given, and every result's "by chance" column, not its rank, says whether it
+stands out.
 `--genome_size` can replace `--reference`.
 
 | Section | What to do with it |
 | --- | --- |
-| Chance rate | Highlighted genes' length outside the mask over the genome's. Check the names reported as not found |
-| All branches | Hits against expectation summed over every branch, and the share of hits that change an amino acid beside the share for every coding mutation on the branches |
-| Per branch | Each branch with hits, by P. `chance_branches` is how many of the branches would reach that P by chance, from each one's own length, so short branches that cannot reach it do not inflate it |
-| One gene, one branch | Genes hit more than once on a branch, with the mutations. Hits a few bases apart may be one event; check them in the reads before believing them |
-| One gene, several branches | Genes hit on two or more branches, against the branches expected to hit them from the gene's length and each branch's. `chance_genes` corrects across the gene list |
+| Chance rate | Highlighted genes' length outside the mask over the genome's, times the branches' nonsynonymous share of coding mutations. Check the names reported as not found |
+| All branches | Counted hits against expectation summed over every branch, and the nonsynonymous share of all hits beside the share for every coding mutation on the branches |
+| Per branch | Each branch with counted hits, by P. "by chance" is how many of the branches would reach that P by chance, from each one's own length, so short branches that cannot reach it do not inflate it |
+| One gene, one branch | Genes with several counted hits on one branch, with the mutations. Hits a few bases apart may be one event; check them in the reads before believing them |
+| One gene, several branches | Genes hit on two or more branches, against the branches expected to hit them from the gene's length and each branch's; "by chance" corrects across the gene list |
 
 `--output` writes the per-branch numbers as a TSV. `--selftest` checks the
 Poisson tails, the chance counts, the hit counting and the mask arithmetic on
