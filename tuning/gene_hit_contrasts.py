@@ -193,8 +193,8 @@ def read_gene_list(path):
 def cds_index_for(features, names):
     """Map each position in a requested gene's CDS to (gene_name, feature).
 
-    Two requested names can resolve to the same CDS (nucS and its synonym
-    endMS are both in tb_repair_genes.txt).  Counting it twice would make
+    Two requested names can resolve to the same CDS (alkA and its synonym
+    ada, if a list gives both).  Counting it twice would make
     every hit two events, so each CDS belongs to the first name that claims it.
     """
     matched, missing = resolve_region_names(features, names)

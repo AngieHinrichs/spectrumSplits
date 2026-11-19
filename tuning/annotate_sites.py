@@ -294,6 +294,33 @@ def parse_gff3(path, seqid_filter=None):
                                     -1 if strand == "-" else 1,
                                     gene, locus_tag, kv.get("product"),
                                     aliases))
+    return share_locus_names(features)
+
+
+def share_locus_names(features):
+    """Give every feature of a locus all the names any of them carries.
+
+    NCBI's GFF3 puts gene_synonym on the gene line only: the CDS of Rv1537
+    says gene=dinX, and only its gene line says dinB1.  A site in a coding
+    region is annotated from the CDS, and a coding test needs the CDS, so a
+    gene requested by a synonym would resolve to the gene line, then miss its
+    own CDS.  Pooling the names per locus tag makes any name for a gene reach
+    all of its features.
+    """
+    by_locus = defaultdict(list)
+    for f in features:
+        if f.locus_tag and f.ftype not in LANDMARK_TYPES:
+            by_locus[(f.seqid, f.locus_tag)].append(f)
+    for group in by_locus.values():
+        if len(group) < 2:
+            continue
+        pooled = []
+        for f in group:
+            for n in (f.gene,) + f.aliases:
+                if n and n not in pooled:
+                    pooled.append(n)
+        for f in group:
+            f.aliases = tuple(dict.fromkeys(f.aliases + tuple(pooled)))
     return features
 
 
@@ -362,7 +389,7 @@ def parse_genbank(path, seqid_filter=None):
                 elif stripped and not cur[2]:
                     cur[1] += stripped
     flush(cur)
-    return features
+    return share_locus_names(features)
 
 
 def load_annotation(path, seqid_filter=None):
@@ -909,6 +936,22 @@ def selftest():
     if features_matching(pool3, "^esx") != [pseudo]:
         failures += 1
         print("FAIL a name pattern should reach a pseudogene", file=sys.stderr)
+    ### NCBI puts gene_synonym on the gene line only.  A synonym must still
+    ### reach the CDS, or a site in the gene is not highlighted under it and a
+    ### coding test finds no CDS for it.
+    with tempfile.NamedTemporaryFile("w", suffix=".gff3", delete=False) as tmp:
+        tmp.write("##gff-version 3\n"
+                  "t\tRefSeq\tgene\t100\t400\t.\t+\t.\tID=gene-Rv1537;"
+                  "Name=dinX;gene=dinX;gene_synonym=dinB1;locus_tag=Rv1537\n"
+                  "t\tRefSeq\tCDS\t100\t400\t.\t+\t0\tID=cds-NP_1;"
+                  "Parent=gene-Rv1537;Name=NP_1;gene=dinX;locus_tag=Rv1537\n")
+    parsed = parse_gff3(tmp.name)
+    os.unlink(tmp.name)
+    matched, missing = resolve_region_names(parsed, ["dinB1"])
+    if missing or sorted(f.ftype for f in matched["dinB1"]) != ["CDS", "gene"]:
+        failures += 1
+        print(f"FAIL a gene-line synonym should reach the CDS: "
+              f"{matched.get('dinB1')} missing={missing}", file=sys.stderr)
     if failures == 0:
         print("ok: gene synonyms and locus tags resolve to the same feature")
 

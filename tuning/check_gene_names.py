@@ -15,9 +15,12 @@ This script resolves every entry the way annotate_sites.py does and reports:
   ok         one locus, matched as written.  If the annotation displays it
              under another name (a synonym or old locus tag matched), that
              name is shown, since output tables will use it.
-  duplicate  the same locus as an earlier entry (mutM and fpg).  Harmless,
-             and often deliberate: a name plus its locus tag keeps a list
-             working on annotations that name the gene differently.
+  duplicate  the same locus as an earlier entry (mutM and fpg).  Harmless
+             in a --regions list, where a name plus its locus tag keeps a
+             mask working on annotations that name the gene differently.
+             Not in a --highlight list: branch_hits.py counts each name as
+             a gene of its own, which inflates its 'by chance' counts, and
+             a site's label then depends on which name sorts first.
   several    more than one locus: probably a short or reused name.
   not found  with candidates, best first:
                - a name within --near characters that contains the entry or
@@ -191,8 +194,9 @@ def report(rows, args, out):
     dups = [r for r in rows if r["status"] == "duplicate"]
     if dups:
         print(file=out)
-        print("SAME LOCUS AS AN EARLIER ENTRY (harmless; keep both if the list "
-              "must work on other annotations)", file=out)
+        print("SAME LOCUS AS AN EARLIER ENTRY (harmless in a --regions list; "
+              "in a --highlight list keep one, since branch_hits.py counts "
+              "each as a gene)", file=out)
         for r in dups:
             print(f"  {r['entry']}  =  {r['of']}: {r['loci'][0].describe()}",
                   file=out)

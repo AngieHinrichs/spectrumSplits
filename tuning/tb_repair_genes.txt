@@ -70,8 +70,7 @@ dnaE2
 Rv1321  # NucS / EndoMS; NCBI names it only by locus tag
 
 # --- oxidative and alkylation damage -----------------------------------------
-ada
-alkA
+alkA    # also ada
 alkB
 tagA
 
@@ -79,12 +78,10 @@ tagA
 nth
 nei
 Rv2464c  # nei1; NCBI's nei is Rv3297, nei2
-fpg
+fpg     # also mutM
 Rv0944  # fpg2; NCBI names it only by locus tag
-mutM
 xthA
-nfo
-end
+end     # nfo; NCBI names it end
 
 # --- nucleotide excision repair ----------------------------------------------
 uvrA
@@ -97,7 +94,7 @@ mfd
 # --- replicative and translesion polymerases ---------------------------------
 dnaE1
 dnaN
-dinB1
+dinX    # also dinB1
 dinP
 polA
 dnaQ

@@ -1400,9 +1400,9 @@ number what the genes' length predicts. The best single results:
 
 | result | observed | expected | P | by chance |
 |---|---|---|---|---|
-| `polA` on `node_14005` | T186P, R188G | 0.047 | 0.0011 | 0.78 of 3,422 branch-gene pairs |
+| `polA` on `node_14005` | T186P, R188G | 0.047 | 0.0011 | 0.74 of 3,248 branch-gene pairs |
 | `node_13032` (`polA` G795D) and `node_14331` (`mutT4` R48G) | 1 hit in 4 mutations | 0.05 | 0.049 | 1.32 of 58 branches |
-| `recA` (`node_3775`, `node_12297`) | 2 branches | 0.63 | 0.13 | 2.97 of 59 genes |
+| `recA` (`node_3775`, `node_12297`) | 2 branches | 0.63 | 0.13 | 2.87 of 56 genes |
 
 The `polA` pair is the only result below 1, and only just. Its two changes
 are 6 bp apart, which is also what a single multi-base event or a local
@@ -1411,7 +1411,7 @@ misalignment looks like, so check it in the reads before anything else.
 chance produces about once in a run of this size. What makes it notable is
 outside knowledge the script cannot use, and its lineage explains it (see
 below). Counting synonymous hits too (`--count all`) gives a different and
-misleading picture: `ligC` then looks recurrent on three branches (0.24 by
+misleading picture: `ligC` then looks recurrent on three branches (0.23 by
 chance), but all three of its hits are synonymous.
 
 **Check each split's lineage before reading a mechanism into it.** If the tree
@@ -2329,9 +2329,11 @@ parts:
 - **Shown under another name**: entries that matched through a synonym or
   locus tag, with the name output tables will use instead (`dinB1` appears as
   `dinX`).
-- **Same locus as an earlier entry**: harmless, and often deliberate, since a
-  name plus its locus tag keeps a list working on annotations that name the
-  gene differently.
+- **Same locus as an earlier entry**: harmless in a `--regions` list, and
+  often deliberate there, since a name plus its locus tag keeps a mask
+  working on annotations that name the gene differently. In a `--highlight`
+  list keep one: `branch_hits.py` counts each name as a gene of its own,
+  which inflates its "by chance" counts.
 - **To fix**: entries matching several loci (use the locus tag of the one
   meant) and entries not found, each with candidates. A candidate is a name
   within `--near` characters (default 2) that contains the entry or is
