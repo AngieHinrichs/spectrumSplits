@@ -985,12 +985,14 @@ number from a different pass.
 ```
 null_by_size.py --null null_sites_cascade.tsv --min_chi 53 \
     --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    > null_by_size.txt
 ```
 
 Take `--min_chi` from the "with 2x margin" line of the `sites` run's printed
 summary; on the MTBC tree that read `--min_chi 53`. Only the report's middle
-section uses it.
+section uses it. The report is worth keeping: the rest of this step reads
+all three of its sections.
 
 The summary's thresholds are multiples of the single largest null maximum,
 so whatever sets that maximum sets the threshold. Under the `sites` null each
@@ -1131,17 +1133,19 @@ third section is the hotspot check above.
 
 *Worked example*, same tree and parameters as above, 2,500 null splits:
 
-| size of table scored | null splits | median | p99 | max |
-|---|---|---|---|---|
-| 2.84M (whole tree) | 100 | 20.7 | 28.9 | 29.3 |
-| 1.43M-2.83M | 1,089 | 13.3 | 21.4 | 28.1 |
-| 712k-1.38M | 79 | 11.1 | 19.2 | 19.7 |
-| 354k-705k | 100 | 10.2 | 15.8 | 18.2 |
-| 177k-351k | 128 | 7.9 | 15.9 | 18.5 |
-| 89k-176k | 182 | 7.3 | 15.4 | 19.3 |
-| 44k-88k | 300 | 5.9 | 15.3 | 20.0 |
-| 22k-44k | 487 | 4.5 | 12.1 | 14.2 |
-| 21k-22k | 35 | 3.1 | 8.6 | 8.8 |
+| size of table scored | null splits | median | p99 | max | margin at 30 |
+|---|---|---|---|---|---|
+| 2.84M (whole tree) | 100 | 20.7 | 28.9 | 29.3 | 1.0x |
+| 1.43M-2.83M | 1,089 | 13.3 | 21.4 | 28.1 | 1.4x |
+| 712k-1.38M | 79 | 11.1 | 19.2 | 19.7 | 1.6x |
+| 354k-705k | 100 | 10.2 | 15.8 | 18.2 | 1.9x |
+| 177k-351k | 128 | 7.9 | 15.9 | 18.5 | 1.9x |
+| 89k-176k | 182 | 7.3 | 15.4 | 19.3 | 1.9x |
+| 44k-88k | 300 | 5.9 | 15.3 | 20.0 | 2.0x |
+| 22k-44k | 487 | 4.5 | 12.1 | 14.2 | 2.5x |
+| 21k-22k | 35 | 3.1 | 8.6 | 8.8 | 3.5x |
+
+The last column is explained below.
 
 The second row is the root's residual: the whole tree minus splits already
 carved out of it, still scored as one table. Below about 700k the ceiling
@@ -1163,11 +1167,20 @@ reject five splits between 54.3 and 85.2 that clear their null by 3.2x to
 earlier tree's 65 rejected a split of the same size there, `node_12073` at
 64.5.
 
-Two ways to use this. The simple one is to set `--min_chi` from the
-*smallest* subtree you intend to split rather than from the root. On this
-tree, 2x a ceiling of about 15 means something near 30 rather than 52. The
-better one is for the threshold to scale with the candidate subtree's
-mutation count. That is a change to `spectrumSplits.py` rather than a tuning
+Two ways to use this. The simple one is to set `--min_chi` as low as the
+whole-tree null allows, and read off what that buys deeper down. A split of
+the whole tree has to beat the whole-tree null outright, so `--min_chi` must
+exceed the largest value in the table's whole-tree row: 29.3 here, so 30.
+The report prints that number below the table ("Lowest --min_chi that
+clears the whole-tree null: 30"), and its last column is that threshold's
+margin over each bin's ceiling. Here 30 gives about 2x for every bin below
+700k (1.9x to 2.0x, and 2.5x below 44k), 1.6x at 712k to 1.38M, and none to
+spare at the whole tree. That is acceptable, because the real
+splits there score in the hundreds and thousands, and step 10 scores every
+accepted split against the null for its own size. The fixed threshold only
+decides which candidates are admitted; the margin decides which are
+believed. The better way is for the threshold to scale with the candidate
+subtree's mutation count. That is a change to `spectrumSplits.py` rather than a tuning
 choice; until it exists, a fixed threshold is a known limitation and worth
 stating alongside results.
 
@@ -1186,8 +1199,9 @@ spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
     2> splits.log
 ```
 
-`--min_chi 30` is 2x the size-matched null ceiling for deep subtrees (about
-15 in step 7), not 2x the whole-tree threshold (53). A threshold set at the
+`--min_chi 30` is the lowest value that clears the whole-tree null, and about
+2x the size-matched ceiling for subtrees under 700k (about 15, step 7), not
+2x the whole-tree p95 (53). A threshold set at the
 root would reject splits that clear their own null several times over. The
 low threshold costs nothing in rigour, because step 10 scores every accepted
 split against the null for its own size and ranks it by that margin.
@@ -2187,10 +2201,11 @@ scipy would raise.
 Used in [step 7](#7-calibrate---min_chi).
 
 ```
-null_by_size.py --null null_sites_cascade.tsv
+null_by_size.py --null null_sites_cascade.tsv > null_by_size.txt
 null_by_size.py --null null_sites_cascade.tsv --min_chi 53 --margin 2 \
     --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    > null_by_size.txt
 ```
 
 Reads a cascade null from `permutation_null.py --max_splits 25 --min_chi 1`
@@ -2198,7 +2213,7 @@ and reports:
 
 | Section | What to do with it |
 | --- | --- |
-| Null ceiling by subtree size | How far the chance maximum falls below the whole-tree figure as subtrees shrink. A `--min_chi` set from the root is that much too strict for deep splits |
+| Null ceiling by subtree size | How far the chance maximum falls below the whole-tree figure as subtrees shrink. A `--min_chi` set from the root is that much too strict for deep splits. Below the table: the lowest `--min_chi` that clears the whole-tree null, with its margin over each bin's ceiling in the last column |
 | Observed splits against a size-matched null | Each observed split's margin over the `--null_quantile` (default 0.99) of the nulls from subtrees within `--null_window` (default 1.5x) of its size, as in `split_confidence.py`. With `--min_chi`, it flags splits that threshold rejects despite a margin of at least `--margin`, and accepted splits with a margin under 1 |
 | Hotspot check | The largest whole-tree null maxima and the clade behind each. It flags a clade that is the maximum in more than `--hotspot_fraction` (default half) of the replicates, or that holds the `--top_maxima` (default 2) largest maxima. With `--input_tree`, a node and a child whose `mutations_below` agree within `--same_clade` (default 0.95) count as one clade, and a flagged clade's `--hotspot_sites` (default 10) most recurrent sites are listed, with an `annotate_sites.py` command for those holding `--hotspot_min` (default 20) or more of its mutations. Annotate them, and mask them if they look like an artifact |
 

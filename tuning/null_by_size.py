@@ -16,7 +16,11 @@ Three reports:
      mutations_above, which is exact: it is the search root minus every split
      already carved out of it).  For each bin: how many null splits, their
      size range, and the median, --null_quantile (default 0.99) and maximum
-     chi-squared.
+     chi-squared.  Then the lowest --min_chi that clears the whole-tree null
+     (its largest replicate, rounded up), and that threshold's margin over
+     each bin's ceiling: a fixed threshold low enough for deep splits is
+     thin at the root, and this shows where it gives --margin and where
+     less.
 
   2. OBSERVED SPLITS AGAINST A SIZE-MATCHED NULL.  Each observed split in the
      same file against the --null_quantile of null chi-squared from subtrees
@@ -93,6 +97,11 @@ def size_bins(null_rows):
         k = int(math.floor(math.log2(top / r["size"]))) if r["size"] > 0 else 99
         bins[k].append(r)
     return [bins[k] for k in sorted(bins)]
+
+
+def lowest_min_chi(whole):
+    """The smallest integer --min_chi above every whole-tree null maximum."""
+    return math.floor(max(r["chi2"] for r in whole)) + 1 if whole else None
 
 
 def fmt_size(n):
@@ -194,10 +203,12 @@ def report(rows, args, out, tree=None):
     print("  The whole-tree pass (iteration 1) is listed first; it is what the", file=out)
     print("  printed summary of permutation_null.py reports.", file=out)
     ql = f"p{100 * args.null_quantile:g}"
-    print(f"    size range\tnull splits\tmedian chi2\t{ql} chi2\tmax chi2\tmax at",
-          file=out)
     whole = [r for r in null_rows if r["iteration"] == 1]
     deeper = [r for r in null_rows if r["iteration"] > 1]
+    lowest = lowest_min_chi(whole)
+    mcol = f"\tmargin at {lowest}" if lowest else ""
+    print(f"    size range\tnull splits\tmedian chi2\t{ql} chi2\tmax chi2\t"
+          f"max at{mcol}", file=out)
     groups = ([("whole tree", whole)] if whole else []) + [(None, b) for b in size_bins(deeper)]
     for label, b in groups:
         lo = min(r["size"] for r in b)
@@ -207,9 +218,26 @@ def report(rows, args, out, tree=None):
         if label:
             rng = f"{rng} ({label})"
         q = quantile(sorted(r["chi2"] for r in b), args.null_quantile)
+        m = f"\t{lowest / q:.1f}x" if lowest and q > 0 else ""
         print(f"    {rng}\t{len(b)}\t"
               f"{statistics.median(r['chi2'] for r in b):.1f}\t{q:.1f}\t"
-              f"{top['chi2']:.1f}\t{top['replicate']} {top['node']}", file=out)
+              f"{top['chi2']:.1f}\t{top['replicate']} {top['node']}{m}", file=out)
+    if lowest:
+        top = max(r["chi2"] for r in whole)
+        print(f"  Lowest --min_chi that clears the whole-tree null: {lowest} "
+              f"(its largest", file=out)
+        print(f"  replicate, {top:.1f}, rounded up), so no null replicate's "
+              "first split passes.", file=out)
+        print(f"  The last column is that threshold's margin over each bin's "
+              f"{ql}: where it", file=out)
+        print(f"  is {args.margin:g}x or more, a split just at the threshold "
+              "clears its size-matched", file=out)
+        print("  null by --margin.  Lower in the table means smaller subtrees; "
+              "near the root", file=out)
+        print("  the margin is thin, but real splits there score far above "
+              "the threshold,", file=out)
+        print("  and each split's own margin is checked against its size "
+              "anyway.", file=out)
     print(file=out)
 
     if observed:
@@ -361,7 +389,12 @@ def selftest():
     line6 = next(l for l in text.splitlines() if "\tnode_6\t" in l)
     assert line6.split("\t")[7] == "0.8", line6
     assert "HOTSPOT at node_7: it is the maximum in 3 of 4" in text, text
-    assert "1k (whole tree)\t4\t36.5\t40.0\t40.0" in text, text
+    assert "1k (whole tree)\t4\t36.5\t40.0\t40.0\tperm1 node_7\t1.0x" in text, text
+    # 41 clears the largest whole-tree null, 40.0; it is 41/13.3 = 3.1x the
+    # 700-mutation bin's ceiling, and 4.1x the 300-mutation bin's.
+    assert "Lowest --min_chi that clears the whole-tree null: 41" in text, text
+    assert "700\t4\t12.2\t13.3\t13.3\tperm1 node_x\t3.1x" in text, text
+    assert "300\t4\t9.2\t10.0\t10.0\tperm1 node_y\t4.1x" in text, text
 
     # A clade that rarely wins but wins big, under two IDs: node_20 and its
     # child node_21, which holds nearly all of it.  It is the maximum in 2 of
