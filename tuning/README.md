@@ -1879,9 +1879,16 @@ decides whether terminal hits contribute at all; see the
 **What to read in `hit_summary.tsv`.** One row per gene and effect set, plus a
 pooled `ALL`. `omnibus_p` says whether to look further; `diff_<class>` is the
 weighted mean shift in that class's proportion (hit child minus siblings),
-with `p_<class>` its permutation p. `rate_logratio` compares mean tip depth --
-a mutator should raise it, while a shift with no rate change points away from
-lost fidelity -- but sampling dates move it too, so it is secondary.
+with `p_<class>` its permutation p.
+
+There is no rate test. A mutator should also raise the mutation count below
+the hit, and an earlier version compared tip depth below hit children with
+their siblings'. On the MTBC tree that comparison failed the synonymous
+control in 31 of 56 genes: real hit children sit shallower than the
+size-biased draw expects, whatever the gene. The draw gets each child's
+chance of carrying the hit right, but not the extra branch time a real hit
+implies, and depth depends on that time. The spectrum statistics are
+proportions, which barely depend on depth, and they pass the same control.
 
 **Read the synonymous control first.** It runs by default (`--effects
 nonsynonymous,synonymous`). Synonymous hits in the same genes should show no
@@ -2680,20 +2687,18 @@ Outputs:
 
 - `--output_events` (default `hit_events.tsv`): one row per hit event and
   effect set, with the gene, hit and parent node, codon effect and amino-acid
-  changes, `nested_under`, how many siblings were used, the tips, mutations
-  and mean tip depth on each side, the event's chi-squared, and the class
+  changes, `nested_under`, how many siblings were used, the tips and
+  mutations on each side, the event's chi-squared, and the class
   proportions on both sides (`focal_<class>`, `comparator_<class>`).
 - `--output_summary` (default `hit_summary.tsv`): one row per gene and effect
   set, plus a pooled `ALL`, with event counts, `diff_<class>` and `p_<class>`,
-  `omnibus` and `omnibus_p`, and `rate_logratio` and `rate_p`. Step 12 says
-  how to read them.
+  and `omnibus` and `omnibus_p`. Step 12 says how to read them.
 
 `--selftest` checks codon effects on both strands (including ancestral codon
 state and two changes in one codon), checks the cut-subtree bookkeeping
 against brute force, and simulates star-of-polytomy trees for null
 calibration and power. In a larger run of the same simulation, 300 null trees
-gave per-class p < 0.05 at 4.5% and omnibus at 4.0%; the rate statistic ran
-slightly high at 6.3% with the top branch included and 5.0% without.
+gave per-class p < 0.05 at 4.5% and omnibus at 4.0%.
 
 ### `match_splits.py`
 

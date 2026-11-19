@@ -64,13 +64,15 @@ Statistics, per test (one gene and one effect set, plus a pooled ALL row):
   omnibus_p      one statistic over all classes: sum of squared centred diffs
                  scaled by the tree-wide class proportions.  Use it to decide
                  whether to look at the per-class columns at all.
-  rate_logratio  mean over events of log((hit mean tip depth + 1) /
-                 (comparator mean tip depth + 1)), tip depth being the
-                 mutation count from P down to each tip.  A mutator raises
-                 this.  A spectrum shift with no rate change suggests
-                 something other than lost fidelity.  Sampling-date
-                 differences between siblings also move it, so treat it as
-                 secondary.
+
+No rate test.  A mutator should also raise the mutation count below the hit,
+but this permutation cannot test that honestly.  The size-biased draw gets
+the chance of each child carrying the hit right, but not the extra branch
+time a real hit implies, and depth depends on that time.  On the MTBC tree,
+hit children came out shallower than the draw expects in both effect sets,
+and a depth test failed the synonymous control in 31 of 56 genes.  The
+spectrum statistics are proportions, which barely depend on depth, and they
+pass that control.
 
 Controls built in.  Synonymous hits in the same genes are tested the same way
 by default.  They should show nothing.  If they do, the comparison itself is
@@ -326,57 +328,43 @@ def find_hit_events(tree, index, ref):
 # --------------------------------------------------------------------------
 
 def subtree_sums(tree, own, ncat):
-    """Per node, including its own branch: class counts, tips, tip depth sum.
-
-    Tip depth sum D[n] is the sum over n's tips of the mutation count on the
-    path from the top of n's branch down to the tip.
-    """
+    """Per node, including its own branch: class counts and tips."""
     n = len(tree.node_ids)
     V = [None] * n
     T = [0] * n
-    D = [0] * n
-    own_m = [sum(v) for v in own]
     for i in range(n - 1, -1, -1):
         v = list(own[i])
         kids = tree.children[i]
-        if not kids:
-            t, d = 1, own_m[i]
-        else:
-            t, d = 0, 0
-            for c in kids:
-                vc = V[c]
-                for k in range(ncat):
-                    v[k] += vc[k]
-                t += T[c]
-                d += D[c]
-            d += own_m[i] * t
-        V[i], T[i], D[i] = v, t, d
-    return V, T, D, own_m
+        t = 0 if kids else 1
+        for c in kids:
+            vc = V[c]
+            for k in range(ncat):
+                v[k] += vc[k]
+            t += T[c]
+        V[i], T[i] = v, t
+    return V, T
 
 
-def cut_adjustments(tree, V, T, D, own_m, hits, ncat):
+def cut_adjustments(tree, V, T, hits, ncat):
     """What each ancestor of a hit must subtract to exclude the hit's subtree.
 
     Walks up from each hit and stops at the first hit above it, which is
     where the nested subtree stops being anyone else's business: everything
     above that hit already loses the whole outer subtree.  Returns
-    adj[node] = [vec, tips, depth] and nested[hit] = enclosing hit.
+    adj[node] = [vec, tips] and nested[hit] = enclosing hit.
     """
     adj = {}
     nested = {}
     for h in hits:
         x = tree.parent[h]
-        acc = 0
         while x >= 0:
-            acc += own_m[x]
             a = adj.get(x)
             if a is None:
-                a = adj[x] = [[0] * ncat, 0, 0]
+                a = adj[x] = [[0] * ncat, 0]
             vh = V[h]
             for k in range(ncat):
                 a[0][k] += vh[k]
             a[1] += T[h]
-            a[2] += D[h] + T[h] * acc
             if x in hits:
                 nested[h] = x
                 break
@@ -384,26 +372,22 @@ def cut_adjustments(tree, V, T, D, own_m, hits, ncat):
     return adj, nested
 
 
-def child_value(c, V, T, D, own, own_m, adj, top, ncat, remove=None):
-    """(vec, tips, depth) for child c as seen from its parent."""
+def child_value(c, V, T, own, adj, top, ncat, remove=None):
+    """(vec, tips) for child c as seen from its parent."""
     v = list(V[c])
     t = T[c]
-    d = D[c]
     a = adj.get(c)
     if a is not None:
         for k in range(ncat):
             v[k] -= a[0][k]
         t -= a[1]
-        d -= a[2]
     if top == "exclude":
         for k in range(ncat):
             v[k] -= own[c][k]
-        d -= own_m[c] * t
     elif remove is not None:
         for k in range(ncat):
             v[k] -= remove[k]
-        d -= sum(remove) * t
-    return v, t, d
+    return v, t
 
 
 # --------------------------------------------------------------------------
@@ -412,10 +396,10 @@ def child_value(c, V, T, D, own, own_m, adj, top, ncat, remove=None):
 
 class Prepared(object):
     """One event's eligible children, with everything a draw needs."""
-    __slots__ = ("wd", "w", "r", "cum", "total")
+    __slots__ = ("wd", "w", "cum", "total")
 
 
-def prepare_event(tree, h, hits, V, T, D, own, own_m, adj, top, ncat,
+def prepare_event(tree, h, hits, V, T, own, adj, top, ncat,
                   hit_vec, min_focal, min_comparator):
     """Build the hit child's contrast with its pooled siblings.
 
@@ -425,20 +409,17 @@ def prepare_event(tree, h, hits, V, T, D, own, own_m, adj, top, ncat,
     P = tree.parent[h]
     if P < 0:
         return None, None
-    fv, ft, fd = child_value(h, V, T, D, own, own_m, adj, top, ncat,
-                             remove=hit_vec)
+    fv, ft = child_value(h, V, T, own, adj, top, ncat, remove=hit_vec)
     sibs = [c for c in tree.children[P] if c != h and c not in hits]
-    vals = [child_value(c, V, T, D, own, own_m, adj, top, ncat)
-            for c in sibs]
+    vals = [child_value(c, V, T, own, adj, top, ncat) for c in sibs]
     tot_v = list(fv)
-    tot_t, tot_d = ft, fd
-    for v, t, d in vals:
+    tot_t = ft
+    for v, t in vals:
         for k in range(ncat):
             tot_v[k] += v[k]
         tot_t += t
-        tot_d += d
     cv = [tot_v[k] - fv[k] for k in range(ncat)]
-    ct, cd = tot_t - ft, tot_d - fd
+    ct = tot_t - ft
     nf, nc = sum(fv), sum(cv)
     row = {
         "parent_id": tree.node_ids[P],
@@ -447,8 +428,6 @@ def prepare_event(tree, h, hits, V, T, D, own, own_m, adj, top, ncat,
         "siblings_used": len(sibs),
         "focal_tips": ft, "focal_mutations": nf,
         "comparator_tips": ct, "comparator_mutations": nc,
-        "focal_depth": (fd / ft) if ft else float("nan"),
-        "comparator_depth": (cd / ct) if ct else float("nan"),
         "chi2": chi2_2xk(fv, cv) if nf and nc else 0.0,
         "focal_vec": fv, "comparator_vec": cv,
     }
@@ -461,15 +440,15 @@ def prepare_event(tree, h, hits, V, T, D, own, own_m, adj, top, ncat,
     ### that would have passed the same --min_focal had the hit landed there.
     ### Size-bias weight: non-hit SNVs on the top branch, plus one.
     hit_count = sum(hit_vec) if hit_vec is not None else 0
-    elig = [(fv, ft, fd, len(tree.types[h]) - hit_count + 1)]
-    for c, (v, t, d) in zip(sibs, vals):
+    elig = [(fv, len(tree.types[h]) - hit_count + 1)]
+    for c, (v, t) in zip(sibs, vals):
         if sum(v) >= min_focal:
-            elig.append((v, t, d, len(tree.types[c]) + 1))
+            elig.append((v, len(tree.types[c]) + 1))
 
     prep = Prepared()
-    prep.wd, prep.w, prep.r, prep.cum = [], [], [], []
+    prep.wd, prep.w, prep.cum = [], [], []
     acc = 0
-    for v, t, d, wt in elig:
+    for v, wt in elig:
         rest = [tot_v[k] - v[k] for k in range(ncat)]
         n1, n2 = sum(v), sum(rest)
         if n1 > 0 and n2 > 0:
@@ -480,11 +459,6 @@ def prepare_event(tree, h, hits, V, T, D, own, own_m, adj, top, ncat,
         else:
             prep.wd.append([0.0] * ncat)
             prep.w.append(0.0)
-        rt, rd = tot_t - t, tot_d - d
-        if t > 0 and rt > 0:
-            prep.r.append(math.log((d / t + 1.0) / (rd / rt + 1.0)))
-        else:
-            prep.r.append(None)
         acc += wt
         prep.cum.append(acc)
     prep.total = acc
@@ -494,8 +468,6 @@ def prepare_event(tree, h, hits, V, T, D, own, own_m, adj, top, ncat,
 def statistic(preps, choice, ncat):
     acc = [0.0] * ncat
     W = 0.0
-    rs = 0.0
-    rn = 0
     for p, j in zip(preps, choice):
         w = p.w[j]
         if w > 0:
@@ -503,32 +475,21 @@ def statistic(preps, choice, ncat):
             for k in range(ncat):
                 acc[k] += wd[k]
             W += w
-        r = p.r[j]
-        if r is not None:
-            rs += r
-            rn += 1
-    diffs = [a / W for a in acc] if W > 0 else [0.0] * ncat
-    rate = rs / rn if rn else 0.0
-    return diffs, rate
+    return [a / W for a in acc] if W > 0 else [0.0] * ncat
 
 
 def permutation_test(preps, ncat, pbar, permutations, rng):
     """Observed statistics and permutation p-values; see the module docstring."""
-    obs_d, obs_r = statistic(preps, [0] * len(preps), ncat)
+    obs_d = statistic(preps, [0] * len(preps), ncat)
     perm_d = []
-    perm_r = []
     for _ in range(permutations):
         choice = [bisect.bisect_right(p.cum, rng.random() * p.total)
                   for p in preps]
         ### bisect_right on a value in [0, total) never returns len(cum).
-        d, r = statistic(preps, choice, ncat)
-        perm_d.append(d)
-        perm_r.append(r)
+        perm_d.append(statistic(preps, choice, ncat))
     if not permutations:
-        return obs_d, [float("nan")] * ncat, float("nan"), float("nan"), \
-            obs_r, float("nan")
+        return obs_d, [float("nan")] * ncat, float("nan"), float("nan")
     mean_d = [sum(d[k] for d in perm_d) / permutations for k in range(ncat)]
-    mean_r = sum(perm_r) / permutations
 
     def omni(d):
         return sum((d[k] - mean_d[k]) ** 2 / pbar[k]
@@ -542,17 +503,14 @@ def permutation_test(preps, ncat, pbar, permutations, rng):
     o = omni(obs_d)
     p_omni = (sum(1 for d in perm_d if omni(d) >= o - 1e-15) + 1) / \
         (permutations + 1)
-    orr = abs(obs_r - mean_r)
-    p_rate = (sum(1 for r in perm_r if abs(r - mean_r) >= orr - 1e-15) + 1) / \
-        (permutations + 1)
-    return obs_d, p_class, o, p_omni, obs_r, p_rate
+    return obs_d, p_class, o, p_omni
 
 
-def run_test(tree, test_events, V, T, D, own, own_m, ncat, fold_map, args,
+def run_test(tree, test_events, V, T, own, ncat, fold_map, args,
              pbar, rng):
     """Events for one test (they define the cut set), then the permutation."""
     hits = set(e["node"] for e in test_events)
-    adj, nested = cut_adjustments(tree, V, T, D, own_m, hits, ncat)
+    adj, nested = cut_adjustments(tree, V, T, hits, ncat)
     cap = args.max_branch_length
     rows = []
     preps = []
@@ -568,7 +526,7 @@ def run_test(tree, test_events, V, T, D, own, own_m, ncat, fold_map, args,
         if cap is None or tree.raw_len[h] <= cap:
             for t in e["hit_types"]:
                 hit_vec[fold_map[t] if fold_map else t] += 1
-        row, prep = prepare_event(tree, h, hits, V, T, D, own, own_m, adj,
+        row, prep = prepare_event(tree, h, hits, V, T, own, adj,
                                   args.top_branch, ncat, hit_vec,
                                   args.min_focal, args.min_comparator)
         if row is None:
@@ -663,7 +621,7 @@ def main():
     cap = args.max_branch_length if args.max_branch_length is not None \
         else float("inf")
     own = own_spectra(tree, tree.types, ncat, fold_map, cap)
-    V, T, D, own_m = subtree_sums(tree, own, ncat)
+    V, T = subtree_sums(tree, own, ncat)
     root_tot = sum(V[0])
     pbar = [V[0][k] / root_tot if root_tot else 0.0 for k in range(ncat)]
 
@@ -686,14 +644,13 @@ def main():
                 "aa_changes", "mutations", "terminal", "nested_under",
                 "parent_children", "siblings_used", "informative",
                 "focal_tips", "focal_mutations", "comparator_tips",
-                "comparator_mutations", "focal_depth", "comparator_depth",
-                "chi2"]
+                "comparator_mutations", "chi2"]
                + [f"focal_{c}" for c in cats]
                + [f"comparator_{c}" for c in cats])
     sum_cols = (["effect_set", "gene", "events", "informative",
                  "informative_terminal"]
                 + [f"diff_{c}" for c in cats] + [f"p_{c}" for c in cats]
-                + ["omnibus", "omnibus_p", "rate_logratio", "rate_p"])
+                + ["omnibus", "omnibus_p"])
 
     with open(args.output_events, "w") as ev_out, \
             open(args.output_summary, "w") as sum_out:
@@ -705,13 +662,13 @@ def main():
                 test_events = in_set if gene == "ALL" else \
                     [e for e in in_set if e["gene"] == gene]
                 rows, n_inf, result = run_test(
-                    tree, test_events, V, T, D, own, own_m, ncat, fold_map,
+                    tree, test_events, V, T, own, ncat, fold_map,
                     args, pbar, rng)
                 if gene != "ALL":
                     for r in rows:
                         fv, cv = r["focal_vec"], r["comparator_vec"]
                         nf, nc = sum(fv), sum(cv)
-                        out = [es] + [r[c] for c in ev_cols[1:19]]
+                        out = [es] + [r[c] for c in ev_cols[1:17]]
                         out += [fv[k] / nf if nf else float("nan")
                                 for k in range(ncat)]
                         out += [cv[k] / nc if nc else float("nan")
@@ -721,14 +678,14 @@ def main():
                                  if r["informative"] and r["terminal"])
                 out = [es, gene, len(rows), n_inf, n_inf_term]
                 if result is None:
-                    out += [float("nan")] * (2 * ncat + 4)
+                    out += [float("nan")] * (2 * ncat + 2)
                 else:
-                    d, pc, om, pom, rate, prate = result
-                    out += d + pc + [om, pom, rate, prate]
+                    d, pc, om, pom = result
+                    out += d + pc + [om, pom]
                 sum_out.write("\t".join(fmt(x) for x in out) + "\n")
                 if result is not None and gene == "ALL":
                     print(f"{es} ALL: {n_inf} informative events, omnibus "
-                          f"p {fmt(result[3])}, rate p {fmt(result[5])}",
+                          f"p {fmt(result[3])}",
                           file=sys.stderr)
     print(f"wrote {args.output_events} and {args.output_summary}",
           file=sys.stderr)
@@ -747,26 +704,22 @@ class _N(object):
 
 
 def _brute_child(tree, c, hits, own, top, ncat):
-    """Counts, tips, depth for c by explicit traversal, skipping hit subtrees."""
+    """Counts and tips for c by explicit traversal, skipping hit subtrees."""
     v = [0] * ncat
     tips = 0
-    depth = 0
-    stack = [(c, 0)]
+    stack = [c]
     while stack:
-        x, above = stack.pop()
+        x = stack.pop()
         if x != c and x in hits:
             continue
         mine = own[x] if (x != c or top == "include") else [0] * ncat
         for k in range(ncat):
             v[k] += mine[k]
-        here = above + sum(mine)
         kids = tree.children[x]
         if not kids:
             tips += 1
-            depth += here
-        for y in kids:
-            stack.append((y, here))
-    return v, tips, depth
+        stack.extend(kids)
+    return v, tips
 
 
 def _simulate(rng, n_parents, effect, ncat):
@@ -869,28 +822,27 @@ def selftest():
     idx = {nid: i for i, nid in enumerate(tree.node_ids)}
     for ncat, fm in ((12, None), (6, fold_map)):
         own = own_spectra(tree, tree.types, ncat, fm, float("inf"))
-        V, T, D, own_m = subtree_sums(tree, own, ncat)
+        V, T = subtree_sums(tree, own, ncat)
         hits = {idx["h"], idx["h2"], idx["x"]}
-        adj, nested = cut_adjustments(tree, V, T, D, own_m, hits, ncat)
+        adj, nested = cut_adjustments(tree, V, T, hits, ncat)
         assert tree.node_ids[nested[idx["h2"]]] == "h"
         assert idx["h"] not in nested and idx["x"] not in nested
         for top in ("include", "exclude"):
             for name in ("h", "s1", "s2", "s3", "x", "h2", "P"):
                 c = idx[name]
-                got = child_value(c, V, T, D, own, own_m, adj, top, ncat)
+                got = child_value(c, V, T, own, adj, top, ncat)
                 want = _brute_child(tree, c, hits, own, top, ncat)
                 assert tuple(got[0]) == tuple(want[0]) and \
-                    got[1] == want[1] and got[2] == want[2], \
-                    (ncat, top, name, got, want)
-    print("ok: cut subtree counts, tips and depths match brute force, "
+                    got[1] == want[1], (ncat, top, name, got, want)
+    print("ok: cut subtree counts and tips match brute force, "
           "including a nested hit, with and without the top branch")
 
     ### The event's comparator leaves out x, the other hit child of P.
     own = own_spectra(tree, tree.types, 12, None, float("inf"))
-    V, T, D, own_m = subtree_sums(tree, own, 12)
+    V, T = subtree_sums(tree, own, 12)
     hits = {idx["h"], idx["x"]}
-    adj, _ = cut_adjustments(tree, V, T, D, own_m, hits, 12)
-    row, prep = prepare_event(tree, idx["h"], hits, V, T, D, own, own_m, adj,
+    adj, _ = cut_adjustments(tree, V, T, hits, 12)
+    row, prep = prepare_event(tree, idx["h"], hits, V, T, own, adj,
                               "include", 12, [0] * 12, 1, 1)
     ### siblings s1 (4 muts), s2 (1), s3 (0): comparator = 5 mutations.
     assert row["siblings_used"] == 3 and row["comparator_mutations"] == 5, row
@@ -914,12 +866,12 @@ def selftest():
         tree = extract(root)
         idx = {nid: i for i, nid in enumerate(tree.node_ids)}
         own = own_spectra(tree, tree.types, 12, None, float("inf"))
-        V, T, D, own_m = subtree_sums(tree, own, 12)
+        V, T = subtree_sums(tree, own, 12)
         evs = [{"node": idx[x], "gene": "g", "effect": "missense",
                 "aa_changes": "", "mutations": "", "hit_types": []}
                for x in hit_ids]
         pbar = [1 / 12.0] * 12
-        _rows, n_inf, res = run_test(tree, evs, V, T, D, own, own_m, 12,
+        _rows, n_inf, res = run_test(tree, evs, V, T, own, 12,
                                      None, targs, pbar, rng)
         pvals.append((res[1][0], res[3]))
     frac_class = sum(1 for p, _ in pvals if p < 0.05) / len(pvals)
@@ -934,11 +886,11 @@ def selftest():
         tree = extract(root)
         idx = {nid: i for i, nid in enumerate(tree.node_ids)}
         own = own_spectra(tree, tree.types, 12, None, float("inf"))
-        V, T, D, own_m = subtree_sums(tree, own, 12)
+        V, T = subtree_sums(tree, own, 12)
         evs = [{"node": idx[x], "gene": "g", "effect": "missense",
                 "aa_changes": "", "mutations": "", "hit_types": []}
                for x in hit_ids]
-        _rows, n_inf, res = run_test(tree, evs, V, T, D, own, own_m, 12,
+        _rows, n_inf, res = run_test(tree, evs, V, T, own, 12,
                                      None, targs, [1 / 12.0] * 12, rng)
         assert res[0][0] > 0, res[0]
         hits_p.append(res[1][0])
