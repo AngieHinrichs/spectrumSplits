@@ -1480,10 +1480,10 @@ that is missing never passes: without bootstrap replicates no split can be
 tier A. The tiers are a reading aid, not a test. A split at 4.9x and 69% is
 tier C, one at 5.0x and 70% is tier A, and both deserve the same caution.
 What makes them worth having is that they predict reproducibility: when the
-search was repeated on a changed tree ([Testing the
-method](#testing-the-method)), three of the four splits
-that failed to come back were tier C, and the fourth was lost to the
-`--min_mutations` floor, which the tiers do not measure.
+search was repeated after a re-mask ([Testing the
+method](#testing-the-method)), three of the four splits that failed to come
+back were tier C, and the fourth was lost to the `--min_mutations` floor,
+which the tiers do not measure.
 
 On the round 3 tree the 68 splits came out **35 tier A, 27 tier B and 6 tier
 C**, with correct sizing and wobble-tolerant support. The support correction
@@ -1627,8 +1627,9 @@ It is not part of the suggested order because it is expensive: a search
 with bootstrap and step 10, and a new cascade null if the change touched the
 mask, hours on a large tree.
 Once the method has been tested, the tiers carry most of what it would tell
-you: on the MTBC replication below, three of the four splits that failed to
-come back were tier C. It is worth running when a claim rests on a marginal
+you: on the larger of the two MTBC replications below, three of the four
+splits that failed to come back were tier C, and on the smaller every split
+came back but the one the `--min_mutations` floor removed. It is worth running when a claim rests on a marginal
 split, and it is nearly free when a late change has forced a rerun anyway:
 
 - a locus found under a split that has to be masked, which is how this
@@ -1698,35 +1699,37 @@ many nearly (Jaccard 0.95 or more, `--near`) and how many have no
 counterpart (below 0.5, `--lost`), then one row per old split with its best
 match, the samples only on each side, and whether the match is mutual. New
 splits that are no old split's mutual match are listed last: they are the
-change's own findings, not failures to replicate. On the MTBC tree, the round-3 mask plus the BCG prune gave 59 splits
-against the previous 62, and **58 of the 62 matched at Jaccard 1.000** -- 56 of
-them exactly, two off by a handful of tips. Tier counts went 36/20/6 to
-33/22/4. That is the result that says the search is finding structure rather
-than fitting the artifact landscape, and no amount of null calibration or
-bootstrapping could have established it.
+change's own findings, not failures to replicate.
 
-#### What failed to replicate is what the tiering predicted
+*Worked example: a prune alone.* The round 3 tree was searched again with
+its 336 BCG genomes pruned, at the same settings, and scored against the
+first run's cascade null. On the 128,918 samples present in both trees:
 
-Three of the four lost splits -- `node_74277`, `node_73308`, `node_73473` --
-were tier C, and were the three *lowest* margins in the entire old set (2.37x,
-2.41x, 2.83x). The three tier C splits that did survive came back tier C. So
-the tier was doing its job: it is a prediction about reproducibility, and here
-it was tested against an actual replication and held.
+```
+  68 old splits, 68 new
+  Jaccard 1.000: 67
+  no counterpart (best Jaccard < 0.5): 1: node_10
+  new splits that are no old split's mutual match: 1: node_286 (best node_6, 0.876)
+```
 
-#### The fourth loss was the `--min_mutations` floor, not the biology
+All 67 matches are mutual and exact, to the sample. Every tier C split came
+back. The one loss and the one new split are the same event, below.
 
-`node_10` was tier A at 8.9x margin and 100% support, and it is gone. The
-reason is arithmetic. Its residual held 10,190 mutations; pruning BCG removed
-535 of them, all necessarily inside it since BCG sits nowhere else; 9,655 is
-below `--min_mutations 10000`. The clade did not stop being different -- it
-stopped being *testable*.
+#### The loss was the `--min_mutations` floor, not the biology
+
+`node_10` was tier A at 7.5x margin and 100% support, and it is gone. The
+reason is arithmetic. Its residual held 10,077 mutations, and pruning BCG
+removed 535 of them, all necessarily inside it since BCG sits nowhere else.
+The 577 samples left carry 9,542 mutations, below `--min_mutations 10000`.
+The clade did not stop being different; it stopped being *testable*.
 
 Watch what the search did instead, because it is the reason this is worth
-documenting rather than filing as a loss. It carved out the **complement**: a
-new 7,356-tip split (`node_286`) inside the same parent, leaving a 768-tip
-residual that contains all 577 surviving `node_10` samples and has `node_10`'s
-spectrum (`CA|GT` 0.0792 and `TC|AG` 0.2635, against the old 0.0776 and
-0.2682). `node_286` shares not one sample with `node_10`.
+documenting rather than filing as a loss. It carved out the **complement**:
+a new 7,356-tip split (`node_286`, tier A, 99% support) inside the same
+parent, leaving a 768-tip residual that contains all 577 surviving `node_10`
+samples and has `node_10`'s spectrum (`CA|GT` 0.0791 and `TC|AG` 0.2635,
+against the old 0.0777 and 0.2688; the parent's old residual had 0.2456).
+`node_286` shares not one sample with `node_10`.
 
 So the signal is fully intact and has moved from a split to a residual. Two
 things follow. A clade dropping off the split list is not evidence it stopped
@@ -1734,6 +1737,41 @@ being distinctive, and you cannot tell the difference by reading node IDs or
 split lists -- only by asking where its samples went. And a `--min_mutations`
 floor does not merely hide small clades, it can *relocate* a finding from the
 split you would report into a residual you might not think to look at.
+
+#### Tier changes between runs are mostly noise
+
+Of the 67 matched splits, 61 kept their tier, and the second run's counts
+were 35/29/4 against 35/27/6. All six that moved had unchanged margins and
+moved on support alone, across the 70% line: `node_73757` from 59% to 70%,
+`node_74367` from 72% to 62%. With 100 replicates, support near 70% varies
+by about 9 points between runs, so a tier border is soft on that axis as
+well as on margin.
+
+The null is no steadier. The pruned tree's own cascade null was also run,
+for comparison. Scored against it instead of the first run's, margins
+changed by a factor of 0.64 to 1.37 (median 1.08) and three splits changed
+tier, two up and one down. That is the scatter of two independent draws of
+the same noisy ceiling, which is why reusing the first run's null after a
+prune is sound.
+
+#### A larger change: round 2 to round 3
+
+The round 2 tree's splits, matched against this same round 3 tree with BCG
+pruned, test a re-mask as well as the prune. That gave 59 splits against the
+previous 62, and **58 of the 62 matched at Jaccard 1.000** -- 56 of them
+exactly, two off by a handful of tips. Tier counts went 36/20/6 to 33/22/4.
+That is the result that says the search is finding structure rather than
+fitting the artifact landscape, and no amount of null calibration or
+bootstrapping could have established it.
+
+What failed to replicate is what the tiering predicted. Three of the four
+lost splits -- `node_74277`, `node_73308`, `node_73473` -- were tier C, and
+were the three *lowest* margins in the entire old set (2.37x, 2.41x, 2.83x).
+The three tier C splits that did survive came back tier C. The fourth loss
+was round 2's `node_10`, lost to the floor exactly as above. So under a
+change large enough to move the recurrent sites, the tier was a prediction
+about reproducibility, and it held. Under a prune alone, nothing but the
+floor case failed.
 
 ## Script reference
 
