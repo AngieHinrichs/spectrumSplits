@@ -10,7 +10,15 @@ whatever the search turns up when there is no clade-specific spectrum at all.
 This script measures that.  It destroys any association between mutation type
 and position in the tree, then runs the same search and the same statistic
 spectrumSplits.py uses, and reports the chi-squared values it still finds.
-Set --min_chi comfortably above the maximum observed here.
+Set --min_chi comfortably above them.
+
+The printed summary's recommendation rests on a --quantile (default 0.95) of
+the replicates' maxima, not on the largest one.  The largest of n draws grows
+with n and is set by a single replicate, so a threshold built on it moves
+with the replicate count and jumps between runs.  A quantile stays put as
+replicates are added and only gets more precise.  The largest of 20
+replicates sits near the 95th percentile, so the default keeps thresholds
+comparable with 20-replicate runs; it needs about 100 replicates to resolve.
 
 Null models (--mode):
 
@@ -43,12 +51,12 @@ Usage:
     # smaller subtrees.  --min_chi 1 keeps the threshold from cutting the
     # cascade short.
     permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-        --replicates 20 --mode sites --include_observed \
+        --replicates 100 --mode sites --include_observed \
         --max_splits 25 --min_chi 1 --seed 1 --output null_sites_cascade.tsv
 
     # the type-level null, for comparison: same --seed, whole tree only
     permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-        --replicates 20 --mode types --include_observed \
+        --replicates 100 --mode types --include_observed \
         --seed 1 --output null_types.tsv
 """
 
@@ -94,8 +102,11 @@ def parse_args():
                         help="Input tree file (protobuf format)")
     parser.add_argument("--output", type=str, default="permutation_null.tsv",
                         help="Output TSV of every split scored, per replicate")
-    parser.add_argument("--replicates", type=int, default=20,
-                        help="Number of permutation replicates")
+    parser.add_argument("--replicates", type=int, default=100,
+                        help="Number of permutation replicates (default 100)")
+    parser.add_argument("--quantile", type=float, default=0.95,
+                        help="Quantile of the replicate maxima the recommended "
+                             "--min_chi rests on (default 0.95)")
     parser.add_argument("--mode", type=str, default="sites", choices=["sites", "types"],
                         help="Null model (see module docstring)")
     parser.add_argument("--min_mutations", type=int, default=500,
@@ -183,6 +194,30 @@ def selftest():
             return 1
         worst = max(worst, abs(mine - ref))
     print(f"ok: matches naive reference on 200 random tables (max abs diff {worst:.3e})")
+
+    ### The recommendation rests on the quantile, not the single largest
+    ### replicate, and warns when there are too few replicates to resolve it.
+    import io
+    import types as _types
+    a = _types.SimpleNamespace(quantile=0.95, mode="sites", min_mutations=10,
+                               max_branch_length=250, max_splits=1)
+    maxima = sorted([10.0 + i / 10 for i in range(99)] + [100.0])
+    buf = io.StringIO()
+    summarize(maxima, 1000.0, a, 6, buf)
+    text = buf.getvalue()
+    q = quantile(maxima, 0.95)
+    if (f"--min_chi {math.ceil(2 * q)}" not in text or "--min_chi 200" in text
+            or "Raise --replicates" in text or f"{1000 / q:.1f}x" not in text):
+        print("FAIL: summary threshold\n" + text, file=sys.stderr)
+        return 1
+    buf = io.StringIO()
+    summarize(maxima[:20], None, a, 6, buf)
+    if "Raise --replicates" not in buf.getvalue():
+        print("FAIL: no warning for 20 replicates\n" + buf.getvalue(),
+              file=sys.stderr)
+        return 1
+    print("ok: the recommended --min_chi rests on the quantile, and 20 "
+          "replicates draw a warning")
 
     try:
         from scipy.stats import chi2_contingency
@@ -460,6 +495,69 @@ def quantile(sorted_values, p):
     return sorted_values[lo] + (h - lo) * (sorted_values[hi] - sorted_values[lo])
 
 
+def summarize(null_maxima, obs, args, ncat, out):
+    """The printed summary: the replicate maxima, the recommended --min_chi
+    from their --quantile, and the observed maximum against it."""
+    q = args.quantile
+    qlabel = f"p{100 * q:g}"
+    print("=" * 72, file=out)
+    print("PERMUTATION NULL SUMMARY", file=out)
+    print("=" * 72, file=out)
+    print(f"  mode:               {args.mode}", file=out)
+    print(f"  categories:         {ncat}", file=out)
+    print(f"  min_mutations:      {args.min_mutations}", file=out)
+    print(f"  max_branch_length:  {args.max_branch_length}", file=out)
+    print(f"  max_splits:         {args.max_splits}", file=out)
+    print(f"  replicates scored:  {len(null_maxima)}", file=out)
+    print(file=out)
+
+    if not null_maxima:
+        print("  No null replicate produced a scoreable split.  Either "
+              "--min_mutations", file=out)
+        print("  excludes every candidate, or --min_chi is above the null range.", file=out)
+    else:
+        print("  Maximum chi-squared per null replicate:", file=out)
+        print(f"    min    {null_maxima[0]:.1f}", file=out)
+        print(f"    median {quantile(null_maxima, 0.5):.1f}", file=out)
+        print(f"    {qlabel:<6} {quantile(null_maxima, q):.1f}", file=out)
+        print(f"    max    {null_maxima[-1]:.1f}", file=out)
+        print(file=out)
+        floor = quantile(null_maxima, q)
+        print(f"  In {100 * (1 - q):g}% of replicates the null search reached "
+              f"chi-squared {floor:.1f}", file=out)
+        print("  or more with no real clade-specific spectrum present.  "
+              "--min_chi must", file=out)
+        print("  exceed that:", file=out)
+        print(f"    bare floor         --min_chi {math.ceil(floor)}", file=out)
+        print(f"    with 1.5x margin   --min_chi {math.ceil(1.5 * floor)}", file=out)
+        print(f"    with 2x margin     --min_chi {math.ceil(2.0 * floor)}", file=out)
+        need = math.ceil(5 / (1 - q)) if q < 1 else 0
+        if len(null_maxima) < need:
+            print(f"  With {len(null_maxima)} replicates the {qlabel} rests on "
+                  f"the top one or two; about {need}", file=out)
+            print("  resolve it.  Raise --replicates.", file=out)
+        print(file=out)
+        print("  Only the replicate maxima matter here; a replicate's later", file=out)
+        print("  splits are scored on smaller subtrees and are not comparable.", file=out)
+
+    if obs is not None:
+        print(file=out)
+        print(f"  Observed (unpermuted) maximum chi-squared: {obs:.1f}", file=out)
+        if null_maxima:
+            floor = quantile(null_maxima, q)
+            ratio = obs / floor if floor > 0 else float("inf")
+            print(f"  Ratio to the null {qlabel}: {ratio:.1f}x "
+                  f"(to the largest replicate: "
+                  f"{obs / null_maxima[-1] if null_maxima[-1] > 0 else float('inf'):.1f}x)",
+                  file=out)
+            if ratio < 2:
+                print("  That is a thin margin: the strongest real split is close to", file=out)
+                print("  what chance alone produces.  Treat any split here as", file=out)
+                print("  provisional and check it against the bootstrap.", file=out)
+
+    print(file=out)
+
+
 def main():
     args = parse_args()
 
@@ -546,52 +644,9 @@ def main():
 
     null_maxima = sorted(max(v) for k, v in per_label.items()
                          if k != "observed" and v)
+    obs = max(per_label["observed"]) if per_label.get("observed") else None
+    summarize(null_maxima, obs, args, ncat, sys.stdout)
     out = sys.stdout
-    print("=" * 72, file=out)
-    print("PERMUTATION NULL SUMMARY", file=out)
-    print("=" * 72, file=out)
-    print(f"  mode:               {args.mode}", file=out)
-    print(f"  categories:         {ncat}", file=out)
-    print(f"  min_mutations:      {args.min_mutations}", file=out)
-    print(f"  max_branch_length:  {args.max_branch_length}", file=out)
-    print(f"  max_splits:         {args.max_splits}", file=out)
-    print(f"  replicates scored:  {len(null_maxima)}", file=out)
-    print(file=out)
-
-    if not null_maxima:
-        print("  No null replicate produced a scoreable split.  Either "
-              "--min_mutations", file=out)
-        print("  excludes every candidate, or --min_chi is above the null range.", file=out)
-    else:
-        print("  Maximum chi-squared per null replicate:", file=out)
-        print(f"    min    {null_maxima[0]:.1f}", file=out)
-        print(f"    median {quantile(null_maxima, 0.5):.1f}", file=out)
-        print(f"    p95    {quantile(null_maxima, 0.95):.1f}", file=out)
-        print(f"    max    {null_maxima[-1]:.1f}", file=out)
-        print(file=out)
-        floor = null_maxima[-1]
-        print(f"  The null search reached chi-squared {floor:.1f} with no real", file=out)
-        print("  clade-specific spectrum present.  --min_chi must exceed that:", file=out)
-        print(f"    bare floor         --min_chi {math.ceil(floor)}", file=out)
-        print(f"    with 1.5x margin   --min_chi {math.ceil(1.5 * floor)}", file=out)
-        print(f"    with 2x margin     --min_chi {math.ceil(2.0 * floor)}", file=out)
-        print(file=out)
-        print("  Only the replicate maxima matter here; a replicate's later", file=out)
-        print("  splits are scored on smaller subtrees and are not comparable.", file=out)
-
-    if "observed" in per_label and per_label["observed"]:
-        obs = max(per_label["observed"])
-        print(file=out)
-        print(f"  Observed (unpermuted) maximum chi-squared: {obs:.1f}", file=out)
-        if null_maxima:
-            ratio = obs / null_maxima[-1] if null_maxima[-1] > 0 else float("inf")
-            print(f"  Ratio to the worst null replicate: {ratio:.1f}x", file=out)
-            if ratio < 2:
-                print("  That is a thin margin: the strongest real split is close to", file=out)
-                print("  what chance alone produces.  Treat any split here as", file=out)
-                print("  provisional and check it against the bootstrap.", file=out)
-
-    print(file=out)
     print("  Next: run spectrumSplits.py with this --min_chi, then confirm the", file=out)
     print("  surviving splits with --bootstrap_splits, and inspect which", file=out)
     print("  mutation classes drive each one.", file=out)

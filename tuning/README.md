@@ -261,8 +261,8 @@ times too many. To size a prune exactly, re-profile and subtract. The prune
 is still worth making: it makes every statement about the clade true and
 removes a caveat from every later claim.
 
-The worked numbers in steps 3 to 6 come from the tree pruned this way. Those
-in steps 7 to 11 come from an earlier run with BCG still in the tree.
+The worked numbers in steps 3 to 7 come from the tree pruned this way. Those
+in steps 8 to 11 come from an earlier run with BCG still in the tree.
 
 #### Check what it removed, by clade
 
@@ -524,28 +524,30 @@ printf 'NC_000962.3\t2544935\t2544936\nNC_000962.3\t2544937\t2544938\n' \
 `annotate_sites.py` rewrites both files, so append these again after any
 rerun of it, and keep the lines with the commands: they are specific to this
 reference. To add such sites to a tree that is already masked, mask just
-those positions, as step 7 does. That is quick, and since masking one set of
-positions and then another is masking their union, it gives the same tree as
-a rebuild.
+those positions, as step 7 does. That is quick: on the MTBC tree, two
+positions took seconds.
 
 #### Masking comes in rounds
 
 The commands above build the finished mask, but nobody could have written it
 in one go. Masking is iterative: build a mask, apply it, re-profile (step 4),
 see which sites still recur most, and add what they point to. Each
-build-apply-re-profile cycle is a *round*. The MTBC tree took three:
+build-apply-re-profile cycle is a *round*. The MTBC tree took four, the
+last prompted not by the profile but by step 7's null:
 
 | round | adds | mask | prompted by |
 | --- | --- | --- | --- |
 | 1 | `tb_resistance_genes.txt` with a 200 bp upstream flank, and the `^(PE\|PPE\|esx)` name pattern | 348 kb, 7.9% | Prior knowledge: loci under selection, and the best-known paralogous families |
 | 2 | The first section of `tb_alignment_loci.txt` (mobile elements, prophages, repeats), the transposase / integrase / insertion element product pattern, and `--mask_pad 100` | 469 kb | Round 1's surviving top sites, many of them just outside a feature |
 | 3 | The round 3 section of `tb_alignment_loci.txt`, `^maturase$`, and `--mask_pad 150` | 504 kb, 11.4% | Round 2's surviving top sites: synonymous-only hotspots, clusters such as `Rv2019`'s just past the 100 bp pad, the `Rv0071` maturase site, and `Rv2082` under a clade-defining branch |
+| 4 | Two sites in `lppN`, 2544936 and 2544938 (the "Sites added by hand" lines above) | 2 bp more | Step 7's hotspot check: the two sites, flipping back and forth inside one 1,593-tip clade, set the `sites` null's maximum |
 
-The commands above are round 3, and following this walkthrough you can run
-them directly; you don't need to repeat the history. The earlier rounds are
+The commands above are round 3, and the "Sites added by hand" lines are
+round 4. Following this walkthrough you can run them directly; you don't
+need to repeat the history. The earlier rounds are
 here because the worked examples compare against them, and because on a
 different tree you will need rounds of your own: you can't write an artifact
-list until you have seen which sites recur. Step 4's "Three rounds, and when
+list until you have seen which sites recur. Step 4's "Four rounds, and when
 to stop" has what each round bought and how to tell when you are done. The
 rounds were run on a tree with BCG still in it; pruning it in step 2 instead
 changes nothing here, because pruning and masking commute (step 4).
@@ -553,7 +555,7 @@ changes nothing here, because pruning and masking commute (step 4).
 *Worked example.* In round 1, the resistance list resolved to 41 intervals
 over 81 kb and the PE/PPE pattern to 151 intervals over 266 kb, 348 kb of the
 4,411,532 bp reference together. Round 3's commands, as written above, cover
-506,763 bp, 11.5%. That is 3,017 bp more than the original round 3, because
+506,763 bp, 11.5%, and round 4 makes it 506,765. That is 3,017 bp more than the original round 3, because
 `annotate_sites.py` then dropped features typed `pseudogene`. The
 `^(PE|PPE|esx)` pattern reaches five of NC_000962.3's: `PE21`, `PE_PGRS36`,
 `PPE47`, `PPE48` and `esxM`, which `tb_alignment_loci.txt` also names.
@@ -577,13 +579,13 @@ built from; "The surviving sites are mostly flank" below says what it is for.
 *Worked example.* Judge the mask by recurrence, not by total count. "Usable
 SNVs" is every A/C/G/T substitution on every branch, so a site that mutated
 on 200 branches counts 200 times; it is the tree's parsimony score. The raw
-column is the tree as downloaded, before step 2's prunes; the round 3 column
+column is the tree as downloaded, before step 2's prunes; the round 4 column
 is what steps 2 and 3's commands produce:
 
-| | raw | round 1 | round 3 |
+| | raw | round 1 | round 4 |
 | --- | --- | --- | --- |
-| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) | 2,844,115 (−12.5%) |
-| distinct mutated sites | 1,988,164 | 1,865,580 | 1,806,795 |
+| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) | 2,843,878 (−12.5%) |
+| distinct mutated sites | 1,988,164 | 1,865,580 | 1,806,793 |
 | mutations per site (mean) | 1.634 | 1.593 | 1.574 |
 | worst single site | 6,102 | 1,989 | 225 |
 | top 20 sites' share | 1.24% | 0.50% | 0.12% |
@@ -592,7 +594,7 @@ Round 1 masked 7.9% of the genome and removed 8.5% of the mutations, so by
 total count it looks like it bought nothing. It bought a great deal: 13 of the raw top 20
 sites are gone, including all seven largest, and the worst hotspot fell by
 two thirds. Those are the sites that break the independence assumption. By
-round 3, 11.5% of the genome masked has removed 12.5% of the mutations and
+round 4, 11.5% of the genome masked has removed 12.5% of the mutations and
 96% of the worst hotspot. (Step 2's prunes are in that 12.5% too, but they
 are small: BCG was 535 mutations.)
 
@@ -603,31 +605,37 @@ excluded most of the PE/PPE families, which were 76% of the mask. So the
 masked regions were below average in how many positions varied at all, and far
 above average in how often those positions recurred.
 
-#### Three rounds, and when to stop
+#### Four rounds, and when to stop
 
 Step 3 lists what each round added. On the MTBC tree the returns fell off
 sharply:
 
-| | raw | round 1 | round 2 | round 3 |
-| --- | --- | --- | --- | --- |
-| usable SNVs | 3,249,554 | 2,972,123 | 2,886,050 | 2,845,156 |
-| worst single site | 6,102 | 1,989 | 318 | 225 |
-| top 20 sites' share | 1.24% | 0.50% | 0.16% | 0.12% |
-| `CT\|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 |
-| `TC\|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 |
+| | raw | round 1 | round 2 | round 3 | round 4 |
+| --- | --- | --- | --- | --- | --- |
+| usable SNVs | 3,249,554 | 2,972,123 | 2,886,050 | 2,845,156 | 2,843,878 |
+| worst single site | 6,102 | 1,989 | 318 | 225 | 225 |
+| top 20 sites' share | 1.24% | 0.50% | 0.16% | 0.12% | 0.12% |
+| `CT\|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 | 0.5080 |
+| `TC\|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 | 0.1575 |
 
-These are the figures from the original runs, with BCG still in the tree.
-Their round 3 differs from the table above in three ways, which account for
-it exactly:
+Rounds 1 to 3 are the figures from the original runs, with BCG still in the
+tree; round 4 is the walkthrough tree, the same as the table above. The
+difference between the two trees' round 3 and round 4 is accounted for
+exactly:
 
 - That run used an unanchored `maturase`, which also masked `Rv0693` (see
   below): 1,014 mutations. With the anchored pattern it would have counted
   2,846,170.
 - Pruning BCG took 535 mutations, giving 2,845,635.
-- The pseudogenes added to the mask in step 3 held 1,520, giving step 4's
+- The pseudogenes added to the mask in step 3 held 1,520, giving
   2,844,115.
+- Round 4's two `lppN` sites held 226. The tree also lost 56 internal
+  nodes, and 11 mutations at 11 other sites, one each. Most likely those
+  nodes existed only to carry `lppN` changes, and collapsing them merged
+  identical mutations on branches that had been split by them. That gives
+  2,843,878.
 
-The last two were measured in opposite orders. The earlier tree was masked
+The BCG prune and the pseudogenes were measured in opposite orders. The earlier tree was masked
 and then pruned of BCG; this one was pruned and then masked. Counting the
 pseudogene positions' mutations on the earlier tree and subtracting gives
 this tree's total to the mutation, so pruning and masking commute here, as
@@ -757,7 +765,14 @@ holds 0.12%. Each round costs hours, over six on a slower server, for
 the next rebuild from scratch, and stop.
 
 The signal to stop is this: when the surviving top sites are flanks of loci you
-already masked, and the folded spectrum has stopped moving, the mask is done.
+already masked, and the folded spectrum has stopped moving, the mask is done,
+as far as the profile can tell. Round 4 shows the limit of that. Its two
+sites carry 117 and 109 mutations, below the 145 at which the top 20 ends,
+so the recurrence table never listed them. What made them matter was not how
+often they mutated but where: all but two of those mutations sit in one clade
+of 12,828, enough to set the `sites` null's maximum whenever they drew a rare
+class. Only the null sees that, so step 7's hotspot check can reopen the
+mask after this step has closed it.
 
 If the new top sites in `surviving_sites.tsv` still annotate to resistance
 loci, widen `resistance_genes.txt` instead of masking those sites one by one.
@@ -792,8 +807,8 @@ numbers are log2(first/second), where 0 means symmetric:
 | | C>T / G>A | C>G / G>C | T>G / A>C | T>C / A>G |
 | --- | --- | --- | --- | --- |
 | forward strand leading | +0.559 | +0.349 | +0.283 | −0.095 |
-| forward strand lagging | −0.485 | −0.314 | −0.242 | +0.080 |
-| + strand genes | +0.132 | +0.031 | −0.194 | −0.162 |
+| forward strand lagging | −0.485 | −0.314 | −0.244 | +0.081 |
+| + strand genes | +0.132 | +0.031 | −0.196 | −0.161 |
 | − strand genes | −0.131 | −0.033 | +0.203 | +0.155 |
 | intergenic | +0.023 | +0.020 | +0.021 | +0.015 |
 
@@ -841,7 +856,7 @@ to measure enter. "Big enough" is set by precision, not by a count:
 `--strand_max_se` (default 0.15) is the largest standard error allowed on a
 clade's log2 ratio for the rarest pair, and the report prints the clade size
 that implies for this tree's spectrum. Any lower and the smallest rows are
-mostly noise. On the walkthrough tree that is 24,008 mutations, with TA|AT the
+mostly noise. On the walkthrough tree that is 24,006 mutations, with TA|AT the
 rarest pair, which admits 26 clades. A larger SE admits more, smaller
 clades: the chi2/df already allows for their noise, but the single-clade z
 gets more chances to cross its limit by chance. `--strand_min_clade` sets a
@@ -851,18 +866,18 @@ fixed size instead.
 
 | pair | F | z | R | T | F chi2/df across 26 clades | most extreme clade, z |
 | --- | --- | --- | --- | --- | --- | --- |
-| C>A / G>T | −0.015 | −2.8 | −0.081 | +0.017 | 1.59 | −3.0 |
-| C>G / G>C | +0.018 | +3.3 | +0.345 | −0.031 | 0.78 | −1.9 |
-| C>T / G>A | +0.035 | +13.4 | +0.525 | +0.037 | 1.54 | −2.8 |
+| C>A / G>T | −0.015 | −2.7 | −0.081 | +0.018 | 1.61 | −3.0 |
+| C>G / G>C | +0.018 | +3.3 | +0.345 | −0.031 | 0.79 | −1.9 |
+| C>T / G>A | +0.035 | +13.4 | +0.525 | +0.037 | 1.55 | −2.8 |
 | T>A / A>T | +0.027 | +1.8 | +0.021 | −0.085 | 1.67 | −2.8 |
-| T>C / A>G | −0.008 | −1.6 | −0.076 | −0.145 | 1.18 | −3.2 |
-| T>G / A>C | +0.024 | +3.5 | +0.300 | −0.248 | 0.92 | +2.1 |
+| T>C / A>G | −0.007 | −1.5 | −0.077 | −0.145 | 1.15 | −3.3 |
+| T>G / A>C | +0.022 | +3.3 | +0.301 | −0.249 | 0.92 | +2.1 |
 
 C>T/G>A has a highly significant F (z 13.4). That is because the leading-arm
 skew (+0.56) is a little larger than the lagging-arm one (−0.49), probably an
 arm difference in the replication effect or a slightly misplaced terminus.
 Neither is a reason not to fold. Its F is the same in every clade, with
-chi2/df 1.54, against 55 for the replication part in the per-clade table
+chi2/df 1.55, against 55 for the replication part in the per-clade table
 above. The verdict is fold.
 
 The defaults flag a pair at chi2/df ≥ 3 (`--fold_max_dispersion`) or a
@@ -884,7 +899,7 @@ constraint here — `smallest_eligible_subtree_tips` is:
 
 | `--min_mutations` | eligible nodes | smallest eligible subtree |
 | --- | --- | --- |
-| 2,500 | 2,302 | 17 tips |
+| 2,500 | 2,301 | 17 tips |
 | 5,000 | 1,284 | 62 tips |
 | 10,000 | 777 | 130 tips |
 
@@ -923,12 +938,12 @@ in mind.
 ```
 permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
     --min_mutations 10000 --max_branch_length 250 --mode types \
-    --replicates 20 --include_observed --seed 1 --nthreads 8 \
+    --replicates 100 --include_observed --seed 1 --nthreads 8 \
     --output null_types.tsv
 
 permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
     --min_mutations 10000 --max_branch_length 250 --mode sites \
-    --max_splits 25 --min_chi 1 --replicates 20 --include_observed \
+    --max_splits 25 --min_chi 1 --replicates 100 --include_observed \
     --seed 1 --nthreads 8 --output null_sites_cascade.tsv
 ```
 
@@ -945,6 +960,16 @@ calibration. To see the whole-tree rows alone, run
 `awk -F'\t' '$2 == 1' null_sites_cascade.tsv`. In this run `--min_chi 1` only
 stops the search: a higher value would cut the null off at exactly the depth
 being measured.
+
+The summary recommends `--min_chi` from the 95th percentile of the
+replicates' maxima (`--quantile`), not from the largest. The largest of n
+replicates grows with n and is set by a single replicate, so a threshold
+built on it rises as replicates are added and jumps between runs. A
+quantile stays put and only gets more precise. The largest of 20 replicates
+sits near the 95th percentile, so 0.95 gives about what the largest of 20
+used to; it takes about 100 replicates to resolve, and the summary warns
+with fewer. On the MTBC tree, 100 replicates took under two minutes for each
+run with 8 threads.
 
 Use `--output` for the per-split TSV; the summary goes to stdout, so
 redirecting stdout saves the summary and silently discards the table. Pass the
@@ -982,7 +1007,7 @@ IDs. For each flagged clade it lists the most recurrent sites and prints an
 "The threshold should scale with subtree size" below.)
 
 *Worked example.* On the walkthrough tree as steps 2 and 3 first built it,
-the `sites` null's maximum was 45.4, and the summary recommended
+with 20 replicates, the `sites` null's maximum was 45.4, and the summary recommended
 `--min_chi 91`. The check flagged a lineage 2.2.1 clade of 1,593 tips,
 `node_21012`. With its child `node_21013`, it held the two largest maxima,
 45.4 and 31.6, and no other clade's exceeded 24.4. Two sites 2 bp apart in
@@ -1016,49 +1041,60 @@ mv tree.pruned.masked.lppN.pb.gz tree.pruned.masked.pb.gz
 ```
 
 Then rerun step 4's profile, so that later steps read the final tree, and
-both nulls above.
+both nulls above. On the MTBC tree the check then comes back clean, over
+100 replicates: the two largest maxima come from different clades, and no
+clade is the maximum in more than 5 of them.
 
-*Worked example*, the round 3 tree from step 4, folded, at
-`--min_mutations 10000` and `--max_branch_length 250`:
+*Worked example*, the round 4 tree from step 4, folded, at
+`--min_mutations 10000` and `--max_branch_length 250`, 100 replicates:
 
-| | min | median | max |
-|---|---|---|---|
-| `types` | 15.5 | 19.8 | 31.5 |
-| `sites` | 15.7 | 21.8 | 32.0 |
+| | min | median | p95 | max |
+|---|---|---|---|---|
+| `types` | 14.0 | 18.7 | 25.1 | 29.1 |
+| `sites` | 14.1 | 20.7 | 26.1 | 29.3 |
 
-Observed: **17,826.8**, at `node_5011`, splitting 586,079 mutations below from
-2,254,631 above.
+Observed: **17,809.5**, at `node_4965`, splitting 585,749 mutations below from
+2,252,671 above.
 
 Three things to read off that.
 
 **Which null to believe.** Always calibrate against `sites`. It keeps the
 clumping that recurrent sites cause, so it can only come out at or above
 `types`, and a threshold taken from `types` is exceeded by chance whenever
-the two differ. Here they barely differ: `sites` tops out 1.6% above `types`,
-and only 1 of its 20 replicates exceeds the whole `types` range. That was not
-true on the round 2 tree, where `sites` reached 62.7 against 23.9 for
-`types`, 2.6x higher, and 11 of 20 `sites` replicates exceeded the entire
-`types` range. Round 2's top recurrent sites were still setting the null.
-The round 3 mask removed them.
+the two differ. Here they barely differ: the `sites` p95 is 4% above the
+`types` p95, and only 1 of its 100 replicates exceeds the whole `types`
+range. Before round 4, with 20 replicates, `sites` reached 45.4 against
+21.4 for `types`, 2.1x higher, set by the `lppN` sites. On the round 2 tree it reached 62.7 against 23.9, 2.6x
+higher, with 11 of 20 `sites` replicates above the entire `types` range;
+round 2's top recurrent sites were still setting the null, and round 3
+removed them.
 
 **Whether to keep masking.** The gap between the two nulls' maxima is what
 residual recurrent-site clumping costs. Weigh it against another round of
-masking. Here it is 0.5, so another round could buy nothing. On the round 2
-tree it was 38.8. Even that was immaterial against an observed maximum
-hundreds of times larger, which is why step 4 says round 3 was not justified
-by recurrence. Stop masking when the gap between the nulls is small compared
-with the observed value, not when the recurrence table looks tidy.
+masking. Here the p95s differ by 1.0, so another round could buy little.
+Before round 4 the maxima differed by 24.0, and on the round 2 tree by 38.8. Neither mattered against the
+observed maximum, hundreds of times larger, which is why step 4 says round 3
+was not justified by recurrence. But the observed maximum is not the only
+split the threshold governs. Round 4 took the recommended `--min_chi` from
+91 to 53, and the cascade below has five splits in between, at 54.3 to 85.2,
+each clearing its size-matched null by 3.2x to 5.4x. A threshold of 91 would
+have rejected all five. So weigh the gap against the smaller splits as well
+as the largest, not against the recurrence table: stop masking when it is
+small next to the splits you would lose.
 
-**The threshold.** A 2x margin on the `sites` maximum gives `--min_chi 65`,
+**The threshold.** A 2x margin on the `sites` p95 gives `--min_chi 53`,
 the "with 2x margin" line of the printed summary. The observed maximum is
-274x that. When the headroom is this large the exact choice does not matter;
-when it is not, prefer the larger margin. Do not read the summary's
-recommended thresholds finely either: each is a multiple of a single
-maximum over 20 replicates, the noisiest statistic those replicates offer,
-and it moves by several units between independent runs. The `types` null on
-this tree with BCG pruned gave a maximum of 28.7 instead of 31.5, and a
-recommended 58 instead of 64, with medians of 18.9 and 19.8. The whole
-difference was one high replicate in the first run.
+336x that. When the headroom is this large the exact choice does not matter;
+when it is not, prefer the larger margin. The reason for a quantile shows
+in how much a 20-replicate maximum moves. The `types` null, which the `lppN`
+sites cannot touch, gave maxima of 31.5, 28.7, 21.4 and 23.3 over 20
+replicates on four versions of this tree: the earlier one, the earlier one
+with BCG pruned, and the walkthrough tree before and after round 4. Their
+medians were 19.8, 18.9, 18.5 and 18.6. The maxima differ by single high
+replicates. On the final tree, the `sites` replicates 1 to 20 are the same in
+the 100-replicate run, since each depends only on `--seed` and its number:
+their maximum was 25.7, the 100 replicates' p95 is 26.1, and their maximum
+is 29.3.
 
 One caveat on transferring this number: it is the threshold the *first*
 split must beat. Deeper splits in the greedy cascade are scored on smaller
@@ -1073,49 +1109,62 @@ which is its first split. The answer is in the cascade TSV, and
 `null_by_size.py` reads it:
 
 ```
-null_by_size.py --null null_sites_cascade.tsv --min_chi 65
+null_by_size.py --null null_sites_cascade.tsv --min_chi 53
 ```
 
 It groups the null splits by the size of the table each was scored on
 (`mutations_below + mutations_above`), giving the whole-tree pass a row of its
 own and putting the rest in factor-of-2 bins. It then compares each observed
-split with the highest null from subtrees within 1.5x of its size. That is the
-same ceiling `split_confidence.py` uses in step 10, so the two agree. With
+split with a ceiling: the 99th percentile (`--null_quantile`) of the null
+splits from subtrees within 1.5x of its size. That is the same ceiling
+`split_confidence.py` uses in step 10, so the two agree. It is 0.99 rather
+than the summary's 0.95 because each replicate puts several null splits in
+a window, so a window held dozens even with 20 replicates, and their maximum
+sat near the 99th percentile. On this tree the 20-replicate maxima and the
+100-replicate p99s agree within about 20%, so step 10's margins and tiers
+keep their meaning. With
 `--min_chi`, it flags the splits that threshold rejects even though they clear
 their size-matched null by `--margin` (default 2x), and any it accepts that
 don't clear their null at all. It ends with the hotspot check described
 above.
 
-*Worked example*, same tree and parameters as above, 500 null splits:
+*Worked example*, same tree and parameters as above, 2,500 null splits:
 
-| size of table scored | null splits | null max chi-squared |
-|---|---|---|
-| 2.84M (whole tree) | 20 | 32.0 |
-| 1.46M-2.83M | 243 | 23.4 |
-| 839k-1.04M | 4 | 13.1 |
-| 354k-586k | 12 | 16.0 |
-| 181k-345k | 23 | 14.8 |
-| 90k-170k | 26 | 14.2 |
-| 45k-88k | 72 | 12.8 |
-| 22k-44k | 98 | 14.9 |
+| size of table scored | null splits | median | p99 | max |
+|---|---|---|---|---|
+| 2.84M (whole tree) | 100 | 20.7 | 28.9 | 29.3 |
+| 1.43M-2.83M | 1,089 | 13.3 | 21.4 | 28.1 |
+| 712k-1.38M | 79 | 11.1 | 19.2 | 19.7 |
+| 354k-705k | 100 | 10.2 | 15.8 | 18.2 |
+| 177k-351k | 128 | 7.9 | 15.9 | 18.5 |
+| 89k-176k | 182 | 7.3 | 15.4 | 19.3 |
+| 44k-88k | 300 | 5.9 | 15.3 | 20.0 |
+| 22k-44k | 487 | 4.5 | 12.1 | 14.2 |
+| 21k-22k | 35 | 3.1 | 8.6 | 8.8 |
 
 The second row is the root's residual: the whole tree minus splits already
-carved out of it, still scored as one table. Below about 1M the ceiling
-settles at 13 to 16, half the whole-tree figure, because chi-squared scales
-with the counts in the table. A single `--min_chi` calibrated on the first
-split is therefore too strict everywhere below it: 65 against a real ceiling
-of about 14 is more than 4x.
+carved out of it, still scored as one table. Below about 700k the ceiling
+settles at 12 to 16, about half the whole-tree figure, because chi-squared
+scales with the counts in the table. A single `--min_chi` calibrated on the
+first split is therefore too strict everywhere below it: 53 against a real
+ceiling of about 15 is 3.5x. The maxima column shows why the ceiling is a
+quantile: in the bins with hundreds of null splits, one replicate's outlier
+sets the maximum up to 30% above the p99.
 
-That costs real splits. Because `--min_chi 1` scores everything, the cascade
-run also shows what a production run at 65 would reject. Four splits between
-25.8 and 64.5 clear their size-matched null by 2.0x to 4.5x. The largest is
-`node_12073` at 64.5 against a ceiling of 14.2, which misses the threshold by
-0.5. Only one scored split genuinely fails, `node_13090` at 9.0 against 14.9.
-Two more, at 18.9 and 19.3, clear their null by less than 1.5x.
+Whether that costs real splits depends on how strict. Because `--min_chi 1`
+scores everything, the cascade run also shows what a production run would
+reject. At 53 it costs nothing here: the three scored splits below 53 that
+clear their size-matched null do so by less than 2x, at 25.8 (1.7x), 19.0
+(1.1x) and 18.7 (1.2x), and one genuinely fails, `node_13044` at 9.0
+against 12.3. The cost shows at 91, the threshold before round 4. It would
+reject five splits between 54.3 and 85.2 that clear their null by 3.2x to
+5.4x, among them `node_12027` at 64.1 against a ceiling of 14.9. The
+earlier tree's 65 rejected a split of the same size there, `node_12073` at
+64.5.
 
 Two ways to use this. The simple one is to set `--min_chi` from the
 *smallest* subtree you intend to split rather than from the root. On this
-tree, 2x a ceiling of about 15 means something near 30 rather than 65. The
+tree, 2x a ceiling of about 15 means something near 30 rather than 52. The
 better one is for the threshold to scale with the candidate subtree's
 mutation count. That is a change to `spectrumSplits.py` rather than a tuning
 choice; until it exists, a fixed threshold is a known limitation and worth
@@ -1137,7 +1186,7 @@ spectrumSplits.py --input_tree tree.pruned.masked.pb.gz --fold \
 ```
 
 `--min_chi 30` is 2x the size-matched null ceiling for deep subtrees (about
-15 in step 7), not 2x the whole-tree ceiling (65). A threshold set at the
+15 in step 7), not 2x the whole-tree threshold (53). A threshold set at the
 root would reject splits that clear their own null several times over. The
 low threshold costs nothing in rigour, because step 10 scores every accepted
 split against the null for its own size and ranks it by that margin.
@@ -2067,12 +2116,12 @@ Used in [step 7](#7-calibrate---min_chi).
 
 Destroys any association between mutation type and position in the tree, then
 runs the same search and the same statistic, and reports the chi-squared values
-it still finds. Set `--min_chi` comfortably above the maximum.
+it still finds. Set `--min_chi` comfortably above them.
 
 ```
 # whole-tree calibration and the cascade null, in one run
 permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-    --replicates 20 --mode sites --include_observed \
+    --replicates 100 --mode sites --include_observed \
     --max_splits 25 --min_chi 1
 ```
 
@@ -2108,6 +2157,11 @@ Key options:
   scale and the null changes shape, so a threshold calibrated one way is
   meaningless the other. See `spectrumSplits/README.md` for when folding is
   appropriate.
+- `--replicates` (default 100) and `--quantile` (default 0.95): the printed
+  summary recommends `--min_chi` from that quantile of the replicates'
+  maxima, not the largest, so the recommendation does not climb as
+  replicates are added. With fewer than about 5 / (1 − quantile) replicates
+  it warns that the quantile is not resolved.
 - `--include_observed` scores the unpermuted tree through the same code path, so
   the real maximum and the null maximum are directly comparable. If the ratio is
   under about 2x, the strongest real split is close to what chance produces.
@@ -2133,7 +2187,7 @@ Used in [step 7](#7-calibrate---min_chi).
 
 ```
 null_by_size.py --null null_sites_cascade.tsv
-null_by_size.py --null null_sites_cascade.tsv --min_chi 65 --margin 2 \
+null_by_size.py --null null_sites_cascade.tsv --min_chi 52 --margin 2 \
     --input_tree tree.pruned.masked.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
 ```
@@ -2144,7 +2198,7 @@ and reports:
 | Section | What to do with it |
 | --- | --- |
 | Null ceiling by subtree size | How far the chance maximum falls below the whole-tree figure as subtrees shrink. A `--min_chi` set from the root is that much too strict for deep splits |
-| Observed splits against a size-matched null | Each observed split's margin over the highest null from subtrees within `--null_window` (default 1.5x) of its size. With `--min_chi`, it flags splits that threshold rejects despite a margin of at least `--margin`, and accepted splits with a margin under 1 |
+| Observed splits against a size-matched null | Each observed split's margin over the `--null_quantile` (default 0.99) of the nulls from subtrees within `--null_window` (default 1.5x) of its size, as in `split_confidence.py`. With `--min_chi`, it flags splits that threshold rejects despite a margin of at least `--margin`, and accepted splits with a margin under 1 |
 | Hotspot check | The largest whole-tree null maxima and the clade behind each. It flags a clade that is the maximum in more than `--hotspot_fraction` (default half) of the replicates, or that holds the `--top_maxima` (default 2) largest maxima. With `--input_tree`, a node and a child whose `mutations_below` agree within `--same_clade` (default 0.95) count as one clade, and a flagged clade's `--hotspot_sites` (default 10) most recurrent sites are listed, with an `annotate_sites.py` command for those holding `--hotspot_min` (default 20) or more of its mutations. Annotate them, and mask them if they look like an artifact |
 
 The observed rows come from the cascade run's own `--min_chi 1` search, which
@@ -2299,6 +2353,9 @@ Options:
 
 - `--null_window` (default 1.5): how far, as a fold range, a null replicate's
   subtree size may be from the split's and still count as size-matched.
+- `--null_quantile` (default 0.99): the quantile of those size-matched null
+  values taken as the ceiling; 1 takes their maximum, the old behaviour,
+  which rises with the replicate count. Step 7 says why 0.99.
 - `--neighbourhood` (default 10): the node-number window within which a
   bootstrap replicate's split counts as the same split (0 disables).
 - `--strong_margin` (default 5) and `--strong_support` (default 70%): tier A

@@ -15,12 +15,13 @@ Three reports:
      was scored on (mutations_below +
      mutations_above, which is exact: it is the search root minus every split
      already carved out of it).  For each bin: how many null splits, their
-     size range, and the maximum and median chi-squared.
+     size range, and the median, --null_quantile (default 0.99) and maximum
+     chi-squared.
 
   2. OBSERVED SPLITS AGAINST A SIZE-MATCHED NULL.  Each observed split in the
-     same file against the highest null chi-squared from subtrees within
-     --null_window fold of its size: the same ceiling and window that
-     split_confidence.py uses, so the two agree.  Given --min_chi, splits on
+     same file against the --null_quantile of null chi-squared from subtrees
+     within --null_window fold of its size: the same ceiling, window and
+     quantile that split_confidence.py uses, so the two agree.  Given --min_chi, splits on
      the wrong side of that threshold are flagged: below it but clearing
      their null by --margin (a fixed threshold is rejecting them), or above it
      but not clearing their null at all.
@@ -64,7 +65,7 @@ import math
 import statistics
 import sys
 
-from split_confidence import ceiling, parse_null
+from split_confidence import ceiling, parse_null, quantile
 
 
 def parse_cascade(lines):
@@ -192,7 +193,9 @@ def report(rows, args, out, tree=None):
           "mutations_above).", file=out)
     print("  The whole-tree pass (iteration 1) is listed first; it is what the", file=out)
     print("  printed summary of permutation_null.py reports.", file=out)
-    print("    size range\tnull splits\tmax chi2\tmedian chi2\tmax at", file=out)
+    ql = f"p{100 * args.null_quantile:g}"
+    print(f"    size range\tnull splits\tmedian chi2\t{ql} chi2\tmax chi2\tmax at",
+          file=out)
     whole = [r for r in null_rows if r["iteration"] == 1]
     deeper = [r for r in null_rows if r["iteration"] > 1]
     groups = ([("whole tree", whole)] if whole else []) + [(None, b) for b in size_bins(deeper)]
@@ -203,17 +206,18 @@ def report(rows, args, out, tree=None):
         rng = fmt_size(lo) if fmt_size(lo) == fmt_size(hi) else f"{fmt_size(lo)}-{fmt_size(hi)}"
         if label:
             rng = f"{rng} ({label})"
-        print(f"    {rng}\t{len(b)}\t{top['chi2']:.1f}\t"
-              f"{statistics.median(r['chi2'] for r in b):.1f}\t"
-              f"{top['replicate']} {top['node']}", file=out)
+        q = quantile(sorted(r["chi2"] for r in b), args.null_quantile)
+        print(f"    {rng}\t{len(b)}\t"
+              f"{statistics.median(r['chi2'] for r in b):.1f}\t{q:.1f}\t"
+              f"{top['chi2']:.1f}\t{top['replicate']} {top['node']}", file=out)
     print(file=out)
 
     if observed:
         print("=" * 72, file=out)
         print("OBSERVED SPLITS AGAINST A SIZE-MATCHED NULL", file=out)
         print("=" * 72, file=out)
-        print(f"  ceiling = highest null chi2 from subtrees within {args.null_window}x "
-              "of the split's", file=out)
+        print(f"  ceiling = {ql} of null chi2 from subtrees within "
+              f"{args.null_window}x of the split's", file=out)
         print("  size (split_confidence.py's rule); margin = chi2 / ceiling.", file=out)
         if args.min_chi is not None:
             print(f"  flag: 'rejected' if chi2 <= --min_chi {args.min_chi:g} but "
@@ -225,7 +229,8 @@ def report(rows, args, out, tree=None):
               file=out)
         n_rejected = n_within = n_fail = 0
         for r in observed:
-            ceil, n = ceiling(nulls, r["size"], args.null_window)
+            ceil, n = ceiling(nulls, r["size"], args.null_window,
+                              args.null_quantile)
             flags = []
             if ceil is None:
                 margin_s, ceil_s = "-", "-"
@@ -340,7 +345,8 @@ def selftest():
     assert len(h["flagged"]["node_7"]) == 2, h["flagged"]   # both signs
     h = hotspot(null_rows, 0.75, 5)
     assert h["flagged"] == {}, h["flagged"]
-    args = argparse.Namespace(null_window=1.5, min_chi=50, margin=2, min_nulls=5,
+    args = argparse.Namespace(null_window=1.5, null_quantile=1.0, min_chi=50,
+                              margin=2, min_nulls=5,
                               hotspot_fraction=0.5, top_maxima=2,
                               same_clade=0.95, hotspot_sites=3, hotspot_min=3,
                               annotation="ann.gff3", reference="ref.fa")
@@ -355,7 +361,7 @@ def selftest():
     line6 = next(l for l in text.splitlines() if "\tnode_6\t" in l)
     assert line6.split("\t")[7] == "0.8", line6
     assert "HOTSPOT at node_7: it is the maximum in 3 of 4" in text, text
-    assert "1k (whole tree)\t4\t40.0" in text, text
+    assert "1k (whole tree)\t4\t36.5\t40.0\t40.0" in text, text
 
     # A clade that rarely wins but wins big, under two IDs: node_20 and its
     # child node_21, which holds nearly all of it.  It is the maximum in 2 of
@@ -427,6 +433,10 @@ def parse_args(argv=None):
     p.add_argument("--null_window", type=float, default=1.5,
                    help="fold-range of subtree size accepted as size-matched, as in "
                         "split_confidence.py. Default 1.5.")
+    p.add_argument("--null_quantile", type=float, default=0.99,
+                   help="quantile of the size-matched null taken as the "
+                        "ceiling, as in split_confidence.py; 1 takes the "
+                        "maximum. Default 0.99.")
     p.add_argument("--min_chi", type=float, default=None,
                    help="a production --min_chi to flag observed splits against")
     p.add_argument("--margin", type=float, default=2.0,

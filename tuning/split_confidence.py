@@ -13,7 +13,7 @@ Two independent questions, because they fail independently:
      on the whole tree is far too strict for a deep split, and one calibrated
      on a deep split is too permissive at the root.  So each split is scored
      against null replicates drawn from subtrees of comparable size, and what
-     is reported is the ratio.  This is the check that justifies running the
+     is reported is the ratio to their --null_quantile (default 0.99).  This is the check that justifies running the
      search at a low --min_chi and filtering afterwards.
 
      Getting that size right is the whole difficulty, and it is not the size
@@ -61,6 +61,7 @@ Usage:
 
 import argparse
 import collections
+import math
 import re
 import sys
 
@@ -222,15 +223,33 @@ def parse_null(lines):
     return out
 
 
-def ceiling(nulls, size, window):
-    """Highest null chi-squared from subtrees within `window`-fold of `size`.
+def quantile(sorted_values, p):
+    """Linear-interpolation quantile, as in permutation_null.py."""
+    n = len(sorted_values)
+    if n == 1:
+        return float(sorted_values[0])
+    h = (n - 1) * p
+    lo = int(math.floor(h))
+    hi = min(lo + 1, n - 1)
+    return sorted_values[lo] + (h - lo) * (sorted_values[hi] - sorted_values[lo])
 
-    A maximum, not a quantile: with a few dozen replicates in the window the
-    upper tail is not resolved well enough for a quantile to mean anything,
-    and the maximum is the conservative reading.
+
+def ceiling(nulls, size, window, q=1.0):
+    """The q quantile of null chi-squared from subtrees within `window`-fold
+    of `size`, and how many there were; q=1 is their maximum.
+
+    The maximum of n values grows with n, so a ceiling built on it rises as
+    replicates are added.  A quantile does not, and with ~100 replicates the
+    null has enough values in each window to resolve one.  The command-line
+    default is 0.99: a window holds several null splits per replicate, so
+    with 20 replicates it held dozens, and their maximum sat near the 99th
+    percentile.  0.99 keeps margins, and the tiers cut on them, comparable
+    with 20-replicate runs.  (The whole-tree threshold in permutation_null.py
+    uses 0.95, because there each replicate contributes one value, its
+    maximum, and the largest of 20 sits near the 95th percentile.)
     """
-    inside = [c for s, c in nulls if size / window <= s <= size * window]
-    return (max(inside), len(inside)) if inside else (None, 0)
+    inside = sorted(c for s, c in nulls if size / window <= s <= size * window)
+    return (quantile(inside, q), len(inside)) if inside else (None, 0)
 
 
 def parse_support(lines):
@@ -315,6 +334,10 @@ def parse_args(argv=None):
     p.add_argument("--null_window", type=float, default=1.5,
                    help="fold-range of subtree size accepted as size-matched. "
                         "Default 1.5.")
+    p.add_argument("--null_quantile", type=float, default=0.99,
+                   help="quantile of the size-matched null chi-squared values "
+                        "taken as the ceiling; 1 takes their maximum. "
+                        "Default 0.99.")
     p.add_argument("--strong_margin", type=float, default=5.0,
                    help="margin for tier A. Default 5.")
     p.add_argument("--strong_support", type=float, default=70.0,
@@ -356,7 +379,7 @@ def build_rows(args, log_lines, spectra_lines, null_lines,
     for node in sorted(chi, key=lambda n: -chi[n]):
         size = sizes.get(node)
         ceil, nnull = (None, 0) if size is None else ceiling(
-            nulls, size, args.null_window)
+            nulls, size, args.null_window, args.null_quantile)
         margin = None if (ceil is None or ceil == 0) else chi[node] / ceil
         exact = sup.get(node)
         if reps:
@@ -569,6 +592,12 @@ def selftest():
     c2, n2 = ceiling([(1000, 99.0)], 100, 1.5)
     check(c1 == 9.0 and n1 == 2 and c2 is None and n2 == 0,
           "size-matched ceiling takes the window maximum, or nothing")
+    ### A quantile ignores a lone high value that the maximum would take.
+    many = [(100, float(v)) for v in range(1, 101)] + [(100, 1000.0)]
+    c3, n3 = ceiling(many, 100, 1.5, 0.95)
+    check(n3 == 101 and abs(c3 - 96.0) < 1e-9
+          and ceiling(many, 100, 1.5)[0] == 1000.0,
+          "a 0.95 ceiling is not set by one outlying replicate")
 
     ### 6. The failure this script exists to avoid.  Replicate 1 splits three
     ### nodes inside the window; summing per-node counts would score it 3, and
@@ -590,7 +619,7 @@ def selftest():
           "tiers need both criteria for A and treat unknowns as failing")
 
     ### 8. End to end, including a split whose subtree size the null misses.
-    args = parse_args(["--selftest"])
+    args = parse_args(["--selftest", "--null_quantile", "1"])
     nulltsv = [
         "replicate\titeration\tsplit_root_id\tnode_id\tchi2\tmutations_below"
         "\tmutations_above\n",
@@ -616,7 +645,7 @@ def selftest():
 
     ### Narrowing the window drops the 60-mutation null and leaves only the
     ### one drawn at node_9's own scale, which is the whole point of matching.
-    narrow = parse_args(["--null_window", "1.05"])
+    narrow = parse_args(["--null_window", "1.05", "--null_quantile", "1"])
     rows_n, _ = build_rows(narrow, log, spectra, nulltsv, None, reptsv, None)
     deep = {r["node"]: r for r in rows_n}["node_9"]
     check(deep["null_ceiling"] == 10.0 and deep["null_replicates"] == 1
