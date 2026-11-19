@@ -2,9 +2,9 @@
 """What is each split made of?
 
 This belongs to step 11 of parameter tuning.  Steps 9 and 10 ask whether a
-split is robust; neither asks what is inside it, and a tier A split can still
-be a third laboratory strain.  This script lists, for every split worth
-interpreting, the clades of the samples its spectrum actually covers.
+split is robust; neither asks what is inside it: one population, or several
+averaged together.  This script lists, for every split worth interpreting,
+the clades of the samples its spectrum actually covers.
 
 That is the split's RESIDUAL: its samples minus those of every split nested
 inside it, because spectrumSplits.py carves nested splits out of their
@@ -14,20 +14,12 @@ node would report the Beijing samples that belong to the Beijing split's own
 row).  Nesting comes from sample membership, as in split_confidence.py.
 
 Per split: tier, residual samples, the number of distinct clades, and the
---top clades with their shares.  Flags:
-
-  mixed   --mixed_share or more of the residual lies outside the top
-          clade's own lineage, so the spectrum is an average over more than
-          one population.  "Own lineage" goes by the dotted names: the top
-          clade, its sublineages and its ancestors (lineage2.2.1 owns
-          lineage2.2.1.1 and lineage2.2), since a label at another level of
-          resolution is the same population, not a second one
-  lab     only with --lab_pattern, a regex for the clade labels of
-          laboratory strains in YOUR tree (there is no default: which
-          labels those are depends on the organism and the annotation,
-          e.g. 'BCG' for the MTBC vaccine strain).  A clade matching it
-          holds --lab_share or more, so part of the spectrum accumulated in
-          culture rather than in hosts
+--top clades with their shares.  A split is flagged MIXED when
+--mixed_share or more of the residual lies outside the top clade's own
+lineage, so the spectrum is an average over more than one population.  "Own
+lineage" goes by the dotted names: the top clade, its sublineages and its
+ancestors (lineage2.2.1 owns lineage2.2.1.1 and lineage2.2), since a label
+at another level of resolution is the same population, not a second one.
 
 Inputs:
   --clade_samples  node<TAB>sample, from matUtils extract -I per split (step 10)
@@ -37,14 +29,13 @@ Inputs:
 Usage:
   split_composition.py --clade_samples split_clade_samples.tsv \\
       --clades clades.txt --confidence split_confidence.tsv \\
-      --lab_pattern BCG --output split_composition.tsv
+      --output split_composition.tsv
 
   split_composition.py --selftest
 """
 
 import argparse
 import collections
-import re
 import sys
 
 from split_confidence import nesting_from_samples, read_clade_samples
@@ -99,7 +90,6 @@ def compose(samples, clades):
 
 def build_rows(sets, clades, tiers, args):
     res = residuals(sets)
-    lab = re.compile(args.lab_pattern) if args.lab_pattern else None
     want = set(args.tiers.split(",")) if args.tiers != "all" else None
     order = list(tiers) + sorted(n for n in sets if n not in tiers)
     rows = []
@@ -118,13 +108,9 @@ def build_rows(sets, clades, tiers, args):
             if named else 0
         if n and other / n >= args.mixed_share:
             flags.append("mixed")
-        lab_n = sum(k for c, k in comp if lab and c != NO_CLADE
-                    and lab.search(c))
-        if lab and n and lab_n / n >= args.lab_share:
-            flags.append("lab")
         rows.append({"node": node, "tier": tier, "samples": len(sets[node]),
                      "residual": n, "clades": len(named), "other": other,
-                     "top": comp[:args.top], "lab": lab_n,
+                     "top": comp[:args.top],
                      "flags": ",".join(flags)})
     return rows
 
@@ -139,11 +125,6 @@ def report(rows, args, out):
           f"covers, nested splits removed)", file=out)
     print(f"  mixed: >= {args.mixed_share:.0%} of the residual outside the top "
           f"clade's own lineage ('other')", file=out)
-    if not args.lab_pattern:
-        print("  lab:   not tested (give --lab_pattern)", file=out)
-    else:
-        print(f"  lab:   clades matching /{args.lab_pattern}/ >= "
-              f"{args.lab_share:.0%} of the residual", file=out)
     print(file=out)
     table = [["node", "tier", "samples", "residual", "clades", "other",
               f"top {args.top} clades", "flags"]]
@@ -167,12 +148,11 @@ def report(rows, args, out):
 def write_tsv(rows, path):
     with open(path, "w") as fh:
         fh.write("node\ttier\tsamples\tresidual\tclades\tother_lineage\t"
-                 "lab_samples\tflags\tcomposition\n")
+                 "flags\tcomposition\n")
         for r in rows:
             comp = ",".join(f"{c}:{k}" for c, k in r["top"])
             fh.write(f"{r['node']}\t{r['tier']}\t{r['samples']}\t"
                      f"{r['residual']}\t{r['clades']}\t{r['other']}\t"
-                     f"{r['lab']}\t"
                      f"{r['flags']}\t{comp}\n")
 
 
@@ -190,11 +170,6 @@ def parse_args(argv=None):
                         "needs --confidence unless 'all')")
     p.add_argument("--top", type=int, default=3)
     p.add_argument("--mixed_share", type=float, default=0.2)
-    p.add_argument("--lab_pattern", default=None,
-                   help="Regex for the clade labels of laboratory strains in "
-                        "this tree, e.g. 'BCG' for MTBC; no default, and the "
-                        "lab flag is not tested without it")
-    p.add_argument("--lab_share", type=float, default=0.01)
     p.add_argument("--output", default=None)
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args(argv)
@@ -234,14 +209,15 @@ def selftest():
         ok = ok and cond
 
     ### node_1 holds node_2, which holds node_3.  node_3 is all La3; node_2's
-    ### residual is La1 plus some BCG; node_1's residual is lineage 4.
+    ### residual is La1 and one La1 sublineage, plus La2; node_1's residual
+    ### is lineage 4.
     sets = {"node_1": {f"s{i}" for i in range(20)},
             "node_2": {f"s{i}" for i in range(10)},
             "node_3": {f"s{i}" for i in range(3)}}
     clades = read_clades(["sample\tannotation_1\n", "s0\tLa3\n", "s1\tLa3\n",
                           "s2\tLa3\n", "s3\tLa1\n", "s4\tLa1\n", "s5\tLa1\n",
-                          "s6\tLa1\n", "s7\tLa1\n", "s8\tLa1.2.BCG\n",
-                          "s9\tLa1.2.BCG\n", "s10\tNone\n"]
+                          "s6\tLa1.2\n", "s7\tLa1\n", "s8\tLa2\n",
+                          "s9\tLa2\n", "s10\tNone\n"]
                          + [f"s{i}\tlineage4\n" for i in range(11, 20)])
     check(clades.get("s10") is None and "sample" not in clades,
           "header and None skipped")
@@ -254,16 +230,12 @@ def selftest():
     rows = build_rows(sets, clades, tiers, args)
     check([r["node"] for r in rows] == ["node_2"],
           "tier C and the root skipped by default")
-    check(rows[0]["flags"] == "" and rows[0]["lab"] == 0,
-          "no lab flag without --lab_pattern")
-    args.lab_pattern = "BCG"
-    rows = build_rows(sets, clades, tiers, args)
     r = rows[0]
-    check(r["top"][0] == ("La1", 5) and r["lab"] == 2 and r["clades"] == 2,
+    check(r["top"][0] == ("La1", 4) and r["clades"] == 3,
           f"composition {r['top']}")
-    check(r["flags"] == "lab" and r["other"] == 0,
-          f"BCG under La1 is La1's own lineage, so lab not mixed: "
-          f"'{r['flags']}'")
+    check(r["other"] == 2 and r["flags"] == "mixed",
+          f"La1.2 is La1's own lineage, La2 is not: other {r['other']}, "
+          f"flags '{r['flags']}'")
     check(related("lineage2.2.1", "lineage2.2.1.1")
           and related("lineage6", "lineage6.1.1")
           and not related("lineage2.2.1", "lineage2.2.10")
@@ -276,7 +248,7 @@ def selftest():
     import io
     buf = io.StringIO()
     report(rows, args, buf)
-    check("flagged: node_2 (lab)" in buf.getvalue(), "report renders")
+    check("flagged: node_2 (mixed)" in buf.getvalue(), "report renders")
     print("selftest " + ("passed" if ok else "FAILED"))
     return 0 if ok else 1
 

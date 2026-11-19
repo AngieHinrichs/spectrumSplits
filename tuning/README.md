@@ -26,7 +26,8 @@ files only.
   - [9. Check the splits against sequencing quality](#9-check-the-splits-against-sequencing-quality)
   - [10. Rank the splits before interpreting them](#10-rank-the-splits-before-interpreting-them)
   - [11. Check what each split *contains* before claiming a mechanism](#11-check-what-each-split-contains-before-claiming-a-mechanism)
-  - [12. Replicate the search on a changed tree, and match by membership](#12-replicate-the-search-on-a-changed-tree-and-match-by-membership)
+- [Testing the method](#testing-the-method): what was run to test the workflow itself, and what to use when a result must bear more weight than the tiers carry.
+  - [Replicate the search on a changed tree, and match by membership](#replicate-the-search-on-a-changed-tree-and-match-by-membership)
 - [Script reference](#script-reference): usage, inputs, outputs and options for each script.
   - [`profile_tree.py`](#profile_treepy)
   - [`prune_clade_check.py`](#prune_clade_checkpy)
@@ -53,8 +54,8 @@ files only.
 | [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, and what mutations define the ones worth interpreting? |
 | [`branch_hits.py`](#branch_hitspy) | 8 | Are the highlighted-gene hits on the split branches more than chance, per branch, per gene on one branch, and per gene across branches? |
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
-| [`split_confidence.py`](#split_confidencepy) | 10, 12 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
-| [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, several, or partly a laboratory strain? |
+| [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
+| [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -404,13 +405,20 @@ are comparing.
 
 #### Prune known laboratory strains here too
 
-If you already know which samples are laboratory material — vaccine strains,
+If you know which samples are laboratory material — vaccine strains,
 lab-adapted reference stocks, experimental-evolution lines — prune them now,
 in the same step. Their mutations accumulated in culture, not in hosts, so a
-split containing them averages two different processes. Step 11 would find
-the ones a split contains, but by then every later step has run on the mixed
-tree, and pruning renumbers every node, so steps 3 to 10 would have to be
-redone. Pruning here costs nothing extra.
+split containing them averages two different processes, and a spectrum
+computed over mixed material cannot be decomposed afterwards. Pruning later
+renumbers every node and means redoing everything from the mask on; pruning
+here costs nothing extra.
+
+The search will not do this for you. On the MTBC tree all 336 BCG genomes
+sit inside one 913-tip split, 37% of its tips, and BCG's own mutations fall
+well under `--min_mutations`, so the search could never have separated them
+however different they are. Any `--min_mutations` floor leaves a band of
+small clades the search cannot see rather than tests and rejects, and lab
+strains sit in it.
 
 Build the list from the clade labels and keep the pattern explicit, since
 which labels mark lab strains depends on the organism and the annotation. On
@@ -435,10 +443,21 @@ the prune can be repeated on a newer tree.
 
 A label only finds what was labelled. A lab stock with no distinguishing
 label, such as an H37Rv derivative filed under the lineage 4.9 it belongs
-to, stays in. Step 11 checks the splits for any lab label the pattern
-missed.
+to, stays in, so look through the clade labels for anything else that names
+a lab or vaccine strain before settling the pattern.
 
-*This walkthrough did not prune BCG here*, which is why step 11 finds it.
+Do not expect the prune to move spectra much. `spectrumSplits.py` builds its
+tables from mutations, and tips appear nowhere in the chi-squared. Pruning
+BCG from the MTBC tree removed 336 tips but only **535 mutations** out of
+2,845,156: 1.6 per tip, because repeated sequencing of a near-clonal vaccine
+stock produces tips nearly identical to each other and to their relatives.
+So BCG was about 5% of its split's mutations, not 37%. Estimating from the
+clade's average of 11.2 mutations per tip would have said ~3,760, seven
+times too many. To size a prune exactly, re-profile and subtract. The prune
+is still worth making: it makes every statement about the clade true and
+removes a caveat from every later claim.
+
+The worked numbers in steps 3 to 11 come from a tree with BCG still in it.
 
 ### 3. Build and apply a region mask
 
@@ -491,8 +510,8 @@ here because the worked examples compare against them, and because on a
 different tree you will need rounds of your own: you can't write an artifact
 list until you have seen which sites recur. Step 4's "Three rounds, and when
 to stop" has what each round bought and how to tell when you are done. After
-round 3 the BCG samples were also pruned (step 12); that is a prune, not a
-mask round.
+round 3 the BCG samples were also pruned (see Testing the method); that is a
+prune, not a mask round.
 
 *Worked example.* In round 1, the resistance list resolved to 41 intervals
 over 81 kb and the PE/PPE pattern to 151 intervals over 266 kb, 348 kb of the
@@ -1453,7 +1472,8 @@ that is missing never passes: without bootstrap replicates no split can be
 tier A. The tiers are a reading aid, not a test. A split at 4.9x and 69% is
 tier C, one at 5.0x and 70% is tier A, and both deserve the same caution.
 What makes them worth having is that they predict reproducibility: when the
-search was repeated on a changed tree in step 12, three of the four splits
+search was repeated on a changed tree ([Testing the
+method](#testing-the-method)), three of the four splits
 that failed to come back were tier C, and the fourth was lost to the
 `--min_mutations` floor, which the tiers do not measure.
 
@@ -1522,19 +1542,18 @@ clears any size-matched null; steps 3 and 9 are what address it.
 
 ### 11. Check what each split *contains* before claiming a mechanism
 
-Steps 9 and 10 ask whether a split is robust. Neither asks what is inside it,
-and on a tree that mixes natural populations with laboratory material that is
-the question that decides whether a spectrum means anything.
+Steps 9 and 10 ask whether a split is robust. Neither asks what is inside it:
+one population, or several averaged together. That decides what a claim
+about its spectrum can be a claim about.
 
 Run it on every split you would interpret, which means tiers A and B: the
-tiers measure robustness, not composition, and a tier A split can still be a
-third laboratory strain. It needs no tree access once you have
-`split_clade_samples.tsv` from step 10 and a `--sample-clades` table
+tiers measure robustness, not composition. It needs no tree access once you
+have `split_clade_samples.tsv` from step 10 and a `--sample-clades` table
 (`matUtils summary -i tree.pruned.masked.pb.gz --sample-clades clades.txt`):
 
 ```
 split_composition.py --clade_samples split_clade_samples.tsv \
-    --clades clades.txt --confidence split_confidence.tsv --lab_pattern BCG \
+    --clades clades.txt --confidence split_confidence.tsv \
     --output split_composition.tsv > split_composition.txt
 ```
 
@@ -1544,31 +1563,27 @@ since `spectrumSplits.py` carves nested splits out of their parent's row.
 `matUtils extract -I` lists every sample below a node, so counting a parent
 that way borrows its children's clades: `node_14051`, all of lineage 2,
 would report 36,260 lineage 2.2.1 (Beijing) samples, but 35,044 of them
-belong to `node_14377`, nested inside it. Two flags pick out what needs reading:
+belong to `node_14377`, nested inside it.
 
-- **lab**: a clade matching `--lab_pattern` holds 1% or more of the split
-  (`--lab_share`). Part of its spectrum accumulated in culture rather than
-  in hosts. This is the one that calls for action. There is no default
-  pattern, because which labels mark laboratory strains depends on the
-  organism and on how the tree was annotated: for MTBC it is `BCG`, the
-  vaccine strain. Without it the flag is not tested.
-- **mixed**: 20% or more of the split lies outside the top clade's own
-  lineage (`--mixed_share`), judged by the dotted names, so a sublineage or
-  an ancestor label counts as the same lineage. A deep split often is
-  mixed: what remains after its sub-splits are carved out is several sister
-  sublineages. That is not a defect, but it says the spectrum is an average
-  over them, and a claim about one sublineage cannot rest on it.
+A split is flagged **mixed** when 20% or more of it lies outside the top
+clade's own lineage (`--mixed_share`), judged by the dotted names, so a
+sublineage or an ancestor label counts as the same lineage. A deep split
+often is mixed: what remains after its sub-splits are carved out is several
+sister sublineages. That is not a defect, but it says the spectrum is an
+average over them, and a claim about one sublineage cannot rest on it.
 
 *Worked example.* Of the 62 tier A and B splits on the round 3 tree, 11 are
-mixed and one is lab. The mixed ones are mostly deep: `node_57318` is
-lineage 4.3.3 and 4.3.4 sublineages with 67% outside the top one, and
-`node_6`, the animal-adapted group, is La1.8.1, La1.7.1, La2 and others.
-The lab one is `node_10`:
+mixed, mostly deep ones:
 
 ```
-  node     tier  samples  residual  clades  other  top 3 clades                            flags
-  node_10  A     913      913       4       13%    La1.2 49%, La1.2.BCG 37%, La1.3 13%     lab
+  node        tier  samples  residual  clades  other  top 3 clades                                                flags
+  node_6      A     8,729    3,178     14      42%    La1.8.1 57%, La1.7.1 21%, La2 6%                            mixed
+  node_57318  A     12,388   8,005     5       67%    lineage4.3.3 28%, lineage4.3.4.2 26%, lineage4.3.4.2.1 22%  mixed
 ```
+
+`node_57318` is what is left of lineage 4.3 once its sublineage splits are
+carved out, and `node_6`, the animal-adapted group, is La1.8.1, La1.7.1, La2
+and others. Their spectra describe those groups, not any one member.
 
 To look at one split in detail, list all its clades from the same files
 (this counts every sample below the node, nested splits included):
@@ -1578,74 +1593,57 @@ awk -F'\t' '$1=="node_N"{print $2}' split_clade_samples.tsv | sort > n.txt
 grep -Fwf n.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
 ```
 
-On the round 3 tree `node_10` is 913 tips, all *M. bovis* (La1) — and 336 of
-them (36.8%) are `La1.2.BCG`, the vaccine strain serially passaged in vitro since
-1908. Every BCG genome in the whole tree falls inside this one split and
-nowhere else. Its mutations accumulated under lab propagation and relaxed
-selection, not in a host, so `node_10`'s distinctive spectrum (the highest
-`TC|AG` and lowest `CA|GT` in the set) is measured on a clade that is over a
-third artificial.
+That is also where something step 2 missed would show: a split whose top
+clades include a strain you would not call a natural population.
 
-**The split's own absence at a finer level is not reassurance.** BCG's residual
-is roughly 3,760 mutations (913 tips carry 10,190, so 11.2 per tip), well under
-`--min_mutations 10000`. The search could not have separated BCG however
-different it is, so only membership could have found this. Any `--min_mutations`
-floor creates a band of clades that are invisible to the search rather than
-tested and rejected by it, and lab strains, outbreak clusters and recently
-sequenced collections all tend to sit in it.
+If a late change forces a rerun from the mask on, as a re-mask prompted by a
+locus found under a split would, match the new splits to these by
+membership: see [Testing the method](#testing-the-method).
 
-The fix is to prune, not to caveat afterwards — a spectrum computed over
-mixed material cannot be decomposed later. The place for that is step 2,
-when the lab strains are known in advance. Then this step is the check that
-the prune caught them: with the same `--lab_pattern`, the `lab` flag should
-not fire. If it fires anyway, for a strain you did not know about or one
-labelled differently, prune it as in step 2 and rerun from step 3. Do that
-in the same pass as a re-mask if one is pending, since both renumber every
-node (see "Node IDs are not stable across trees"), and the rerun is then
-also step 12's replicate.
+## Testing the method
 
-#### Size the confound by mutations, not by tips
+The suggested order is what to run on a new tree. This section is what was
+run to test the workflow itself, and what to reach for when a result has to
+bear more weight than the tiers can carry.
 
-Before pruning anything, measure what it is worth, and measure it the way the
-test does. `spectrumSplits.py` builds its tables from mutations; tip counts
-appear nowhere in the chi-squared. The two can differ by an order of magnitude.
+### Replicate the search on a changed tree, and match by membership
 
-On the MTBC tree the BCG prune removed 336 of 913 tips from `node_10` -- 36.8%
--- and **535 mutations** out of 2,845,156. That is 1.6 mutations per pruned tip
-against a tree-wide terminal median of 2, because repeated sequencing of a
-near-clonal vaccine stock produces tips that are nearly identical to each other
-and to their relatives. Estimating instead from the clade's average rate of
-11.2 mutations/tip gives ~3,760, seven times too high. So BCG was about 5% of
-`node_10`'s mutations, not 37% of its signal, and the clade's spectrum was
-never meaningfully driven by laboratory material.
+The null (step 7) asks whether chance reaches a split's chi-squared, and the
+bootstrap (step 8) resamples alignment positions. Neither asks whether the
+same splits come back when the set of genomes, and so the search's carving
+of the tree, changes. A second search over nearly the same data does, and
+because node IDs do not survive the change, the splits are matched by sample
+membership.
 
-The honest way to size it is the profile delta: prune, re-profile, subtract.
-That is one cheap run and it is exact. A rate multiplication is not, and it
-fails hardest exactly where replicate sequencing has inflated a tip count --
-which is the case that made you suspicious in the first place.
+It is not part of the suggested order because it is expensive: a new
+cascade null, a search with bootstrap, and step 10, hours on a large tree.
+Once the method has been tested, the tiers carry most of what it would tell
+you: on the MTBC replication below, three of the four splits that failed to
+come back were tier C. It is worth running when a claim rests on a marginal
+split, and it is nearly free when a late change has forced a rerun anyway:
 
-The prune is still worth making, because it makes every tip-weighted statement
-about the clade true and removes a question that would otherwise need a caveat
-in every later claim. Just do not expect it to move a spectrum.
+- a locus found under a split that has to be masked, which is how this
+  tree's round 3 mask came about (step 4);
+- a read check that turns up a systematic misalignment, such as one under
+  the `polA` pair on lineage 2's branch (step 8);
+- a quality gradient in one clade (step 9), or a lab stock or other
+  non-natural population found in a split (step 11);
+- a newer release of the tree.
 
-More generally: treat the top of the per-clade composition table as part of
-reading any split. A clade that is one named sublineage plus one named lab
-derivative is not a population.
+With none of those pending, make a deliberate change. Dropping a random
+tenth of the samples tests sensitivity to which genomes were sampled:
 
-### 12. Replicate the search on a changed tree, and match by membership
+```
+matUtils summary -i tree.pruned.masked.pb.gz -s samples_masked.txt
+tail -n +2 samples_masked.txt | cut -f1 | shuf -n $(( $(wc -l < samples_masked.txt) / 10 )) \
+    --random-source=<(yes) > drop.txt
+matUtils extract -i tree.pruned.masked.pb.gz -s drop.txt --prune \
+    -o tree.pruned.masked.sub.pb.gz
+```
 
-A mask round or a prune gives you a second, independent search over nearly the
-same data. That is the strongest check available on this pipeline, and it is
-free once you have the sample sets, because node IDs are gone and membership is
-all that carries across.
-
-Any change that leaves the data nearly the same will do: a further mask
-round, a prune that step 11 called for, or, when neither is pending, a
-deliberate one, such as dropping a random tenth of the samples (`matUtils
-summary -s`, then `shuf` the names, then `matUtils extract -s ... --prune`).
-The point is reproducibility under a change, not the particular change. The
-example below uses a mask round plus a BCG prune, because that is the change
-this tree went through; the `_nobcg` file names are that run's.
+Then rerun steps 7, 8 and 10 on the new tree. The example below used a
+mask round plus a BCG prune, because that is the change the MTBC tree went
+through; the `_nobcg` file names are that run's.
 
 ```
 split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
@@ -2073,8 +2071,8 @@ partitioning, and exits.
 ### `split_confidence.py`
 
 Used in [step 10](#10-rank-the-splits-before-interpreting-them), and again in
-step 12. Ranks the accepted splits by two independent measures, margin over a
-size-matched null and bootstrap support. It reads only files earlier steps
+[Testing the method](#testing-the-method). Ranks the accepted splits by two
+independent measures, margin over a size-matched null and bootstrap support. It reads only files earlier steps
 produce, runs nothing on the tree, and needs nothing beyond the standard
 library.
 
@@ -2129,7 +2127,7 @@ Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism
 
 ```
 split_composition.py --clade_samples split_clade_samples.tsv \
-    --clades clades.txt --confidence split_confidence.tsv --lab_pattern BCG \
+    --clades clades.txt --confidence split_confidence.tsv \
     --output split_composition.tsv > split_composition.txt
 ```
 
@@ -2142,15 +2140,12 @@ split is reduced to its residual samples before counting.
 
 Per split it prints the tier, all samples, residual samples, the number of
 distinct clades, `other` (the share outside the top clade's own lineage, by
-dotted names), the `--top` (default 3) clades with shares, and the flags
-`mixed` (`other` >= `--mixed_share`, default 0.2) and `lab` (clades matching
-`--lab_pattern` >= `--lab_share`, default 0.01). `--lab_pattern` has no
-default: give the regex for this tree's laboratory-strain labels, such as
-`BCG` for MTBC, or the lab flag is not tested. `--tiers` (default `A,B`)
-picks which tiers to list; `--tiers all` also lists tier C and the root, and
-works without `--confidence`. `--output` writes the same per split as a TSV, with the top
-clades as `clade:count`. `--selftest` checks the residual, the lineage
-naming and the flags on a constructed tree.
+dotted names), the `--top` (default 3) clades with shares, and the flag
+`mixed` (`other` >= `--mixed_share`, default 0.2). `--tiers` (default
+`A,B`) picks which tiers to list; `--tiers all` also lists tier C and the
+root, and works without `--confidence`. `--output` writes the same per
+split as a TSV, with the top clades as `clade:count`. `--selftest` checks
+the residual, the lineage naming and the flag on a constructed tree.
 
 ## Gene lists
 
