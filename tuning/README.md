@@ -3,10 +3,10 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and six need less: `prune_clade_check.py` and
+library and `bte`, and seven need less: `prune_clade_check.py` and
 `split_drivers.py` use `bte` only with `--input_tree`, and `null_by_size.py`,
-`branch_hits.py`, `split_confidence.py` and `split_composition.py` read text
-files only.
+`branch_hits.py`, `split_confidence.py`, `split_composition.py` and
+`match_splits.py` read text files only.
 
 ## Contents
 
@@ -39,6 +39,7 @@ files only.
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
+  - [`match_splits.py`](#match_splitspy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
   - [`tb_resistance_genes.txt`, and a caution](#tb_resistance_genestxt-and-a-caution)
   - [`tb_repair_genes.txt`](#tb_repair_genestxt)
@@ -56,6 +57,7 @@ files only.
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
+| [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -1645,7 +1647,19 @@ Then rerun steps 7, 8 and 10 on the new tree. The example below used a
 mask round plus a BCG prune, because that is the change the MTBC tree went
 through; the `_nobcg` file names are that run's.
 
+Run step 8 in a directory of its own, since its bootstrap files would
+overwrite the first run's. Then build the new run's step 10 inputs with the
+same loops as before, on the new tree and the new run's files, and score it:
+
 ```
+for f in bootstrap_*_splits_output.tsv; do n=${f#bootstrap_}; n=${n%%_*};
+  cut -f1 "$f" | grep ^node_ | sed "s/^/$n\t/"; done > bootstrap_by_replicate_nobcg.tsv
+
+for n in $(cut -f1 spectra_nobcg.tsv | grep ^node_); do
+  matUtils extract -i tree.pruned.masked.nobcg.pb.gz -I $n -u split_samples.txt >& /dev/null
+  sed "s/^/$n\t/" split_samples.txt
+done > split_clade_samples_nobcg.tsv
+
 split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
     --null null_sites_cascade_nobcg.tsv \
     --bootstrap_replicates bootstrap_by_replicate_nobcg.tsv \
@@ -1653,9 +1667,24 @@ split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
     --output split_confidence_nobcg.tsv
 ```
 
-Then match each old clade to its best new clade by Jaccard on the sample sets,
-after removing any samples the prune deleted so both are measured on the same
-universe. On the MTBC tree, the round-3 mask plus the BCG prune gave 59 splits
+The two `node<TAB>sample` tables, the first run's `split_clade_samples.tsv`
+and the new one, are what the matching needs. `match_splits.py` pairs each
+old split with the new split sharing the most samples, by Jaccard index
+(shared samples over samples in either):
+
+```
+match_splits.py --old split_clade_samples.tsv \
+    --new split_clade_samples_nobcg.tsv --output split_matches.tsv > split_matches.txt
+```
+
+Both sides are first cut down to the samples present in both trees, read from
+their `node_1` rows, so a sample the change removed does not count against
+the clade that held it. It reports how many old splits match exactly, how
+many nearly (Jaccard 0.95 or more, `--near`) and how many have no
+counterpart (below 0.5, `--lost`), then one row per old split with its best
+match, the samples only on each side, and whether the match is mutual. New
+splits that are no old split's mutual match are listed last: they are the
+change's own findings, not failures to replicate. On the MTBC tree, the round-3 mask plus the BCG prune gave 59 splits
 against the previous 62, and **58 of the 62 matched at Jaccard 1.000** -- 56 of
 them exactly, two off by a handful of tips. Tier counts went 36/20/6 to
 33/22/4. That is the result that says the search is finding structure rather
@@ -2146,6 +2175,27 @@ dotted names), the `--top` (default 3) clades with shares, and the flag
 root, and works without `--confidence`. `--output` writes the same per
 split as a TSV, with the top clades as `clade:count`. `--selftest` checks
 the residual, the lineage naming and the flag on a constructed tree.
+
+### `match_splits.py`
+
+Used in [Testing the method](#testing-the-method).
+
+```
+match_splits.py --old split_clade_samples.tsv \
+    --new split_clade_samples_nobcg.tsv --output split_matches.tsv > split_matches.txt
+```
+
+`--old` and `--new` are `node<TAB>sample` tables for two searches, each
+made by running `matUtils extract -I` on every node in that run's
+`spectra.tsv` (the loop in step 10). Both are reduced to the samples present
+in both trees, taken from their `node_1` rows, before anything is compared,
+and the root itself is not matched. Each old split is paired with the new
+split of highest Jaccard index, and each new split with its best old one;
+a match is mutual when the two agree. The summary counts exact matches,
+near ones (`--near`, default 0.95) and old splits with no counterpart
+(`--lost`, default 0.5). `--output` writes the per-split rows as a TSV.
+`--selftest` checks the shared-sample reduction, partial matches and the
+report on a constructed pair of trees.
 
 ## Gene lists
 
