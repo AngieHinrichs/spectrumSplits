@@ -241,6 +241,10 @@ the number of lab samples the divergence prune had not already removed.
 easy to confuse.) Keep `lab_samples.txt` and the pattern with the run, so
 the prune can be repeated on a newer tree.
 
+*Worked example.* The BCG pattern selects 336 samples, all `La1.2.BCG`, and
+none of them was among the divergence prune's 60. `matUtils summary` on the
+result reports 128,918 samples, down from 129,254: exactly 336 fewer.
+
 A label only finds what was labelled. A lab stock with no distinguishing
 label, such as an H37Rv derivative filed under the lineage 4.9 it belongs
 to, stays in, so look through the clade labels for anything else that names
