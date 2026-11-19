@@ -3,10 +3,10 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and seven need less: `prune_clade_check.py`,
+library and `bte`, and eight need less: `prune_clade_check.py`,
 `split_drivers.py` and `null_by_size.py` use `bte` only with `--input_tree`,
-and `branch_hits.py`, `split_confidence.py`, `split_composition.py` and
-`match_splits.py` read text files only.
+and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
+`split_composition.py` and `match_splits.py` read text files only.
 
 ## Contents
 
@@ -32,6 +32,7 @@ and `branch_hits.py`, `split_confidence.py`, `split_composition.py` and
   - [`profile_tree.py`](#profile_treepy)
   - [`prune_clade_check.py`](#prune_clade_checkpy)
   - [`annotate_sites.py`](#annotate_sitespy)
+  - [`check_gene_names.py`](#check_gene_namespy)
   - [`permutation_null.py`](#permutation_nullpy)
   - [`null_by_size.py`](#null_by_sizepy)
   - [`split_drivers.py`](#split_driverspy)
@@ -50,6 +51,7 @@ and `branch_hits.py`, `split_confidence.py`, `split_composition.py` and
 | [`profile_tree.py`](#profile_treepy) | 1, 4 | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
 | [`prune_clade_check.py`](#prune_clade_checkpy) | 2 | What did `qc/prune_mutation_sample_ratio.py` remove, by clade, and was it a divergent genome or a clade on a long stem? |
 | [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
+| [`check_gene_names.py`](#check_gene_namespy) | 3, 8 | Does every name in a `--regions` or `--highlight` list resolve to exactly one gene in this annotation, and if not, what is it called there? |
 | [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
 | [`null_by_size.py`](#null_by_sizepy) | 7 | How does that chance ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
 | [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, and what mutations define the ones worth interpreting? |
@@ -479,6 +481,22 @@ are comparing.
 
 ### 3. Build and apply a region mask
 
+First check that every name in the lists resolves to one gene in your
+annotation. A name the annotation spells differently is skipped with a NOT
+FOUND line among the other output, and a name two genes share masks both:
+
+```
+check_gene_names.py --names resistance_genes.txt \
+    --annotation NC_012345.1.gff3.gz
+check_gene_names.py --names alignment_loci.txt \
+    --annotation NC_012345.1.gff3.gz
+```
+
+It suggests what to use instead: a near spelling (`ku` is `mku`), or the
+locus tag of a gene whose product names it but which the annotation names only
+by locus tag (`nucS` is `Rv1321`). Fix the list, rerun until it reports no
+problems, then build the mask:
+
 ```
 annotate_sites.py --annotation NC_012345.1.gff3.gz \
     --regions resistance_genes.txt --promoter_flank 200 \
@@ -559,6 +577,14 @@ over 81 kb and the PE/PPE pattern to 151 intervals over 266 kb, 348 kb of the
 `annotate_sites.py` then dropped features typed `pseudogene`. The
 `^(PE|PPE|esx)` pattern reaches five of NC_000962.3's: `PE21`, `PE_PGRS36`,
 `PPE47`, `PPE48` and `esxM`, which `tb_alignment_loci.txt` also names.
+
+The walkthrough's mask is 1,220 bp larger than the current lists give
+(505,545 bp with round 4). `tb_resistance_genes.txt` then listed `ribD`,
+which in NC_000962.3 is both Rv2671, the para-aminosalicylic acid gene, and a
+synonym of `ribG` (Rv1409), so the mask covered Rv1409 and its 200 bp flank
+too. `check_gene_names.py` caught it, and the list now names Rv2671. The
+extra 0.2% only removes ordinary sites and adds no artifact, so the
+walkthrough was not re-masked.
 
 Bases removed is not the number that matters, though; the next step has it.
 
@@ -1241,7 +1267,16 @@ in step 7 lists which ones.
 #### Then interpret
 
 When the run finishes, `split_drivers.py` reads `spectra.tsv` the way you
-would by eye, and lists the splits worth explaining:
+would by eye, and lists the splits worth explaining. Its `--highlight` list
+deserves the same check as step 3's mask lists, since a gene the annotation
+names differently drops out of the highlight without anything looking wrong:
+
+```
+check_gene_names.py --names repair_genes.txt \
+    --annotation NC_012345.1.gff3.gz
+```
+
+Then:
 
 ```
 split_drivers.py --spectra spectra.tsv --splits_log splits.log \
@@ -2125,6 +2160,42 @@ falls inside one. Counted as a hit, they would turn every intergenic site into
 a nameless feature at distance 0 — and let `--mask_pattern` mask the entire
 genome. They are still listed in the feature counts, then dropped with a note.
 
+### `check_gene_names.py`
+
+Used in steps [3](#3-build-and-apply-a-region-mask) and
+[8](#8-run-the-search-with-bootstrap-and-check-where-it-saturates), before any
+list is given to `--regions` or `--highlight`.
+
+```
+check_gene_names.py --names repair_genes.txt --annotation NC_012345.1.gff3.gz
+```
+
+Resolves each entry exactly as `annotate_sites.py` does, against the
+annotation's gene, Name, gene_synonym, Alias, locus_tag and old_locus_tag
+fields, with a gene and its CDS merged into one locus. The report has three
+parts:
+
+- **Shown under another name**: entries that matched through a synonym or
+  locus tag, with the name output tables will use instead (`dinB1` appears as
+  `dinX`).
+- **Same locus as an earlier entry**: harmless, and often deliberate, since a
+  name plus its locus tag keeps a list working on annotations that name the
+  gene differently.
+- **To fix**: entries matching several loci (use the locus tag of the one
+  meant) and entries not found, each with candidates. A candidate is a name
+  within `--near` characters (default 2) that contains the entry or is
+  contained in it, or a locus whose product mentions the entry as a word,
+  proposed by locus tag when that is the annotation's only name for it. A
+  candidate already in the list under another entry is marked. An entry with
+  no candidate needs a search of the product lines by function.
+
+Candidates are suggestions: check each one's product before putting it in the
+list, because a locus tag resolves exactly and a wrong one misleads quietly.
+The script exits 1 when anything is left to fix. `--seqid` restricts the
+annotation to one sequence, `--max_candidates` (default 5) caps the
+candidates shown per entry, and `--selftest` checks every case above on a
+constructed annotation.
+
 ### `permutation_null.py`
 
 Used in [step 7](#7-calibrate---min_chi).
@@ -2434,7 +2505,8 @@ report on a constructed pair of trees.
 
 Three lists of *M. tuberculosis* loci ship with these scripts, for
 `annotate_sites.py --regions` and `--highlight`. Two are masked and one is
-deliberately not.
+deliberately not. Run [`check_gene_names.py`](#check_gene_namespy) on any of
+them, or on a list of your own, against the annotation you will use.
 
 ### `tb_resistance_genes.txt`, and a caution
 
@@ -2468,11 +2540,16 @@ annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
     --highlight tb_repair_genes.txt
 ```
 
-This list carries gene names and **no locus tags at all** — the Rv numbers are
-in comments as hints to check. A name missing from your annotation is reported
-as NOT FOUND, which is harmless, whereas a misremembered locus tag would resolve
-to the wrong gene and mislead you silently. Verify any you rely on against
-Mycobrowser or the NCBI H37Rv annotation.
+This list carries gene names, and locus tags only where they were checked. A
+name missing from your annotation is reported as NOT FOUND, which is harmless,
+whereas a misremembered locus tag would resolve to the wrong gene and mislead
+you silently. So most Rv numbers are in comments, as hints to check. The five
+locus-tag entries (Rv1021 mazG, Rv1321 nucS, Rv0944 fpg2, Rv2464c nei1, Rv2228c
+RNase HI) are genes that NCBI's NC_000962.3 annotation names only by locus tag,
+each checked against that annotation's product line; without them, nucS, the
+mycobacterial mismatch-repair surrogate, went unmatched. With them, every entry
+resolves against that annotation. Verify any you rely on against Mycobrowser or
+the NCBI H37Rv annotation.
 
 ### `tb_alignment_loci.txt`
 

@@ -18,13 +18,16 @@
 #       --highlight tb_repair_genes.txt
 #
 # ---------------------------------------------------------------------------
-# GENE NAMES ONLY -- NO COORDINATES, AND DELIBERATELY ALMOST NO LOCUS TAGS.
+# GENE NAMES, AND LOCUS TAGS ONLY WHERE CHECKED -- NO COORDINATES.
 #
-# Names resolve against the annotation you supply.  A name that is not in your
-# annotation is reported as NOT FOUND, which is harmless; a locus tag I
-# misremembered would instead resolve to the wrong gene and quietly mislead you.
-# So the Rv numbers below are in comments, as hints to check, not as entries.
-# Verify any you rely on against Mycobrowser or the NCBI H37Rv annotation.
+# Names resolve against the annotation you supply (gene, Name, gene_synonym or
+# locus_tag).  A name that is not in your annotation is reported as NOT FOUND,
+# which is harmless; a misremembered locus tag would instead resolve to the
+# wrong gene and quietly mislead you.  So the Rv numbers in comments are hints
+# to check, not entries.  The few locus-tag ENTRIES (Rv1021, Rv1321, Rv0944,
+# Rv2464c, Rv2228c) are genes NCBI's NC_000962.3 annotation names only by locus
+# tag; each was checked against that annotation's product line.  Verify any
+# you rely on against Mycobrowser or the NCBI H37Rv annotation.
 # ---------------------------------------------------------------------------
 
 # --- primary suspects: documented or suspected mutator phenotypes in MTBC ---
@@ -54,7 +57,7 @@ mutT1
 mutT2
 mutT3
 mutT4
-mazG
+Rv1021  # mazG; NCBI names it only by locus tag
 ogt
 mutY
 ung
@@ -64,22 +67,20 @@ dnaE2
 # --- mismatch repair surrogate ------------------------------------------------
 # Mycobacteria lack MutS/MutL and use NucS (EndoMS) instead; loss of NucS gives
 # a strong hypermutator phenotype, so this is a high-value candidate.
-nucS
-endMS
+Rv1321  # NucS / EndoMS; NCBI names it only by locus tag
 
 # --- oxidative and alkylation damage -----------------------------------------
 ada
-adaA
 alkA
 alkB
-tag
+tagA
 
 # --- base excision repair: glycosylases and AP endonucleases ------------------
 nth
 nei
+Rv2464c  # nei1; NCBI's nei is Rv3297, nei2
 fpg
-fpg1
-fpg2
+Rv0944  # fpg2; NCBI names it only by locus tag
 mutM
 xthA
 nfo
@@ -96,7 +97,7 @@ mfd
 # --- replicative and translesion polymerases ---------------------------------
 dnaE1
 dnaN
-dinB
+dinB1
 dinP
 polA
 dnaQ
@@ -116,21 +117,18 @@ ruvB
 ruvC
 radA
 lexA
-sbcB
-sbcC
-sbcD
 
 # --- ligases and end joining -------------------------------------------------
 ligA
 ligB
 ligC
 ligD
-ku
+mku
 
 # --- dNTP pool sanitation ----------------------------------------------------
 # An imbalanced or damaged dNTP pool shifts the spectrum without any change to
 # the repair machinery itself.
 dut
 nudC
-rnhA
+Rv2228c  # RNase HI domain (rnhC); NCBI names it only by locus tag
 rnhB
