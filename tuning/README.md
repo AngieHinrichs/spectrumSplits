@@ -1420,8 +1420,10 @@ matUtils extract -i tree.pruned.masked.pb.gz -I node_N -u node_N_samples.txt
 grep -Fwf node_N_samples.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
 ```
 
-`matUtils extract -I` lists every sample below the node, including those in
-splits nested inside it. `spectra.tsv`'s `Number_Tips` counts only what is
+`-I` selects by internal node ID, which is what `splits.log` reports; `-c`
+is for annotated clades, such as Pango names, and will not find a `node_N`
+ID. `matUtils extract -I` lists every sample below the node, including those
+in splits nested inside it. `spectra.tsv`'s `Number_Tips` counts only what is
 left after nested splits are carved out, so the two differ whenever a split
 has splits below it.
 
@@ -1482,24 +1484,6 @@ in step 9's earlier run), and all 269 of its samples are La3, a distinct animal-
 species, and its spectrum matches its parent because it belongs to the
 animal-adapted group. The anomaly has a phylogenetic explanation, which is
 the strongest single sign that these spectra track lineage.
-
-`node_6` has no BCG in it: step 2 pruned the 336 `La1.2.BCG` samples, a
-laboratory-passaged vaccine strain whose serial passage is not natural
-evolution.
-
-Extract the split's samples before doing anything else to the tree. Node IDs
-are assigned at read time, so the first mask, prune or collapse renumbers
-every node and the ID in `splits.log` stops meaning anything (see "Node IDs
-are not stable across trees" above). The sample set is the only durable
-handle:
-
-```
-matUtils extract -i tree.pruned.masked.pb.gz -I node_14005 -u split_samples.txt
-```
-
-`-I` selects by internal node ID, which is what `splits.log` reports. `-c` is
-for annotated clades — the lineage labels stored as node annotations in a MAT,
-such as Pango names — and will not find a `node_N` ID.
 
 ### 9. Check the splits against sequencing quality
 
