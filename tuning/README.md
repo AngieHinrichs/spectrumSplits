@@ -983,10 +983,14 @@ number from a different pass.
 #### First, check the null for a hotspot
 
 ```
-null_by_size.py --null null_sites_cascade.tsv \
+null_by_size.py --null null_sites_cascade.tsv --min_chi 53 \
     --input_tree tree.pruned.masked.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
 ```
+
+Take `--min_chi` from the "with 2x margin" line of the `sites` run's printed
+summary; on the MTBC tree that read `--min_chi 53`. Only the report's middle
+section uses it.
 
 The summary's thresholds are multiples of the single largest null maximum,
 so whatever sets that maximum sets the threshold. Under the `sites` null each
@@ -1004,7 +1008,9 @@ With `--input_tree` it also counts a node and a child holding nearly all of
 it as one clade, which would otherwise split the clade's count between two
 IDs. For each flagged clade it lists the most recurrent sites and prints an
 `annotate_sites.py` command for them. (The rest of the report is read in
-"The threshold should scale with subtree size" below.)
+"The threshold should scale with subtree size" below. If the check flags a
+hotspot and you mask it, rerun both nulls and this command, and take
+`--min_chi` from the new summary.)
 
 *Worked example.* On the walkthrough tree as steps 2 and 3 first built it,
 with 20 replicates, the `sites` null's maximum was 45.4, and the summary recommended
@@ -1105,28 +1111,23 @@ Check the cascade before trusting one threshold to govern every split.
 
 That caveat turns out to matter more than a caveat usually does. The printed
 summary can't answer it, because it reports only each replicate's maximum,
-which is its first split. The answer is in the cascade TSV, and
-`null_by_size.py` reads it:
+which is its first split. The answer is in the cascade TSV, and the
+`null_by_size.py` report from the hotspot check above already has it.
 
-```
-null_by_size.py --null null_sites_cascade.tsv --min_chi 53
-```
-
-It groups the null splits by the size of the table each was scored on
-(`mutations_below + mutations_above`), giving the whole-tree pass a row of its
-own and putting the rest in factor-of-2 bins. It then compares each observed
-split with a ceiling: the 99th percentile (`--null_quantile`) of the null
+Its first section groups the null splits by the size of the table each was
+scored on (`mutations_below + mutations_above`), giving the whole-tree pass a
+row of its own and putting the rest in factor-of-2 bins. The second compares
+each observed split with a ceiling: the 99th percentile (`--null_quantile`) of the null
 splits from subtrees within 1.5x of its size. That is the same ceiling
 `split_confidence.py` uses in step 10, so the two agree. It is 0.99 rather
 than the summary's 0.95 because each replicate puts several null splits in
 a window, so a window held dozens even with 20 replicates, and their maximum
 sat near the 99th percentile. On this tree the 20-replicate maxima and the
 100-replicate p99s agree within about 20%, so step 10's margins and tiers
-keep their meaning. With
-`--min_chi`, it flags the splits that threshold rejects even though they clear
-their size-matched null by `--margin` (default 2x), and any it accepts that
-don't clear their null at all. It ends with the hotspot check described
-above.
+keep their meaning. With `--min_chi`, it flags the splits that threshold
+rejects even though they clear their size-matched null by `--margin`
+(default 2x), and any it accepts that don't clear their null at all. The
+third section is the hotspot check above.
 
 *Worked example*, same tree and parameters as above, 2,500 null splits:
 
@@ -2187,7 +2188,7 @@ Used in [step 7](#7-calibrate---min_chi).
 
 ```
 null_by_size.py --null null_sites_cascade.tsv
-null_by_size.py --null null_sites_cascade.tsv --min_chi 52 --margin 2 \
+null_by_size.py --null null_sites_cascade.tsv --min_chi 53 --margin 2 \
     --input_tree tree.pruned.masked.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
 ```
