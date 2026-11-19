@@ -1845,13 +1845,14 @@ It is not part of the suggested order because it is expensive: a search
 with bootstrap and step 10, and a new cascade null if the change touched the
 mask, hours on a large tree.
 Once the method has been tested, the tiers carry most of what it would tell
-you: on the larger of the two MTBC replications below, three of the four
-splits that failed to come back were tier C, and on the smaller every split
-came back but the one the `--min_mutations` floor removed. It is worth running when a claim rests on a marginal
+you: on the larger MTBC replications below, the splits that failed to come
+back were tier C or, with one exception, explained by the change itself, and
+on a prune alone every split came back but the one the `--min_mutations`
+floor removed. It is worth running when a claim rests on a marginal
 split, and it is nearly free when a late change has forced a rerun anyway:
 
 - a locus found under a split that has to be masked, which is how this
-  tree's round 3 mask came about (step 4);
+  tree's round 3 and round 4 masks came about (steps 4 and 7);
 - a read check that turns up a systematic misalignment, such as one under
   the `polA` pair on lineage 2's branch (step 8);
 - a quality gradient in one clade (step 9), or a lab stock or other
@@ -1990,6 +1991,64 @@ was round 2's `node_10`, lost to the floor exactly as above. So under a
 change large enough to move the recurrent sites, the tier was a prediction
 about reproducibility, and it held. Under a prune alone, nothing but the
 floor case failed.
+
+#### The walkthrough itself: prune at step 2, and mask `lppN`
+
+The run in the suggested order is a replication too. Against the round 3
+run with BCG, its tree differs by the BCG prune, now made at step 2, and by
+round 4's two `lppN` sites, and it was scored against its own cascade null,
+as a re-mask requires. Matched by membership:
+
+```
+match_splits.py --old old/split_clade_samples.tsv \
+    --new split_clade_samples.tsv --output split_matches.tsv > split_matches.txt
+```
+
+```
+SPLIT MATCHING by sample membership, on the 128,918 samples present in both trees
+  68 old splits, 66 new
+  Jaccard 1.000: 63
+  Jaccard >= 0.95 but < 1: 0
+  in between: 2
+  no counterpart (best Jaccard < 0.5): 3: node_45190 node_21060 node_10
+  ...
+  new splits that are no old split's mutual match: 1: node_285 (best node_6, 0.876)
+```
+
+`node_10` and `node_285` are the prune, exactly as in the prune-alone run
+above. The other two losses are worth tracing, because each failed for a
+different reason, and neither reason is visible in a list of split IDs.
+
+`node_21060` (lineage 2.2.1, 1,590 samples, tier B at 2.8x) was the split
+step 8's `split_drivers.py` found leaning hardest on one site: 18% of its
+chi-squared came from 2,544,938, one of the two `lppN` sites. Masking them
+took 241 mutations from its residual. Recomputed on the new tree, the same
+clade (`node_21013`) scores 29.3 against its parent's row, down from 44.7,
+and `--min_chi 30` no longer accepts it. This is the loss the re-mask was
+meant to cause: the split rested partly on an artifact.
+
+`node_45190` (lineage 4.1.2.1, 9,881 samples, tier C at 2.45x and 67%
+support) lost to a neighbour. Its own residual barely changed: 150,527
+mutations against 150,584. But it is tested against the rest of its parent's
+row, and that row grew from 66,371 mutations to 71,372. The 5,001 extra came
+from `node_51974` (lineage 4.1.1.1), which the new search found one node
+lower, as `node_51867`, with 342 fewer samples (Jaccard 0.67). Their 5,033
+mutations stayed in the parent's row and diluted the contrast, and the clade
+(`node_45082` now) scores 27.8. This is the carving at work (step 10): a
+split's chi-squared depends on what else the search has already removed
+from the table, so a marginal split can fall below the bar without anything
+inside it changing.
+
+The other partial match, `node_69997` to `node_69899` (605 samples to 464,
+Jaccard 0.77), was tier C on both runs.
+
+Of the 65 matched splits, 57 kept their tier, and the counts went 35/27/6 to
+33/28/5. The eight that moved were all within about 15% of the 5x margin
+line or the 70% support line on one run or the other. Margins moved by a
+factor of 0.69 to 1.30, median 0.91. That is wider than the prune alone
+gave, as expected, since the two runs were scored against different nulls,
+and the second null takes the 0.99 quantile of each size window rather than
+its maximum (step 7).
 
 ## Script reference
 
