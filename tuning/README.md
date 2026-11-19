@@ -263,8 +263,8 @@ times too many. To size a prune exactly, re-profile and subtract. The prune
 is still worth making: it makes every statement about the clade true and
 removes a caveat from every later claim.
 
-The worked numbers in steps 3 to 8 come from the tree pruned this way. Those
-in steps 9 to 11 come from an earlier run with BCG still in the tree.
+The worked numbers in steps 3 to 9 come from the tree pruned this way. Those
+in steps 10 and 11 come from an earlier run with BCG still in the tree.
 
 #### Check what it removed, by clade
 
@@ -1478,11 +1478,12 @@ and its four protein-changing hits against 2.4 expected are well within
 chance. Its spectrum is the lineage's spectrum.
 
 The quality reading collapses too, more thoroughly than step 9 could show.
-The clade that broke the divergence correlation — high mutations per tip, but
-a spectrum matching its low-divergence parent — is `node_3548` (`node_3594`
-in step 9's earlier run), and all 269 of its samples are La3, a distinct animal-adapted species. Its long branches are sparse sampling of a diverged
-species, and its spectrum matches its parent because it belongs to the
-animal-adapted group. The anomaly has a phylogenetic explanation, which is
+The clade that breaks the divergence correlation in step 9 — high mutations
+per tip, but a spectrum close to its low-divergence parent's — is
+`node_3548`, and all 269 of its samples are La3, a distinct animal-adapted
+species. Its long branches are sparse sampling of a diverged species, and its
+spectrum is close to its parent's because it belongs to the animal-adapted
+group. The anomaly has a phylogenetic explanation, which is
 the strongest single sign that these spectra track lineage.
 
 ### 9. Check the splits against sequencing quality
@@ -1530,37 +1531,38 @@ divergence per tip but a spectrum resembling its low-divergence parent rather
 than the other high-divergence clades. That is one clade rather than a
 pattern, so treat it as a reason to run this step, not a substitute for it.
 
-*Worked example*, the 69 rows of the round 3 `spectra.tsv` (68 splits and
-the root), from `branch_class_summary.txt`. The correlations with
+*Worked example*, the 67 rows of step 8's `spectra.tsv` (66 splits and the
+root), from `branch_class_summary.txt`. The correlations with
 divergence per tip are the same on both branch classes:
 
 | class | internal r | terminal r | internal rho | terminal rho |
 |---|---|---|---|---|
-| `CA\|GT` | 0.493 | 0.533 | 0.503 | 0.496 |
-| `CG\|GC` | -0.304 | -0.323 | -0.233 | -0.235 |
-| `CT\|GA` | **0.595** | **0.578** | 0.587 | 0.579 |
-| `TA\|AT` | -0.090 | -0.246 | -0.221 | -0.358 |
-| `TC\|AG` | **-0.528** | **-0.547** | -0.616 | -0.660 |
-| `TG\|AC` | **-0.624** | **-0.635** | -0.600 | -0.602 |
+| `CA\|GT` | 0.492 | 0.529 | 0.501 | 0.490 |
+| `CG\|GC` | -0.329 | -0.348 | -0.277 | -0.282 |
+| `CT\|GA` | **0.580** | **0.565** | 0.560 | 0.562 |
+| `TA\|AT` | -0.078 | -0.240 | -0.199 | -0.342 |
+| `TC\|AG` | **-0.506** | **-0.525** | -0.588 | -0.635 |
+| `TG\|AC` | **-0.616** | **-0.629** | -0.594 | -0.602 |
 
 Over the whole tree, the terminal spectrum is within 3% of the internal one
-in every class. The summary's internal-versus-terminal chi-squared of 212.4
+in every class. The summary's internal-versus-terminal chi-squared of 210.8
 is large only because the counts are: 1.0M internal and 1.8M terminal
 mutations. Within each clade, internal and terminal spectra differ by a
-median of 0.12 to 0.55 percentage points per class, with a single maximum
-of 2.31 (`CT|GA` in `node_74367`). So the spectrum is a property of the
+median of 0.12 to 0.51 percentage points per class, with a single maximum
+of 2.32 (`CT|GA` in `node_74254`). So the spectrum is a property of the
 clade and not of the branch class: terminal branches are not carrying a
 distinct artifact spectrum, even though they hold 64% of the mutations. The
 quality explanation is ruled out for this tree.
 
 The between-clade separation therefore stands on internal branches alone,
 where per-genome error cannot reach: `TC|AG` runs 0.109 to 0.276 across
-clades, a 2.5x spread on counts of 3,000 to 99,000 internal mutations each.
-And one clade breaks the divergence correlation and holds up. `node_3594`
+clades, a 2.5x spread on counts of 3,200 to 99,000 internal mutations each.
+And one clade breaks the divergence correlation and holds up. `node_3548`
 has a divergence ratio of 45.8, among the highest, but its internal-only
-`TC|AG` of 0.229 matches its low-divergence parent `node_6` (0.250, ratio
-16.4), not the 0.109 to 0.157 of 22 of the other 23 splits above a ratio of
-40 (the exception, `node_3979`, is at 0.191). Step 8's lineage check says
+`TC|AG` of 0.229 is near its low-divergence parent `node_6` (0.268, ratio
+20.3) and La1's `node_285` (0.249, ratio 15.4), not the 0.109 to 0.157 of 23
+of the other 24 rows above a ratio of 40 (the exception, `node_3933`, is at
+0.191). Step 8's lineage check says
 why: all 269 of its samples are La3, inside the animal-adapted `node_6`.
 
 Note what this step does *not* establish. It rules out per-genome artifacts,
