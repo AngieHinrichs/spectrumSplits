@@ -189,16 +189,72 @@ Read the distribution before choosing. A median of 7 with a p90 of 54 is not a
 tight distribution with outliers, it is a broad one, and mean + 2 SD on a broad
 distribution cuts into the bulk.
 
+#### Prune known laboratory strains here too
+
+If you know which samples are laboratory material — vaccine strains,
+lab-adapted reference stocks, experimental-evolution lines — prune them now,
+in the same step. Their mutations accumulated in culture, not in hosts, so a
+split containing them averages two different processes, and a spectrum
+computed over mixed material cannot be decomposed afterwards. Pruning later
+renumbers every node and means redoing everything from the mask on; pruning
+here costs nothing extra.
+
+The search will not do this for you. On the MTBC tree all 336 BCG genomes
+sit inside one 913-tip split, 37% of its tips, and BCG's own mutations fall
+well under `--min_mutations`, so the search could never have separated them
+however different they are. Any `--min_mutations` floor leaves a band of
+small clades the search cannot see rather than tests and rejects, and lab
+strains sit in it.
+
+Build the list from the clade labels and keep the pattern explicit, since
+which labels mark lab strains depends on the organism and the annotation. On
+the MTBC tree it is BCG, the vaccine strain, labelled `La1.2.BCG`:
+
+```
+matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
+awk -F'\t' '$2 ~ /BCG/ {print $1}' clades_raw.txt > lab_samples.txt
+matUtils extract -i tree.pruned.pb.gz -s lab_samples.txt --prune \
+    -o tree.pruned.nolab.pb.gz
+mv tree.pruned.nolab.pb.gz tree.pruned.pb.gz
+```
+
+`--prune` takes no argument: the sample list still goes to `-s/--samples`,
+and `--prune` inverts that selection so the listed samples are the ones
+removed. Without it the same two arguments would keep *only* the lab
+strains, which is the opposite tree and will not announce itself, so check
+the output's sample count with `matUtils summary`: it should have fallen by
+the number of lab samples the divergence prune had not already removed.
+(`-I` selects internal node IDs and `-c` annotated clades; all of these are
+easy to confuse.) Keep `lab_samples.txt` and the pattern with the run, so
+the prune can be repeated on a newer tree.
+
+A label only finds what was labelled. A lab stock with no distinguishing
+label, such as an H37Rv derivative filed under the lineage 4.9 it belongs
+to, stays in, so look through the clade labels for anything else that names
+a lab or vaccine strain before settling the pattern.
+
+Do not expect the prune to move spectra much. `spectrumSplits.py` builds its
+tables from mutations, and tips appear nowhere in the chi-squared. Pruning
+BCG from the MTBC tree removed 336 tips but only **535 mutations** out of
+2,845,156: 1.6 per tip, because repeated sequencing of a near-clonal vaccine
+stock produces tips nearly identical to each other and to their relatives.
+So BCG was about 5% of its split's mutations, not 37%. Estimating from the
+clade's average of 11.2 mutations per tip would have said ~3,760, seven
+times too many. To size a prune exactly, re-profile and subtract. The prune
+is still worth making: it makes every statement about the clade true and
+removes a caveat from every later claim.
+
+The worked numbers in steps 3 to 11 come from a tree with BCG still in it.
+
 #### Check what it removed, by clade
 
 Run this first, so you have your own tree's numbers beside the worked example.
 The removed samples' clades come from the unpruned tree, since the pruned one
 no longer contains them, and the prune report already lists every removed
-sample:
+sample. `clades_raw.txt` is the one made above for the lab strains:
 
 ```
 matUtils summary -i tree.pb.gz -s samples_raw.txt
-matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
 prune_clade_check.py --samples samples_raw.txt --clades clades_raw.txt \
     --prune_report pruned_report.txt --threshold 250 \
     --exclude ReconstructedAncestor --input_tree tree.pb.gz > prune_check.md
@@ -402,62 +458,6 @@ Worth doing anyway, because it is three commands and it is the check that would
 have caught the bad case: a run flanked by nothing, or sitting below the
 basal-most named lineage, would be an outgroup inside clades whose spectra you
 are comparing.
-
-#### Prune known laboratory strains here too
-
-If you know which samples are laboratory material — vaccine strains,
-lab-adapted reference stocks, experimental-evolution lines — prune them now,
-in the same step. Their mutations accumulated in culture, not in hosts, so a
-split containing them averages two different processes, and a spectrum
-computed over mixed material cannot be decomposed afterwards. Pruning later
-renumbers every node and means redoing everything from the mask on; pruning
-here costs nothing extra.
-
-The search will not do this for you. On the MTBC tree all 336 BCG genomes
-sit inside one 913-tip split, 37% of its tips, and BCG's own mutations fall
-well under `--min_mutations`, so the search could never have separated them
-however different they are. Any `--min_mutations` floor leaves a band of
-small clades the search cannot see rather than tests and rejects, and lab
-strains sit in it.
-
-Build the list from the clade labels and keep the pattern explicit, since
-which labels mark lab strains depends on the organism and the annotation. On
-the MTBC tree it is BCG, the vaccine strain, labelled `La1.2.BCG`:
-
-```
-awk -F'\t' '$2 ~ /BCG/ {print $1}' clades_raw.txt > lab_samples.txt
-matUtils extract -i tree.pruned.pb.gz -s lab_samples.txt --prune \
-    -o tree.pruned.nolab.pb.gz
-mv tree.pruned.nolab.pb.gz tree.pruned.pb.gz
-```
-
-`--prune` takes no argument: the sample list still goes to `-s/--samples`,
-and `--prune` inverts that selection so the listed samples are the ones
-removed. Without it the same two arguments would keep *only* the lab
-strains, which is the opposite tree and will not announce itself, so check
-the output's sample count with `matUtils summary`: it should have fallen by
-the number of lab samples the divergence prune had not already removed.
-(`-I` selects internal node IDs and `-c` annotated clades; all of these are
-easy to confuse.) Keep `lab_samples.txt` and the pattern with the run, so
-the prune can be repeated on a newer tree.
-
-A label only finds what was labelled. A lab stock with no distinguishing
-label, such as an H37Rv derivative filed under the lineage 4.9 it belongs
-to, stays in, so look through the clade labels for anything else that names
-a lab or vaccine strain before settling the pattern.
-
-Do not expect the prune to move spectra much. `spectrumSplits.py` builds its
-tables from mutations, and tips appear nowhere in the chi-squared. Pruning
-BCG from the MTBC tree removed 336 tips but only **535 mutations** out of
-2,845,156: 1.6 per tip, because repeated sequencing of a near-clonal vaccine
-stock produces tips nearly identical to each other and to their relatives.
-So BCG was about 5% of its split's mutations, not 37%. Estimating from the
-clade's average of 11.2 mutations per tip would have said ~3,760, seven
-times too many. To size a prune exactly, re-profile and subtract. The prune
-is still worth making: it makes every statement about the clade true and
-removes a caveat from every later claim.
-
-The worked numbers in steps 3 to 11 come from a tree with BCG still in it.
 
 ### 3. Build and apply a region mask
 
