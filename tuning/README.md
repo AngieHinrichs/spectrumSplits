@@ -938,7 +938,13 @@ with the observed value, not when the recurrence table looks tidy.
 **The threshold.** A 2x margin on the `sites` maximum gives `--min_chi 65`,
 the "with 2x margin" line of the printed summary. The observed maximum is
 274x that. When the headroom is this large the exact choice does not matter;
-when it is not, prefer the larger margin.
+when it is not, prefer the larger margin. Do not read the summary's
+recommended thresholds finely either: each is a multiple of a single
+maximum over 20 replicates, the noisiest statistic those replicates offer,
+and it moves by several units between independent runs. The `types` null on
+this tree with BCG pruned gave a maximum of 28.7 instead of 31.5, and a
+recommended 58 instead of 64, with medians of 18.9 and 19.8. The whole
+difference was one high replicate in the first run.
 
 One caveat on transferring this number: it is the threshold the *first*
 split must beat. Deeper splits in the greedy cascade are scored on smaller
@@ -1617,8 +1623,9 @@ of the tree, changes. A second search over nearly the same data does, and
 because node IDs do not survive the change, the splits are matched by sample
 membership.
 
-It is not part of the suggested order because it is expensive: a new
-cascade null, a search with bootstrap, and step 10, hours on a large tree.
+It is not part of the suggested order because it is expensive: a search
+with bootstrap and step 10, and a new cascade null if the change touched the
+mask, hours on a large tree.
 Once the method has been tested, the tiers carry most of what it would tell
 you: on the MTBC replication below, three of the four splits that failed to
 come back were tier C. It is worth running when a claim rests on a marginal
@@ -1643,9 +1650,15 @@ matUtils extract -i tree.pruned.masked.pb.gz -s drop.txt --prune \
     -o tree.pruned.masked.sub.pb.gz
 ```
 
-Then rerun steps 7, 8 and 10 on the new tree. The example below used a
-mask round plus a BCG prune, because that is the change the MTBC tree went
-through; the `_nobcg` file names are that run's.
+Then rerun step 8 on the new tree with the first run's parameters,
+`--min_chi` included, since the point is to change only the tree, and
+step 10. Step 7 is needed again only if the change touched the mask. A prune
+leaves the recurrent sites that drive the sites null as they were, so the
+first run's `null_sites_cascade.tsv` still gives the right ceilings; a new
+run of it would only be another independent draw from the same
+distribution. A re-mask changes those sites and needs a new cascade null.
+The example below used a mask round plus a BCG prune, because that is the
+change the MTBC tree went through; the `_nobcg` file names are that run's.
 
 Run step 8 in a directory of its own, since its bootstrap files would
 overwrite the first run's. Then build the new run's step 10 inputs with the
@@ -1660,8 +1673,9 @@ for n in $(cut -f1 spectra_nobcg.tsv | grep ^node_); do
   sed "s/^/$n\t/" split_samples.txt
 done > split_clade_samples_nobcg.tsv
 
+# --null: a new cascade null instead, if the change touched the mask
 split_confidence.py --splits_log splits_nobcg.log --spectra spectra_nobcg.tsv \
-    --null null_sites_cascade_nobcg.tsv \
+    --null null_sites_cascade.tsv \
     --bootstrap_replicates bootstrap_by_replicate_nobcg.tsv \
     --clade_samples split_clade_samples_nobcg.tsv \
     --output split_confidence_nobcg.tsv
