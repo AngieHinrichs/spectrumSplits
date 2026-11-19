@@ -261,7 +261,8 @@ times too many. To size a prune exactly, re-profile and subtract. The prune
 is still worth making: it makes every statement about the clade true and
 removes a caveat from every later claim.
 
-The worked numbers in steps 3 to 11 come from a tree with BCG still in it.
+The worked numbers in steps 3 to 6 come from the tree pruned this way. Those
+in steps 7 to 11 come from an earlier run with BCG still in the tree.
 
 #### Check what it removed, by clade
 
@@ -526,14 +527,17 @@ them directly; you don't need to repeat the history. The earlier rounds are
 here because the worked examples compare against them, and because on a
 different tree you will need rounds of your own: you can't write an artifact
 list until you have seen which sites recur. Step 4's "Three rounds, and when
-to stop" has what each round bought and how to tell when you are done. After
-round 3 the BCG samples were also pruned (see Testing the method); that is a
-prune, not a mask round.
+to stop" has what each round bought and how to tell when you are done. The
+rounds were run on a tree with BCG still in it; pruning it in step 2 instead
+changes nothing here, because pruning and masking commute (step 4).
 
 *Worked example.* In round 1, the resistance list resolved to 41 intervals
 over 81 kb and the PE/PPE pattern to 151 intervals over 266 kb, 348 kb of the
 4,411,532 bp reference together. Round 3's commands, as written above, cover
-504 kb.
+506,763 bp, 11.5%. That is 3,017 bp more than the original round 3, because
+`annotate_sites.py` then dropped features typed `pseudogene`. The
+`^(PE|PPE|esx)` pattern reaches five of NC_000962.3's: `PE21`, `PE_PGRS36`,
+`PPE47`, `PPE48` and `esxM`, which `tb_alignment_loci.txt` also names.
 
 Bases removed is not the number that matters, though; the next step has it.
 
@@ -553,13 +557,14 @@ built from; "The surviving sites are mostly flank" below says what it is for.
 
 *Worked example.* Judge the mask by recurrence, not by total count. "Usable
 SNVs" is every A/C/G/T substitution on every branch, so a site that mutated
-on 200 branches counts 200 times; it is the tree's parsimony score. The
-round 3 column is what step 3's commands produce:
+on 200 branches counts 200 times; it is the tree's parsimony score. The raw
+column is the tree as downloaded, before step 2's prunes; the round 3 column
+is what steps 2 and 3's commands produce:
 
 | | raw | round 1 | round 3 |
 | --- | --- | --- | --- |
-| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) | 2,846,170 (−12.4%) |
-| distinct mutated sites | 1,988,164 | 1,865,580 | 1,807,975 |
+| usable SNVs | 3,249,554 | 2,972,123 (−8.5%) | 2,844,115 (−12.5%) |
+| distinct mutated sites | 1,988,164 | 1,865,580 | 1,806,795 |
 | mutations per site (mean) | 1.634 | 1.593 | 1.574 |
 | worst single site | 6,102 | 1,989 | 225 |
 | top 20 sites' share | 1.24% | 0.50% | 0.12% |
@@ -568,8 +573,9 @@ Round 1 masked 7.9% of the genome and removed 8.5% of the mutations, so by
 total count it looks like it bought nothing. It bought a great deal: 13 of the raw top 20
 sites are gone, including all seven largest, and the worst hotspot fell by
 two thirds. Those are the sites that break the independence assumption. By
-round 3, 11.4% of the genome masked has removed 12.4% of the mutations and
-96% of the worst hotspot.
+round 3, 11.5% of the genome masked has removed 12.5% of the mutations and
+96% of the worst hotspot. (Step 2's prunes are in that 12.5% too, but they
+are small: BCG was 535 mutations.)
 
 The reason the total barely moved is worth knowing, because it is easy to
 misread. Only 122,584 of the ~348,000 masked positions had ever mutated — 35%,
@@ -591,11 +597,22 @@ sharply:
 | `CT\|GA` | 0.5011 | 0.5058 | 0.5067 | 0.5080 |
 | `TC\|AG` | 0.1605 | 0.1581 | 0.1578 | 0.1575 |
 
-These are the figures from the original runs. The round 3 column counts
-1,014 fewer mutations than step 3's commands give, because that run used an
-unanchored `maturase`, which also masked `Rv0693` (see below); 2,846,170
-above is the anchored pattern's figure. Later steps' worked examples come
-from the original round 3 tree.
+These are the figures from the original runs, with BCG still in the tree.
+Their round 3 differs from the table above in three ways, which account for
+it exactly:
+
+- That run used an unanchored `maturase`, which also masked `Rv0693` (see
+  below): 1,014 mutations. With the anchored pattern it would have counted
+  2,846,170.
+- Pruning BCG took 535 mutations, giving 2,845,635.
+- The pseudogenes added to the mask in step 3 held 1,520, giving step 4's
+  2,844,115.
+
+The last two were measured in opposite orders. The earlier tree was masked
+and then pruned of BCG; this one was pruned and then masked. Counting the
+pseudogene positions' mutations on the earlier tree and subtracting gives
+this tree's total to the mutation, so pruning and masking commute here, as
+they should.
 
 Round 2 was the one that mattered: the worst hotspot fell 84%, for 2.9% of the
 mutations. Round 3 cost another 1.4% to take it 29% further. Note the last two
@@ -748,7 +765,7 @@ process tied to the leading or the transcribed strand pushes the forward-strand
 ratio one way on half the genome and the other way on the other half, so it
 cancels. Near-equal global pairs are what you'd see with or without one.
 
-*Worked example.* On the round 3 tree the global pairs agree closely: C>T
+*Worked example.* On the walkthrough tree the global pairs agree closely: C>T
 0.2542 against G>A 0.2537, C>A 0.0601 against G>T 0.0604, and every other
 pair within 2%. The STRAND ASYMMETRY section shows what that hides. Its
 numbers are log2(first/second), where 0 means symmetric:
@@ -756,10 +773,10 @@ numbers are log2(first/second), where 0 means symmetric:
 | | C>T / G>A | C>G / G>C | T>G / A>C | T>C / A>G |
 | --- | --- | --- | --- | --- |
 | forward strand leading | +0.559 | +0.349 | +0.283 | −0.095 |
-| forward strand lagging | −0.485 | −0.313 | −0.242 | +0.080 |
-| + strand genes | +0.132 | +0.032 | −0.194 | −0.162 |
+| forward strand lagging | −0.485 | −0.314 | −0.242 | +0.080 |
+| + strand genes | +0.132 | +0.031 | −0.194 | −0.162 |
 | − strand genes | −0.131 | −0.033 | +0.203 | +0.155 |
-| intergenic | +0.023 | +0.020 | +0.020 | +0.015 |
+| intergenic | +0.023 | +0.020 | +0.021 | +0.015 |
 
 The terminus was estimated from GC skew at 2.04 Mb. On the leading strand,
 C>T outnumbers G>A by about 47% (2^0.56). In genes, the coding strand carries a
@@ -805,28 +822,28 @@ to measure enter. "Big enough" is set by precision, not by a count:
 `--strand_max_se` (default 0.15) is the largest standard error allowed on a
 clade's log2 ratio for the rarest pair, and the report prints the clade size
 that implies for this tree's spectrum. Any lower and the smallest rows are
-mostly noise. On the round 3 tree that is 24,006 mutations, with TA|AT the
+mostly noise. On the walkthrough tree that is 24,008 mutations, with TA|AT the
 rarest pair, which admits 26 clades. A larger SE admits more, smaller
 clades: the chi2/df already allows for their noise, but the single-clade z
 gets more chances to cross its limit by chance. `--strand_min_clade` sets a
 fixed size instead.
 
-*Worked example.* On the round 3 tree:
+*Worked example.* On the walkthrough tree:
 
 | pair | F | z | R | T | F chi2/df across 26 clades | most extreme clade, z |
 | --- | --- | --- | --- | --- | --- | --- |
-| C>A / G>T | −0.015 | −2.8 | −0.081 | +0.017 | 1.57 | −2.9 |
-| C>G / G>C | +0.018 | +3.4 | +0.345 | −0.031 | 0.78 | −1.9 |
-| C>T / G>A | +0.035 | +13.5 | +0.525 | +0.037 | 1.55 | −2.8 |
-| T>A / A>T | +0.027 | +1.8 | +0.021 | −0.085 | 1.66 | −2.8 |
-| T>C / A>G | −0.007 | −1.6 | −0.076 | −0.146 | 1.19 | −3.2 |
-| T>G / A>C | +0.023 | +3.5 | +0.300 | −0.247 | 0.93 | +2.1 |
+| C>A / G>T | −0.015 | −2.8 | −0.081 | +0.017 | 1.59 | −3.0 |
+| C>G / G>C | +0.018 | +3.3 | +0.345 | −0.031 | 0.78 | −1.9 |
+| C>T / G>A | +0.035 | +13.4 | +0.525 | +0.037 | 1.54 | −2.8 |
+| T>A / A>T | +0.027 | +1.8 | +0.021 | −0.085 | 1.67 | −2.8 |
+| T>C / A>G | −0.008 | −1.6 | −0.076 | −0.145 | 1.18 | −3.2 |
+| T>G / A>C | +0.024 | +3.5 | +0.300 | −0.248 | 0.92 | +2.1 |
 
-C>T/G>A has a highly significant F (z 13.5). That is because the leading-arm
+C>T/G>A has a highly significant F (z 13.4). That is because the leading-arm
 skew (+0.56) is a little larger than the lagging-arm one (−0.49), probably an
 arm difference in the replication effect or a slightly misplaced terminus.
 Neither is a reason not to fold. Its F is the same in every clade, with
-chi2/df 1.55, against 55 for the replication part in the per-clade table
+chi2/df 1.54, against 55 for the replication part in the per-clade table
 above. The verdict is fold.
 
 The defaults flag a pair at chi2/df ≥ 3 (`--fold_max_dispersion`) or a
@@ -842,42 +859,42 @@ Settle this now: it changes both the floor in step 6 and the null in step 7.
 ### 6. Pick `--min_mutations` and `--max_branch_length`
 
 *`--min_mutations`.* The masked profile reports a rarest 12-type class at
-p = 0.00796 (floor 629) and a rarest folded class at p = 0.01608 (floor 311).
-Folding, so the binding floor is 311. But the floor is not the binding
+p = 0.00765 (floor 654) and a rarest folded class at p = 0.01541 (floor 325).
+Folding, so the binding floor is 325. But the floor is not the binding
 constraint here — `smallest_eligible_subtree_tips` is:
 
 | `--min_mutations` | eligible nodes | smallest eligible subtree |
 | --- | --- | --- |
-| 2,500 | 2,510 | 17 tips |
-| 5,000 | 1,411 | 62 tips |
-| 10,000 | 840 | 130 tips |
+| 2,500 | 2,302 | 17 tips |
+| 5,000 | 1,284 | 62 tips |
+| 10,000 | 777 | 130 tips |
 
 A 17-tip clade reaching 2,500 mutations is running 147 mutations per tip
-against a tree-wide 23: that is a divergence outlier, not a clade, and
+against a tree-wide 22: that is a divergence outlier, not a clade, and
 `--min_mutations 2500` would let it be scored as a "split". Take 10,000. It
-still leaves 840 candidates, far more than any real analysis needs, clears the
-folded floor 32 times over, and puts a 130-tip minimum under every candidate.
-Nothing worth finding is near the boundary — the strongest split on this tree
-scored 20,568 on an 11,468-tip clade.
+still leaves 777 candidates, far more than any real analysis needs, clears the
+folded floor 30 times over, and puts a 130-tip minimum under every candidate.
+Nothing worth finding is near the boundary: on the earlier run (step 8) the
+strongest split scored 20,568 on an 11,468-tip clade.
 
-*`--max_branch_length`.* Branch counts run median 4, p90 44, p99 106,
-p99.9 177, max 886, and the cap table reads:
+*`--max_branch_length`.* Branch counts run median 4, p90 43, p99 102,
+p99.9 171, max 832, and the cap table reads:
 
 | cap | branches excluded | mutations excluded |
 | --- | --- | --- |
-| 50 | 16,811 | 43.72% |
-| 100 | 2,577 | 11.24% |
-| 250 | 17 | 0.22% |
+| 50 | 15,559 | 41.77% |
+| 100 | 2,207 | 10.02% |
+| 250 | 14 | 0.19% |
 | 500 | 3 | 0.08% |
 
 There is no knee in that curve: the distribution is broad rather than
 bulk-plus-outliers, so any cap that removes a meaningful number of branches
-removes a meaningful fraction of the data. Cap at 250, which deletes 17 absurd
-branches and nothing else. A cap of 50 would discard 44% of the tree's
+removes a meaningful fraction of the data. Cap at 250, which deletes 14 absurd
+branches and nothing else. A cap of 50 would discard 42% of the tree's
 mutations, which on a diverged, sparsely sampled species is real divergence.
 
-Note that 63% of all mutations sit on terminal branches here, with a terminal
-p90 of 49. That much private variation is more likely per-genome mapping error
+Note that 64% of all mutations sit on terminal branches here, with a terminal
+p90 of 47. That much private variation is more likely per-genome mapping error
 than biology, and error has its own spectrum. It will not manufacture a
 clade-shaped split, but it dilutes every real one, so read effect sizes with it
 in mind.
