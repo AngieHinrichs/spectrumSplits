@@ -3,9 +3,9 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and seven need less: `prune_clade_check.py` and
-`split_drivers.py` use `bte` only with `--input_tree`, and `null_by_size.py`,
-`branch_hits.py`, `split_confidence.py`, `split_composition.py` and
+library and `bte`, and seven need less: `prune_clade_check.py`,
+`split_drivers.py` and `null_by_size.py` use `bte` only with `--input_tree`,
+and `branch_hits.py`, `split_confidence.py`, `split_composition.py` and
 `match_splits.py` read text files only.
 
 ## Contents
@@ -509,6 +509,25 @@ matUtils mask -i tree.pruned.pb.gz -m matUtils_mask.txt \
 Expect this to take a while: `matUtils mask` traverses the tree once per masked
 position.
 
+**Sites added by hand.** Some artifacts turn up later, a site or two at a
+time, from step 4's flank check or step 7's hotspot check. Their positions go
+into the build here, before the `sort -un`, with their intervals in the BED
+file so that step 4's `--near_mask` agrees with the mask. On NC_000962.3,
+step 7 found two sites in `lppN`:
+
+```
+printf '2544936\n2544938\n' >> alignment_pos.txt
+printf 'NC_000962.3\t2544935\t2544936\nNC_000962.3\t2544937\t2544938\n' \
+    >> alignment_loci.bed
+```
+
+`annotate_sites.py` rewrites both files, so append these again after any
+rerun of it, and keep the lines with the commands: they are specific to this
+reference. To add such sites to a tree that is already masked, mask just
+those positions, as step 7 does. That is quick, and since masking one set of
+positions and then another is masking their union, it gives the same tree as
+a rebuild.
+
 #### Masking comes in rounds
 
 The commands above build the finished mask, but nobody could have written it
@@ -936,6 +955,69 @@ between the runs is the null model. `--include_observed` matters: it scores the
 real tree through the identical code path, so the comparison is not against a
 number from a different pass.
 
+#### First, check the null for a hotspot
+
+```
+null_by_size.py --null null_sites_cascade.tsv \
+    --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
+```
+
+The summary's thresholds are multiples of the single largest null maximum,
+so whatever sets that maximum sets the threshold. Under the `sites` null each
+site keeps its branches, so a site that mutated many times inside one clade
+puts all of those mutations into one class in every replicate. The class
+changes from replicate to replicate, so such a clade need not win often; it
+wins big when it draws a rare class. The HOTSPOT CHECK at the end of
+`null_by_size.py`'s report flags either pattern:
+
+- a clade that is the maximum in more than half the replicates
+  (`--hotspot_fraction`);
+- a clade that holds the two largest maxima (`--top_maxima`).
+
+With `--input_tree` it also counts a node and a child holding nearly all of
+it as one clade, which would otherwise split the clade's count between two
+IDs. For each flagged clade it lists the most recurrent sites and prints an
+`annotate_sites.py` command for them. (The rest of the report is read in
+"The threshold should scale with subtree size" below.)
+
+*Worked example.* On the walkthrough tree as steps 2 and 3 first built it,
+the `sites` null's maximum was 45.4, and the summary recommended
+`--min_chi 91`. The check flagged a lineage 2.2.1 clade of 1,593 tips,
+`node_21012`. With its child `node_21013`, it held the two largest maxima,
+45.4 and 31.6, and no other clade's exceeded 24.4. Two sites 2 bp apart in
+`lppN` (`Rv2270`), 2544936 and 2544938, carry 224 of its 12,828 mutations,
+and 224 of the 226 those sites have in the whole tree:
+
+| mutation | branches | | mutation | branches |
+| --- | --- | --- | --- | --- |
+| `A2544938G` | 72 | | `T2544936G` | 68 |
+| `G2544938A` | 43 | | `G2544936T` | 41 |
+
+Each site keeps flipping back, and 94 branches carry both. Two adjacent sites
+changing together, forward and back, a hundred times inside one clade look
+like a genotyping or alignment artifact, not independent mutation. On the
+earlier tree with BCG still in it the same clade, as `node_21060` and
+`node_21059`, held the three largest maxima, 32.0, 29.2 and 26.6. So it also
+set that run's `--min_chi 65`, and the tier B split `node_21060` found there
+lost 18% of its chi-squared without site 2544938 alone. The check then
+counted only how often a node was the maximum, and as two IDs with 2
+replicates each the clade passed. The new tree's 45.4 is the same artifact
+drawing a rarer class.
+
+So mask the two sites. Add them to step 3's build (its "Sites added by hand"
+lines), and mask them on the current tree:
+
+```
+printf 'N2544936N\nN2544938N\n' > lppN_mask.txt
+matUtils mask -i tree.pruned.masked.pb.gz -m lppN_mask.txt \
+    -o tree.pruned.masked.lppN.pb.gz
+mv tree.pruned.masked.lppN.pb.gz tree.pruned.masked.pb.gz
+```
+
+Then rerun step 4's profile, so that later steps read the final tree, and
+both nulls above.
+
 *Worked example*, the round 3 tree from step 4, folded, at
 `--min_mutations 10000` and `--max_branch_length 250`:
 
@@ -1001,8 +1083,8 @@ split with the highest null from subtrees within 1.5x of its size. That is the
 same ceiling `split_confidence.py` uses in step 10, so the two agree. With
 `--min_chi`, it flags the splits that threshold rejects even though they clear
 their size-matched null by `--margin` (default 2x), and any it accepts that
-don't clear their null at all. It ends with the hotspot check described at the
-end of this section.
+don't clear their null at all. It ends with the hotspot check described
+above.
 
 *Worked example*, same tree and parameters as above, 500 null splits:
 
@@ -1044,15 +1126,6 @@ ceilings for nearby sizes are not independent estimates. And the null
 subtrees are the permuted tree's own, which do not correspond one-to-one
 with the observed subtrees being compared against them — the matching is on
 size, not identity.
-
-If one node is the maximum in most `sites` replicates, a single hotspot is
-setting your threshold: find and mask it rather than paying for it forever.
-`null_by_size.py`'s HOTSPOT CHECK counts how often each node is the
-whole-tree maximum, and flags any node that is the maximum in more than half
-the replicates (`--hotspot_fraction`). Node IDs are comparable across
-replicates because the permutation changes only mutation types, never the
-tree. Here no node is the maximum in more than 2 of the 20 replicates, which
-is what an absence of such a hotspot looks like.
 
 ### 8. Run the search with bootstrap, and check where it saturates
 
@@ -2060,7 +2133,9 @@ Used in [step 7](#7-calibrate---min_chi).
 
 ```
 null_by_size.py --null null_sites_cascade.tsv
-null_by_size.py --null null_sites_cascade.tsv --min_chi 65 --margin 2
+null_by_size.py --null null_sites_cascade.tsv --min_chi 65 --margin 2 \
+    --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna
 ```
 
 Reads a cascade null from `permutation_null.py --max_splits 25 --min_chi 1`
@@ -2070,7 +2145,7 @@ and reports:
 | --- | --- |
 | Null ceiling by subtree size | How far the chance maximum falls below the whole-tree figure as subtrees shrink. A `--min_chi` set from the root is that much too strict for deep splits |
 | Observed splits against a size-matched null | Each observed split's margin over the highest null from subtrees within `--null_window` (default 1.5x) of its size. With `--min_chi`, it flags splits that threshold rejects despite a margin of at least `--margin`, and accepted splits with a margin under 1 |
-| Hotspot check | Whether one node is the whole-tree null maximum in more than `--hotspot_fraction` (default half) of the replicates. If so, mask the recurrent sites inside it |
+| Hotspot check | The largest whole-tree null maxima and the clade behind each. It flags a clade that is the maximum in more than `--hotspot_fraction` (default half) of the replicates, or that holds the `--top_maxima` (default 2) largest maxima. With `--input_tree`, a node and a child whose `mutations_below` agree within `--same_clade` (default 0.95) count as one clade, and a flagged clade's `--hotspot_sites` (default 10) most recurrent sites are listed, with an `annotate_sites.py` command for those holding `--hotspot_min` (default 20) or more of its mutations. Annotate them, and mask them if they look like an artifact |
 
 The observed rows come from the cascade run's own `--min_chi 1` search, which
 accepts every split and so carves subtrees differently from a production run
@@ -2079,7 +2154,8 @@ run's own splits, `split_confidence.py` models the carving exactly. `ceiling`
 and the window come from `split_confidence.py`, so the two scripts give the
 same margin for the same size. `--min_nulls` (default 10) marks a ceiling drawn
 from too few null splits to trust. `--selftest` checks the binning, the
-ceilings, the flags and the hotspot rule on a constructed cascade.
+ceilings, the flags and both hotspot rules on a constructed cascade,
+including a clade under two IDs.
 
 ### `split_drivers.py`
 
