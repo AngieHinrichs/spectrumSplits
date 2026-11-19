@@ -448,12 +448,15 @@ def main():
         args, read(args.splits_log), read(args.spectra), read(args.null),
         read(args.bootstrap_support), read(args.bootstrap_replicates),
         read(args.clade_samples))
+    ### The summary goes to stdout when the table goes to --output, as in
+    ### the other scripts, and to stderr when the table is on stdout.
+    out = sys.stdout if args.output else sys.stderr
     if not args.clade_samples:
         print("  WARNING: no --clade_samples, so nesting comes from the log's "
-              "search roots alone", file=sys.stderr)
+              "search roots alone", file=out)
         print("  A split accepted late can contain one accepted earlier, "
               "which that cannot see; sizes are then upper bounds and the "
-              "margins of late splits are understated.", file=sys.stderr)
+              "margins of late splits are understated.", file=out)
 
     if not rows:
         print("error: no splits found before the bootstrap marker in "
@@ -463,31 +466,31 @@ def main():
     if nonull:
         print(f"  WARNING: no size-matched null for {len(nonull)} split(s): "
               f"{', '.join(nonull[:8])}{' ...' if len(nonull) > 8 else ''}",
-              file=sys.stderr)
+              file=out)
         print("  Widen --null_window, or run permutation_null.py deeper so "
-              "the cascade reaches these subtree sizes.", file=sys.stderr)
+              "the cascade reaches these subtree sizes.", file=out)
     if nreps:
         print(f"  {nreps} bootstrap replicates; support is a percent of them",
-              file=sys.stderr)
+              file=out)
         if args.neighbourhood > 0:
             print(f"  neighbourhood support allows the split to move "
                   f"+-{args.neighbourhood} in node number; ID adjacency is a "
                   f"proxy for topology, so read it as an upper estimate",
-                  file=sys.stderr)
+                  file=out)
     disagree = [r for r in rows if r["clade_parent"] not in ("NA", None)
                 and r["clade_parent"] != r["search_root"]]
     if disagree:
         print(f"  note: {len(disagree)} split(s) sit inside a clade other "
               f"than the subtree they were found in, which is expected and is "
-              f"why membership decides the nesting", file=sys.stderr)
+              f"why membership decides the nesting", file=out)
     counts = collections.Counter(r["tier"] for r in rows)
     print(f"  {len(rows)} splits: {counts['A']} tier A, {counts['B']} tier B, "
-          f"{counts['C']} tier C", file=sys.stderr)
+          f"{counts['C']} tier C", file=out)
     weakest = min((r for r in rows if r["margin"] is not None),
                   key=lambda r: r["margin"], default=None)
     if weakest:
         print(f"  weakest margin {weakest['margin']:.2f}x at "
-              f"{weakest['node']}", file=sys.stderr)
+              f"{weakest['node']}", file=out)
 
     if args.output:
         with open(args.output, "w") as fh:

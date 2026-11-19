@@ -263,8 +263,8 @@ times too many. To size a prune exactly, re-profile and subtract. The prune
 is still worth making: it makes every statement about the clade true and
 removes a caveat from every later claim.
 
-The worked numbers in steps 3 to 9 come from the tree pruned this way. Those
-in steps 10 and 11 come from an earlier run with BCG still in the tree.
+The worked numbers in steps 3 to 10 come from the tree pruned this way.
+Those in step 11 come from an earlier run with BCG still in the tree.
 
 #### Check what it removed, by clade
 
@@ -1592,14 +1592,15 @@ done > split_clade_samples.tsv
 ```
 
 The second loop runs `matUtils` once per split, so it takes a while on a big
-tree. Run both before anything renumbers the tree's nodes (see step 8).
+tree. Run both before anything renumbers the tree's nodes (see [Node IDs are
+not stable across trees](#node-ids-are-not-stable-across-trees)).
 
 ```
 split_confidence.py --splits_log splits.log --spectra spectra.tsv \
     --null null_sites_cascade.tsv \
     --bootstrap_replicates bootstrap_by_replicate.tsv \
     --clade_samples split_clade_samples.tsv \
-    --output split_confidence.tsv
+    --output split_confidence.tsv > split_confidence.txt
 ```
 
 Pass `--clade_samples` whenever you have it. Both of the other inputs are
@@ -1611,10 +1612,10 @@ margin below it. See "Why the sizes need membership" below.
 permutation null reached on subtrees of comparable size. This is what makes it
 safe to run the search at a low `--min_chi` and filter afterwards, which is
 the right way round: a single threshold cannot serve both ends of the size
-range, because chi-squared scales with the counts in the table. On the round
-3 tree, `--min_chi 30` accepted 68 splits and *every one* cleared its
-size-matched ceiling, by 2.44x at the weakest (`node_56835`) and 556x at the
-strongest (`node_5011`).
+range, because chi-squared scales with the counts in the table. On this
+tree, `--min_chi 30` accepted 66 splits and *every one* cleared its
+size-matched ceiling, by 2.10x at the weakest (`node_56725`) and 721x at the
+strongest (`node_4965`).
 
 The script needs the log, not just the TSV, because the TSV does not record
 which subtree each split was tested in. The log gives it from the `(sub)tree
@@ -1636,23 +1637,25 @@ ancestor and must not be removed twice.
 
 Second, the nesting cannot be read off the log. A split accepted late can turn
 out to be an *ancestor* of one accepted earlier, because both were found while
-searching the same root. On the round 3 tree, 13 of the 68 splits sit inside
-a clade other than the subtree they were found in. `node_14051`, all of
-lineage 2, was accepted after `node_14377` and turned out to contain it, and
-`node_12343` contains `node_13078` and `node_13635`, both accepted before it.
+searching the same root. On this tree, 12 of the 66 splits sit inside a
+clade other than the subtree they were found in. `node_14005`, all of
+lineage 2, was accepted after `node_14331` and turned out to contain it, and
+`node_12297` contains `node_13032` and `node_13589`, both accepted before it.
 Sample membership is the only durable statement of containment, which is what
 `--clade_samples` is for. On this tree the log's own nesting happened to give
-the same sizes for all 68 splits, so `--clade_samples` changed nothing. That
+the same sizes for all 66 splits, so `--clade_samples` changed nothing. That
 is the luck of the search order, not something to rely on.
 
 Getting this wrong is not a rounding error and not conservative in any useful
 sense: using the search root's full size inflates the size, and so the null
 ceiling, for every *late-found* split — which penalises precisely the deep
-splits a low `--min_chi` was meant to reach. On the round 3 tree it
-understated `node_54711` by 2.4x (15.9x instead of 38.9x), and `node_49931`
-and `node_44527` by 2.0x, which drops both from tier A to B. It moved five
-splits in all, three of them down and two up: the null ceiling is not
-monotonic in size, so a wrong size can err in either direction. `searched_size()` models the carving and is validated
+splits a low `--min_chi` was meant to reach. On this tree it understated
+`node_44419` by 1.4x (3.7x instead of 5.3x), and `node_49823`, `node_4563`
+and `node_52706` by nearly as much. It moved three splits down a tier:
+`node_44419` and `node_4339` from A to B, and `node_7221` from B to C. It can
+also move a split up, since the null ceiling is not monotonic in size; on the
+earlier run with BCG it moved two up and three down. `searched_size()` models
+the carving and is validated
 against the exact table totals the cascade null records in its
 `mutations_below` and `mutations_above` columns: 21 of 21 agree exactly. If
 you change that function, that check is how you find out.
@@ -1688,12 +1691,11 @@ method](#testing-the-method)), three of the four splits that failed to come
 back were tier C, and the fourth was lost to the `--min_mutations` floor,
 which the tiers do not measure.
 
-On the round 3 tree the 68 splits came out **35 tier A, 27 tier B and 6 tier
-C**, with correct sizing and wobble-tolerant support. The support correction
-matters most: exact node IDs alone give 13 tier A and 22 tier C. Search-root
-sizing gives 34 tier A, which looks close, but only because five splits move
-in opposite directions. Neither correction is a refinement of the other, so
-run both.
+On this tree the 66 splits came out **33 tier A, 28 tier B and 5 tier C**,
+with correct sizing and wobble-tolerant support. The support correction
+matters most: exact node IDs alone give 16 tier A and 22 tier C. Search-root
+sizing gives 31 tier A and 6 tier C. Neither correction is a refinement of
+the other, so run both.
 
 #### The placement wobble, and a trap
 
@@ -1703,16 +1705,16 @@ node IDs understates support, sometimes drastically. Given
 within `--neighbourhood` was split, which is a fraction of replicates and
 cannot exceed 100%.
 
-How much this matters: `node_14377`, the Beijing clade, has a margin of 315x
-yet appears under its own ID in only 52% of replicates. Allowing +-10 in node
+How much this matters: `node_14331`, the Beijing clade, has a margin of 409x
+yet appears under its own ID in only 49% of replicates. Allowing +-10 in node
 number takes it to 100%. Half the replicates were splitting the same clade
 one node away, and on exact IDs alone it would have been filed as a
 large-margin, low-support split -- the artifact pattern -- when it is
 nothing of the kind.
 
 Do not get there by summing the per-node counts from the aggregate file. That
-double-counts any replicate which split two nearby nodes, and on the round 3
-tree those sums ran to 192% for `node_14377` and 152% for `node_36360` —
+double-counts any replicate which split two nearby nodes, and on this tree
+those sums ran to 188% for `node_14331` and 138% for `node_36254` —
 which does demonstrate the wobble is real, but is an upper bound and not a
 support value. The aggregate `uniq -c` file is enough for exact support only;
 the per-replicate `bootstrap_by_replicate.tsv` made at the top of this step is
@@ -1723,28 +1725,32 @@ topological adjacency, not the same thing — usher assigns IDs in traversal
 order at read time, so neighbours are usually close but need not be. It can
 err either way. It can credit a split with a neighbour that is really a
 different clade, so read it as an upper estimate, and treat exact support as
-the floor. And it can miss a wobble that lands farther away. `node_4609` is
-missing from 40 of the 100 replicates, and in 19 of those the split went to
-`node_4691` or `node_4693` instead: 82 to 84 node numbers away, outside the
-window, but both inside `node_4609`'s clade (all 300 and all 240 of their
-samples). Its 60% is an underestimate.
+the floor. And it can miss a wobble that lands farther away. `node_4563`,
+lineage 5, is missing from 41 of the 100 replicates, and in 20 of those the
+split went to `node_4644`, `node_4645` or `node_4647` instead: 81 to 84 node
+numbers away, outside the window, but all inside `node_4563`'s clade (all
+376, 300 and 240 of their samples). Its 59% is an underestimate.
 
 So a split with low exact support and *no* neighbour picking up the signal
-is not necessarily a site-driven artifact. `node_3594`, La3, has 69% on both
+is not necessarily a site-driven artifact. `node_3548`, La3, has 69% on both
 measures, and in none of the 31 replicates that lack it was any node within
-300 numbers of it split instead, except `node_3821` (lineage 6, a different
-clade). It is not the `--min_mutations` floor either: its weighted total
-across the replicates that found it stayed between 12,079 and 12,687,
-against a floor of 10,000. So La3, a distinct species, is genuinely missing
+300 numbers of it split instead, except `node_3775` and `node_3777` inside it
+(lineage 6, a different clade). It is not the `--min_mutations` floor either:
+its weighted total across the replicates that found it stayed between 12,105
+and 12,561, against a floor of 10,000. So La3, a distinct species, is genuinely missing
 from about a third of the position resamples. Low support without wobble
 says the split rests on fewer positions than its margin suggests. It is
 worth a look, not a verdict.
 
-The 6 splits in tier C have neighbourhood support of 41% to 69% on margins of
-2.4x to 4.2x, so they are weak on both axes rather than rescued or condemned
-by either. Two of them, `node_69997` and `node_56835`, are the two that step
-8's `split_drivers.py` flagged for weak support. Unlike round 2's tier C, they
-do not cluster in node number.
+The 5 splits in tier C have neighbourhood support of 48% to 68% on margins of
+2.1x to 4.4x, so they are weak on both axes rather than rescued or condemned
+by either. One of them, `node_69899`, is the split step 8's
+`split_drivers.py` flagged for weak support. All five lie inside
+`node_54601`, a lineage 4 clade of about 41,000 samples: three are its
+direct children, and `node_69899` and `node_56725` are one level further
+down. So the weak end of the search is one region of lineage 4, subdivided
+more finely than the data support, rather than marginal splits scattered
+across the tree.
 
 Note what this step does *not* establish. Both measures ask whether a split
 is statistically robust, not whether it is biology. A shared alignment
@@ -2410,7 +2416,7 @@ split_confidence.py --splits_log splits.log --spectra spectra.tsv \
     --null null_sites_cascade.tsv \
     --bootstrap_replicates bootstrap_by_replicate.tsv \
     --clade_samples split_clade_samples.tsv \
-    --output split_confidence.tsv
+    --output split_confidence.tsv > split_confidence.txt
 ```
 
 Inputs:
@@ -2450,8 +2456,10 @@ Options:
 
 Output columns: `node`, `search_root`, `clade_parent`, `chi2`,
 `tested_in_mutations`, `null_ceiling`, `null_replicates`, `margin`,
-`support_exact`, `support_neighbourhood`, `tier`. `--selftest` runs the
-self-tests and exits.
+`support_exact`, `support_neighbourhood`, `tier`. With `--output`, a short
+summary (tier counts, the weakest margin, and any warnings) goes to stdout;
+without it, the table goes to stdout and the summary to stderr. `--selftest`
+runs the self-tests and exits.
 
 ### `split_composition.py`
 
