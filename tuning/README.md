@@ -263,8 +263,8 @@ times too many. To size a prune exactly, re-profile and subtract. The prune
 is still worth making: it makes every statement about the clade true and
 removes a caveat from every later claim.
 
-The worked numbers in steps 3 to 7 come from the tree pruned this way. Those
-in steps 8 to 11 come from an earlier run with BCG still in the tree.
+The worked numbers in steps 3 to 8 come from the tree pruned this way. Those
+in steps 9 to 11 come from an earlier run with BCG still in the tree.
 
 #### Check what it removed, by clade
 
@@ -934,8 +934,8 @@ against a tree-wide 22: that is a divergence outlier, not a clade, and
 `--min_mutations 2500` would let it be scored as a "split". Take 10,000. It
 still leaves 777 candidates, far more than any real analysis needs, clears the
 folded floor 30 times over, and puts a 130-tip minimum under every candidate.
-Nothing worth finding is near the boundary: on the earlier run (step 8) the
-strongest split scored 20,568 on an 11,468-tip clade.
+The strongest split (step 8) scored 17,809.5 at `node_4965`, with 585,749
+mutations below it.
 
 *`--max_branch_length`.* Branch counts run median 4, p90 43, p99 102,
 p99.9 171, max 832, and the cap table reads:
@@ -1246,20 +1246,26 @@ only the replicates already started. The ordinary search is deterministic, so
 a separate run without `--bootstrap_splits` would find the same splits and
 buy nothing. Step 10 likewise reads only the lines above the marker.
 
-*Worked example (hypothetical — this run has not been done).* Suppose the
-lines above the marker record each accepted split's chi-squared as 17827,
-4100, 1900, 640, 310, 120, 60, 33. The run is still finding splits just above
-the threshold, so the curve has not bent yet — either raise `--min_chi` and
-keep the splits that clear the higher bar, or keep the rest and label them
-marginal. A run that instead stopped at 17827, 4100, 1900 with nothing under
-1000 has found its own ceiling, and the threshold is not what is limiting it.
+A run that stops with nothing near the threshold, say 17,809, 4,100 and
+1,900 and nothing under 1,000, has found its own ceiling, and the threshold
+is not what is limiting it. A run still finding splits just above the
+threshold has not bent, and the threshold is deciding what it finds.
+
+*Worked example.* The lines above the marker record 66 accepted splits, from
+17,809.5 at `node_4965` down to 31.0 at `node_56725`. Seven scored over
+1,000, but 36 scored under 100, 12 under 50 and 5 under 40, so this run has
+not saturated: it is still finding splits at the bar. That is expected here,
+and it does not call for a change. 30 is already the lowest value that clears
+the whole-tree null, so it cannot go lower, and raising it would discard
+small-subtree splits that clear their own, lower ceiling. Step 10 rates those
+near-threshold splits against the null for their own size.
 
 One `--min_chi` governs every split, but the chance ceiling depends on
-subtree size: 32 for the whole tree and 13 to 16 below about 1M (step 7). So
-any single value is a compromise. Set from the root (65), it is too strict
-for every split but the first few. Set from deep subtrees (30), it is lenient
-at the root, but the splits found there clear 30 by orders of magnitude, and
-step 10 checks each against its own size anyway. Whatever the value, a run
+subtree size: 29.3 at most for the whole tree, and about 15 for subtrees
+under 700k (step 7). So any single value is a compromise. Set from the root
+with a 2x margin (53), it is too strict for most splits. Set at 30, it is
+lenient at the root, but the splits found there clear 30 by orders of
+magnitude, and step 10 checks each against its own size anyway. Whatever the value, a run
 whose last split sits a fraction above it has not saturated. It has hit the
 bar, and splits below it are going unexamined. `null_by_size.py --min_chi`
 in step 7 lists which ones.
@@ -1359,27 +1365,29 @@ on several unrelated branches. The last is the strongest, because a single
 branch cannot separate a mechanism from everything else that defines its
 lineage.
 
-*Worked example.* The round 3 search accepted 68 splits below the root. 63
-were labelled `interpret`. Three were one class, all driven by C>A|G>T:
-`node_7984` (83% of its chi-squared), `node_76478` (85%) and `node_72955`
-(80%). Two had weak support: `node_69997` (48%) and `node_56835` (41%). No
-split hung on one site. The largest loss from removing one was 18%
-(`node_21060`, position 2,544,938), so the mask had done its job. The script
+*Worked example.* The search accepted 66 splits below the root. 61 were
+labelled `interpret`. Four were one class: three driven by C>A|G>T,
+`node_7938` (83% of its chi-squared), `node_76364` (85%) and `node_72843`
+(81%), and one by T>G|A>C, `node_47761` (82%). One had weak support:
+`node_69899` (48%). No split hung on one site. The largest loss from removing
+one was 9% (`node_61730`, position 2,366,891), so the mask had done its job.
+Before step 7's two `lppN` sites were masked, the largest was 18%, at one of
+them (2,544,938). The script
 rebuilds each split's mutation total from the tree, and every total matched
 `spectra.tsv`. That is the check that the tree and `--max_branch_length` are
 the ones the search used. So the screen removes the obvious cases, and step
 10 ranks the rest.
 
 Three `interpret` splits had branches longer than 250 and were skipped:
-`node_5011` (413 mutations), `node_3594` (833) and `node_4609` (591). The
-other 60 were annotated, and `branch_hits.py` reported:
+`node_4965` (413 mutations), `node_3548` (832) and `node_4563` (591). The
+other 58 were annotated, and `branch_hits.py` reported:
 
 ```
-  chance rate per mutation: 70,579 / 3,907,786 x 973/1,519 nonsynonymous coding mutations = 1.157%
+  chance rate per mutation: 77,356 / 3,904,767 x 929/1,451 nonsynonymous coding mutations = 1.268%
 
 ALL BRANCHES
-  60 branches, 1,718 mutations, 21 nonsynonymous hits, 19.9 expected, P(>=21) = 0.43
-  nonsynonymous share: 21 of 40 hits (52%), against 973 of 1,519 (64%) coding mutations on these branches
+  58 branches, 1,643 mutations, 20 nonsynonymous hits, 20.8 expected, P(>=20) = 0.602
+  nonsynonymous share: 20 of 39 hits (51%), against 929 of 1,451 (64%) coding mutations on these branches
 ```
 
 Nothing here beats chance. Repair-gene hits change an amino acid *less* often
@@ -1388,18 +1396,18 @@ number what the genes' length predicts. The best single results:
 
 | result | observed | expected | P | by chance |
 |---|---|---|---|---|
-| `polA` on `node_14051` | T186P, R188G | 0.047 | 0.0011 | 0.67 of 3,060 branch-gene pairs |
-| `node_13078` (`polA` G795D) and `node_14377` (`mutT4` R48G) | 1 hit in 4 mutations | 0.05 | 0.045 | 1.19 of 60 branches |
-| `recA` (`node_3821`, `node_12343`) | 2 branches | 0.66 | 0.14 | 2.88 of 51 genes |
+| `polA` on `node_14005` | T186P, R188G | 0.047 | 0.0011 | 0.78 of 3,422 branch-gene pairs |
+| `node_13032` (`polA` G795D) and `node_14331` (`mutT4` R48G) | 1 hit in 4 mutations | 0.05 | 0.049 | 1.32 of 58 branches |
+| `recA` (`node_3775`, `node_12297`) | 2 branches | 0.63 | 0.13 | 2.97 of 59 genes |
 
 The `polA` pair is the only result below 1, and only just. Its two changes
 are 6 bp apart, which is also what a single multi-base event or a local
 misalignment looks like, so check it in the reads before anything else.
-`node_14377`'s `mutT4` R48G is one hit on a four-mutation branch, which
+`node_14331`'s `mutT4` R48G is one hit on a four-mutation branch, which
 chance produces about once in a run of this size. What makes it notable is
 outside knowledge the script cannot use, and its lineage explains it (see
 below). Counting synonymous hits too (`--count all`) gives a different and
-misleading picture: `ligC` then looks recurrent on three branches (0.25 by
+misleading picture: `ligC` then looks recurrent on three branches (0.24 by
 chance), but all three of its hits are synonymous.
 
 **Check each split's lineage before reading a mechanism into it.** If the tree
@@ -1424,18 +1432,24 @@ on the sorted sample files):
 
 | split | clades | samples | `Number_Tips` | hit on its branch |
 |---|---|---|---|---|
-| `node_14051` | all of lineage 2: 2.1, 2.2, 2.2.1, 2.2.2 | 38,960 | 2,586 | `polA` T186P, R188G |
-| `node_14377`, inside `node_14051` | lineage 2.2.1 (Beijing) | 35,044 | 1,966 | `mutT4` R48G |
-| `node_12343` | lineage 1.2.2 | 2,132 | 444 | `recA` R540Q |
-| `node_13078`, inside `node_12343` | lineage 1.2.2.2 | 565 | 565 | `polA` G795D |
-| `node_3821` | lineage 6, with 27 lineage 9 samples | 993 | 209 | `uvrA`, `recA`, `nudC`, `mutY`: one each in 192 mutations |
-| `node_6` | the animal-adapted lineages: La1 (77%), La1.2.BCG, La2, La3 | 8,729 | 3,178 | `recF` L158V |
-| `node_3594`, inside `node_6` | La3 | 269 | 269 | none counted: its 833-mutation branch is longer than `--max_branch_length` |
+| `node_14005` | all of lineage 2: 2.1, 2.2, 2.2.1, 2.2.2 | 38,960 | 2,586 | `polA` T186P, R188G |
+| `node_14331`, inside `node_14005` | lineage 2.2.1 (Beijing) | 35,044 | 1,966 | `mutT4` R48G |
+| `node_12297` | lineage 1.2.2 | 2,132 | 444 | `recA` R540Q |
+| `node_13032`, inside `node_12297` | lineage 1.2.2.2 | 565 | 565 | `polA` G795D |
+| `node_3775` | lineage 6, with 27 lineage 9 samples | 993 | 209 | `uvrA`, `recA`, `nudC`, `mutY`: one each in 192 mutations |
+| `node_6` | the animal-adapted lineages: La1 (95%), La2, La3 | 8,393 | 768 | `recF` L158V |
+| `node_285`, inside `node_6` | La1 only (La1.8.1 84%) | 7,356 | 2,987 | none |
+| `node_3548`, inside `node_6` | La3 | 269 | 269 | none counted: its 832-mutation branch is longer than `--max_branch_length` |
+
+These are the same clades as on the earlier run with BCG still in the tree,
+with the same sample counts, under new node IDs. The exception is `node_6`,
+which lost its 336 BCG samples to step 2's prune. Its row has only 768 tips
+because `node_285`, nested inside it, carves most of La1 out of it.
 
 Every one of those repair-gene hits is lineage-defining, so in every case
 the lineage is the explanation to beat.
 
-The repair-gene reading collapses for `node_14377`. One of only four
+The repair-gene reading collapses for `node_14331`. One of only four
 mutations on its defining branch is `mutT4` R48G, and it is lineage 2.2.1,
 so that is the documented Beijing `mutT4` polymorphism. The variant and the
 spectrum are both properties of lineage 2.2.1, and a single branch cannot
@@ -1456,23 +1470,22 @@ indel nearby. And if the pair is real, it is fixed across lineage 2 along
 with everything else that defines the lineage, so this branch cannot
 separate it from lineage either.
 
-`node_3821` is *M. africanum* lineage 6, with lineage 9 inside it. A
+`node_3775` is *M. africanum* lineage 6, with lineage 9 inside it. A
 192-mutation defining branch is what a deeply diverged lineage looks like,
-and its four protein-changing hits against 2.2 expected are well within
+and its four protein-changing hits against 2.4 expected are well within
 chance. Its spectrum is the lineage's spectrum.
 
 The quality reading collapses too, more thoroughly than step 9 could show.
 The clade that broke the divergence correlation — high mutations per tip, but
-a spectrum matching its low-divergence parent — is `node_3594`, and all 269
-of its samples are La3, a distinct animal-adapted species. Its long branches are sparse sampling of a diverged
+a spectrum matching its low-divergence parent — is `node_3548` (`node_3594`
+in step 9's earlier run), and all 269 of its samples are La3, a distinct animal-adapted species. Its long branches are sparse sampling of a diverged
 species, and its spectrum matches its parent because it belongs to the
 animal-adapted group. The anomaly has a phylogenetic explanation, which is
 the strongest single sign that these spectra track lineage.
 
-One caveat on `node_6`: 336 of its 8,729 samples are `La1.2.BCG`, a
-laboratory-passaged vaccine strain. That is 3.9%, so it will not dominate,
-but serial passage is not natural evolution and it is worth excluding before
-making a quantitative claim about the animal-adapted spectrum.
+`node_6` has no BCG in it: step 2 pruned the 336 `La1.2.BCG` samples, a
+laboratory-passaged vaccine strain whose serial passage is not natural
+evolution.
 
 Extract the split's samples before doing anything else to the tree. Node IDs
 are assigned at read time, so the first mask, prune or collapse renumbers
@@ -1481,7 +1494,7 @@ are not stable across trees" above). The sample set is the only durable
 handle:
 
 ```
-matUtils extract -i tree.pruned.masked.pb.gz -I node_14051 -u split_samples.txt
+matUtils extract -i tree.pruned.masked.pb.gz -I node_14005 -u split_samples.txt
 ```
 
 `-I` selects by internal node ID, which is what `splits.log` reports. `-c` is
