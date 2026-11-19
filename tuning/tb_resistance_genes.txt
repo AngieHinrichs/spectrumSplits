@@ -17,21 +17,23 @@
 # Cross-check with TB-Profiler's database (which tracks the catalogue) before
 # relying on the list.
 #
-# NAMES ARE ANNOTATION-DEPENDENT, so every locus is listed twice where it can
-# be: once by the name people use, once by its locus tag.  A name can report
-# NOT FOUND for three different reasons, and only the third is a mistake in
-# this file:
+# NAMES ARE ANNOTATION-DEPENDENT, so a locus is listed by locus tag as well
+# as by name where the name might not resolve.  Three cases:
 #
-#   - it is a gene_synonym rather than the Name (gidB for Rv3919c, mabA for
-#     fabG1).  annotate_sites.py searches synonyms, so these resolve.
-#   - the annotation does not carry it at all (mmpR5, fbiD in NC_000962.3).
-#     The locus tag entry covers the locus; the name stays because it is what
-#     the WHO Catalogue calls it.
+#   - the name is a gene_synonym rather than the Name (gidB for Rv3919c,
+#     mabA for fabG1).  annotate_sites.py searches synonyms, so these
+#     resolve and are listed by name.
+#   - the annotation does not carry the name at all (mmpR5 and fbiD in
+#     NC_000962.3).  These are listed by locus tag, with the name the WHO
+#     Catalogue uses as a comment on the same line, so they never report
+#     NOT FOUND.
 #   - the name is wrong: there is no clpC, only clpC1 and clpC2, and no ddl,
 #     only ddlA.  Those are corrected rather than paired.
 #
-# So read a NOT FOUND line rather than ignoring it: check whether another
-# entry covers the locus before assuming it was masked.
+# Against NC_000962.3 every entry resolves.  So a NOT FOUND line means a
+# different annotation or a mistake here, and is worth reading rather than
+# ignoring: check whether another entry covers the locus before assuming it
+# was masked.
 # ---------------------------------------------------------------------------
 #
 # Masking whole loci rather than individual sites is the point of this list.
@@ -105,12 +107,8 @@ atpE
 pepQ
 mmpL5
 mmpS5
-Rv0678
-mmpR5
+Rv0678    # mmpR5, the WHO Catalogue's name; NC_000962.3 has no gene name for it
 Rv1979c
-# mmpR5 is the WHO Catalogue's name for Rv0678 but is absent from the
-# NC_000962.3 annotation, so it reports NOT FOUND; the locus tag above covers
-# the locus.  Same for fbiD / Rv2983 below.
 
 # --- linezolid --------------------------------------------------------------
 rplC
@@ -122,8 +120,7 @@ fgd1
 fbiA
 fbiB
 fbiC
-fbiD
-Rv2983
+Rv2983    # fbiD, the WHO Catalogue's name; NC_000962.3 has no gene name for it
 
 # --- para-aminosalicylic acid ----------------------------------------------
 thyA
