@@ -263,8 +263,9 @@ times too many. To size a prune exactly, re-profile and subtract. The prune
 is still worth making: it makes every statement about the clade true and
 removes a caveat from every later claim.
 
-The worked numbers in steps 3 to 10 come from the tree pruned this way.
-Those in step 11 come from an earlier run with BCG still in the tree.
+The worked numbers in steps 3 to 11 come from the tree pruned this way.
+[Testing the method](#testing-the-method) describes earlier runs, with BCG
+still in the tree.
 
 #### Check what it removed, by clade
 
@@ -1778,9 +1779,9 @@ For each split it counts the clades of the samples the split's *own*
 spectrum covers: its samples minus those of every split nested inside it,
 since `spectrumSplits.py` carves nested splits out of their parent's row.
 `matUtils extract -I` lists every sample below a node, so counting a parent
-that way borrows its children's clades: `node_14051`, all of lineage 2,
+that way borrows its children's clades: `node_14005`, all of lineage 2,
 would report 36,260 lineage 2.2.1 (Beijing) samples, but 35,044 of them
-belong to `node_14377`, nested inside it.
+belong to `node_14331`, nested inside it.
 
 A split is flagged **mixed** when 20% or more of it lies outside the top
 clade's own lineage (`--mixed_share`), judged by the dotted names, so a
@@ -1789,18 +1790,26 @@ often is mixed: what remains after its sub-splits are carved out is several
 sister sublineages. That is not a defect, but it says the spectrum is an
 average over them, and a claim about one sublineage cannot rest on it.
 
-*Worked example.* Of the 62 tier A and B splits on the round 3 tree, 11 are
-mixed, mostly deep ones:
+*Worked example.* Of the 61 tier A and B splits, 11 are mixed, mostly deep
+ones:
 
 ```
   node        tier  samples  residual  clades  other  top 3 clades                                                flags
-  node_6      A     8,729    3,178     14      42%    La1.8.1 57%, La1.7.1 21%, La2 6%                            mixed
-  node_57318  A     12,388   8,005     5       67%    lineage4.3.3 28%, lineage4.3.4.2 26%, lineage4.3.4.2.1 22%  mixed
+  node_4965   A     11,468   548       5       38%    lineage1.1.3.3 31%, lineage1.1.3 31%, lineage1.2.1.1 20%    mixed
+  node_6      A     8,393    768       5       41%    La1.2 58%, La2 24%, La1.3 16%                               mixed
+  node_57208  A     12,388   8,005     5       67%    lineage4.3.3 28%, lineage4.3.4.2 26%, lineage4.3.4.2.1 22%  mixed
 ```
 
-`node_57318` is what is left of lineage 4.3 once its sublineage splits are
-carved out, and `node_6`, the animal-adapted group, is La1.8.1, La1.7.1, La2
-and others. Their spectra describe those groups, not any one member.
+`node_57208` is what is left of lineage 4.3 once its sublineage splits are
+carved out. `node_4965`, the strongest split on the tree, is lineage 1, and
+its own row is the 548 samples its many sub-splits leave behind, from both
+1.1 and 1.2. And `node_6`, the animal-adapted group, is La1.2, La2 and La1.3
+once `node_285` (La1.8.1, La1.7.1 and other La1) and `node_3548` (La3) are
+carved out. Their spectra describe those groups, not any one member.
+
+Ten of the 11 are the same clades as on the earlier run with BCG still in
+the tree. The eleventh, `node_285`, is new to this run. One clade dropped
+out: `node_44419` (lineage 4.1) was mixed then and is 14% other now.
 
 To look at one split in detail, list all its clades from the same files
 (this counts every sample below the node, nested splits included):
