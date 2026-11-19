@@ -59,6 +59,7 @@ import argparse
 import bisect
 import gzip
 import io
+import os
 import re
 import sys
 from collections import defaultdict
@@ -84,8 +85,11 @@ CODON_TABLE = {
 COMPLEMENT = {"A": "T", "C": "G", "G": "C", "T": "A", "N": "N"}
 
 # Feature types we care about, in priority order when a position falls in
-# several overlapping features.
-TYPE_PRIORITY = ["CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene"]
+# several overlapping features.  NCBI GFF3 types a locus with no CDS as
+# "pseudogene" (GenBank instead marks a gene /pseudo, which "gene" covers);
+# leaving it out would report a site inside one as intergenic.
+TYPE_PRIORITY = ["CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene",
+                 "pseudogene"]
 
 ### Feature types that describe the sequence itself rather than anything on it.
 ### NCBI GFF3 opens each record with a "region" line spanning the whole
@@ -625,7 +629,12 @@ def mask_gap(intervals, starts, pos):
 
 ### Feature types that can be masked.  A "gene" feature and its CDS cover
 ### nearly the same interval, so matching both and merging is harmless.
-MASKABLE_TYPES = ("CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene")
+### "pseudogene" is how NCBI types a named locus with no CDS (esxM, PE21 and
+### PPE47 in NC_000962.3); without it those names report NOT FOUND although
+### the annotation carries them, and name patterns such as '^(PE|PPE)' skip
+### them.
+MASKABLE_TYPES = ("CDS", "rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA", "gene",
+                  "pseudogene")
 
 
 def features_matching(features, pattern, on_product=False):
@@ -875,6 +884,31 @@ def selftest():
         failures += 1
         print(f"FAIL two names for one feature reached {len(reached)} features",
               file=sys.stderr)
+    ### A pseudogene is a named locus too: kept by the GFF3 parser, and
+    ### reachable by name, locus tag and pattern.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".gff3", delete=False) as tmp:
+        tmp.write("##gff-version 3\n"
+                  "t\tRefSeq\tpseudogene\t500\t600\t.\t+\t.\t"
+                  "ID=gene-Rv1792;Name=esxM;gene=esxM;locus_tag=Rv1792;"
+                  "pseudo=true\n")
+    parsed = parse_gff3(tmp.name)
+    os.unlink(tmp.name)
+    if [(f.ftype, f.gene, f.locus_tag) for f in parsed] != \
+            [("pseudogene", "esxM", "Rv1792")]:
+        failures += 1
+        print(f"FAIL the GFF3 parser should keep a pseudogene: {parsed}",
+              file=sys.stderr)
+    pseudo = Feature("t", "pseudogene", 500, 600, 1, "esxM", "Rv1792", None)
+    pool3 = [pseudo, plain]
+    matched, missing = resolve_region_names(pool3, ["esxM", "Rv1792"])
+    if missing or matched.get("esxM") != [pseudo]:
+        failures += 1
+        print(f"FAIL a pseudogene should resolve by name: missing={missing}",
+              file=sys.stderr)
+    if features_matching(pool3, "^esx") != [pseudo]:
+        failures += 1
+        print("FAIL a name pattern should reach a pseudogene", file=sys.stderr)
     if failures == 0:
         print("ok: gene synonyms and locus tags resolve to the same feature")
 

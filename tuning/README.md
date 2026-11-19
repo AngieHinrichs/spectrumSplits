@@ -2314,9 +2314,11 @@ Mycobrowser or the NCBI H37Rv annotation.
 `tb_resistance_genes.txt`. Resistance loci recur because the same mutation is
 selected repeatedly — the variants are real. These loci recur because short
 reads cannot be placed unambiguously: paralogous families (PE/PPE, `esx`, the
-`Rv1318c`-`Rv1320c` adenylate cyclases, `lldD1`/`lldD2`), repeats (IS6110, the
-13E12 family) and prophages (phiRv1, phiRv2). There the variants are largely
-not real at all.
+`Rv1318c`-`Rv1320c` adenylate cyclases, `lldD2`), repeats (the 13E12 family,
+and transposases by product) and prophages (phiRv1, phiRv2). There the
+variants are largely not real at all. NC_000962.3 annotates its insertion
+sequences, IS6110 among them, as mobile elements with no gene, so nothing in
+the list reaches them; the list explains why that left no hole on this tree.
 
 Keeping the two lists apart keeps each auditable, and they want different
 widening, so [step 3](#3-build-and-apply-a-region-mask) resolves them in two

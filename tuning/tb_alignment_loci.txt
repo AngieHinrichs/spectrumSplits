@@ -86,7 +86,9 @@ esxO
 esxP
 esxV
 esxW
-# esxM is NOT FOUND in NC_000962.3 -- the esx letters are not contiguous there.
+# esxM is Rv1792, which NC_000962.3 types as a pseudogene.  annotate_sites.py
+# resolves pseudogene features by name and pattern, so it is masked like the
+# others; '^esx' also reaches it.
 # Harmless: --mask_pattern '^esx' reaches every member that does exist, which is
 # why the pattern is the primary mechanism and these entries are only a backstop.
 
@@ -104,17 +106,16 @@ Rv3645
 # lldD1 (Rv0694) and lldD2 (Rv1872c).  lldD2 carried three recurrent sites,
 # one of them synonymous for all three alternates.
 #
-# lldD1 is NOT FOUND in NC_000962.3: that annotation carries lldD2 but no
-# lldD1, so the paralog it cross-maps with is unmasked.  Find what covers it
-# and add the locus tag:
-#
-#   awk -F'\t' '$3=="CDS"' NC_000962.3.gff | grep -i 'lactate dehydrogenase'
+# lldD1 has no gene name in NC_000962.3; it is there only as Rv0694.  It is
+# deliberately NOT listed: what the cross-mapping produced on the tree above
+# was recurrent sites in lldD2, and Rv0694 carried mutations at 0.88x the
+# genome-wide rate after round 3.  Mask it only if it shows an excess on your
+# tree.
 #
 # Rv1873 is deliberately NOT listed.  The recurrent site 5 bp upstream of it
 # sits in the 22 bp divergent promoter it shares with lldD2, so masking lldD2
 # with --mask_pad 100 already covers it; listing Rv1873 would mask a whole
 # further gene for nothing.
-lldD1
 lldD2
 
 # --- prophages ---------------------------------------------------------------
@@ -177,9 +178,19 @@ Rv2659c
 #
 # ADD maturase to that pattern.  Rv0071 is annotated "maturase", carried 224
 # events after the first full mask, and no name or product pattern above
-# reaches it.  The two maturase locus tags this file guessed (Rv1764, Rv2105)
-# are NOT FOUND in NC_000962.3, so the product is the only reliable route:
+# reaches it, so the product is the only reliable route:
 #     --mask_product_pattern '(?i)(transposase|integrase|insertion element|^maturase$)'
+#
+# The insertion sequences themselves are a different case.  NC_000962.3
+# annotates each one -- all 16 IS6110 copies, IS1081 and the rest -- as a
+# mobile_genetic_element with no CDS, no locus tag and no product, so neither
+# a name nor this pattern reaches them.  The older H37Rv locus tags for the
+# IS6110 transposase ORFs (Rv1764, Rv2105, Rv2167c, Rv2814c, Rv3185, each
+# sitting in the gap in Rv numbering at an IS6110 copy) are gone from this
+# annotation, which is why this file no longer lists them.  On the tree
+# above that leaves no hole: it carries no mutations at all in any IS6110
+# copy, and the other unmasked insertion sequences sit at no more than 1.3x
+# the genome-wide rate.  Check the same on your own tree before relying on it.
 #
 # --mask_pattern matches gene names and locus tags, NOT products, so use
 # --mask_product_pattern for these.  That is the point of it: a transposase
@@ -201,30 +212,12 @@ Rv2659c
 Rv2646
 
 # --- 13E12 repeat family -----------------------------------------------------
-# Rv1754c, Rv2167c, Rv2814c, Rv3185, Rv3344c and relatives: a repeated family
-# often confused with PE/PPE in mapping.
-#
-# In NC_000962.3 only Rv1754c and Rv3344c resolve.  Rv2167c, Rv2814c and
-# Rv3185 are NOT FOUND -- a locus tag that is absent is more suspect than an
-# absent gene name, because it means either that annotation dropped the gene
-# or that the tag here is wrong.  Check before replacing them:
-#
-#   awk -F'\t' '$3=="CDS"' NC_000962.3.gff \
-#     | grep -E 'locus_tag=Rv(216[5-9]|281[2-6]|318[3-7])c?'
-#
-# The 13E12 members that do resolve are also reachable by product, so run with
-# --mask_product_pattern before concluding these three leave a hole.
+# Rv1754c, Rv3344c and relatives: a repeated family often confused with PE/PPE
+# in mapping.  This list once also gave Rv2167c, Rv2814c and Rv3185 here; they
+# are IS6110 transposase ORFs (see the insertion sequence notes above), not
+# 13E12 members.
 Rv1754c
-Rv2167c
-Rv2814c
-Rv3185
 Rv3344c
-
-# --- maturase / mobile-element-adjacent --------------------------------------
-# Both are NOT FOUND in NC_000962.3.  Same caveat as the 13E12 tags above:
-# verify what occupies those coordinates rather than trusting these tags.
-Rv1764
-Rv2105
 
 # --- specific recurrent sites seen on a 129k-sample MTBC tree -----------------
 # Not members of a known repeat family, but each carried hundreds of events
