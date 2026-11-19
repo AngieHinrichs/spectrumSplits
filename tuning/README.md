@@ -165,7 +165,26 @@ marked hypothetical because that run has not been done.
 profile_tree.py --input_tree tree.pb.gz > profile_raw.txt
 ```
 
-Every decision below is read off this report, so keep it.
+Every decision below is read off this report, so keep it. The first one is
+the threshold for step 2's divergence prune.
+
+#### Choose the divergence-prune threshold
+
+Step 2 prunes any subtree whose mutations per tip reach a threshold. Choose
+it from the MUTATIONS:TIPS RATIO section of this report rather than
+accepting the prune script's automatic one, which is mean + 2 SD. The report
+gives both the distribution and how many nodes that automatic threshold
+would catch.
+
+*Worked example.* The report shows mean 18.6, median 7, p90 54, p99 114,
+p99.9 192, max 909, and an automatic threshold of 71.7 with 10,930 nodes at
+or above it. Taking it would prune 10,930 nodes — 5% of the tree — on a
+species where a high ratio is often real divergence. 250, well above p99.9,
+aims only at the extreme tail.
+
+Read the distribution before choosing. A median of 7 with a p90 of 54 is not a
+tight distribution with outliers, it is a broad one, and mean + 2 SD on a broad
+distribution cuts into the bulk.
 
 ### 2. Prune samples with implausible divergence
 
@@ -174,22 +193,14 @@ qc/prune_mutation_sample_ratio.py --input_tree tree.pb.gz \
     --threshold 250 --output_tree tree.pruned.pb.gz > pruned_report.txt
 ```
 
-Choose `--threshold` from the MUTATIONS:TIPS section rather than accepting the
-auto-threshold, and keep stdout: the script prints one line per pruned node
-with the tips it took, which is the only record of what was removed. Note that
-it prunes the whole subtree at the first node that crosses the threshold and
-does not recurse into it, so one crossing can remove several samples.
+`--threshold` is the value chosen in step 1. Keep stdout: the script prints
+one line per pruned node with the tips it took, which is the only record of
+what was removed. Note that it prunes the whole subtree at the first node
+that crosses the threshold and does not recurse into it, so one crossing can
+remove several samples.
 
-*Worked example.* The report shows mean 18.6, median 7, p90 54, p99 114,
-p99.9 192, max 909, and an auto-threshold (mean + 2 SD) of 71.7 with 10,930
-nodes at or above it. Taking the auto-threshold would prune 10,930 nodes — 5%
-of the tree — on a species where a high ratio is often real divergence. A
-threshold of 250, well above p99.9, removed only 60 samples and still cut the
-worst terminal branch from 909 mutations to 234.
-
-Read the distribution before choosing. A median of 7 with a p90 of 54 is not a
-tight distribution with outliers, it is a broad one, and mean + 2 SD on a broad
-distribution cuts into the bulk.
+*Worked example.* At 250 it removed only 60 samples and still cut the worst
+terminal branch from 909 mutations to 234.
 
 #### Prune known laboratory strains here too
 
