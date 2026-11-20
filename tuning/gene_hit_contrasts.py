@@ -84,19 +84,37 @@ Controls built in.  Synonymous hits in the same genes are tested the same way
 by default.  They should show nothing.  If they do, the comparison itself is
 biased, and the nonsynonymous result cannot be read either.
 
+One run, three readings.  The list is tested with every hit counted and
+(--top_branch both, the default) with internal hits only, where per-genome
+error cannot reach; and, with --control, a length-matched control list from
+control_genes.py is tested with every hit counted, as the baseline the
+list's excess is read against.  The tree is read once.  Each reading starts
+its random draws from --seed, so it gives exactly what a run of it alone
+would.  The report on stdout then reads the summaries together: is the
+synonymous control clean, do the nonsynonymous hits exceed chance and the
+control, which genes clear the bar (0.05 over the genes tested), and which
+are leads below it.
+
+Outputs, named from --prefix (default hit): PREFIX_summary.tsv and
+PREFIX_events.tsv, the same with _internal and _control, and with
+--null_draws_genes PREFIX_null_draws.tsv (and _internal), every permutation's
+class shifts for those genes, for plot_gene_hits.py --prefix.
+
 What it cannot see.  The tree holds SNVs only, so frameshifts, deletions and
 IS6110 insertions -- the commonest ways a gene is actually lost -- are
 invisible here.  Promoter changes are not tested.  And the ALL row pools
 genes whose mechanisms differ: a gene that raises CT|GA and one that raises
 CA|GT cancel there.  ALL is a screen.  The evidence is in the per-gene rows.
 
-Trinucleotide context (--context).  The same events, comparators, draws and
-controls, counted in trinucleotide context classes instead of mutation
-classes, to ask where inside a class a shift falls.  With --fold, the 96
+Trinucleotide context (--context_genes).  For the genes named, in both
+readings, the same events, comparators and controls, counted in
+trinucleotide context classes instead of mutation classes, to ask where
+inside a class a shift falls.  The summary is PREFIX_summary_context.tsv
+(and _internal), and the report ends with each gene's shape p values.  With --fold, the 96
 pyrimidine-centred classes (6 classes x 16 flank pairs); without it, the 192
 forward-strand classes (12 types x 16), which keep the strands apart as an
-unfolded run does.  Needs numpy.  Every summary column of the same run
-without --context is still written, computed by summing the contexts of
+unfolded run does.  Needs numpy.  Every summary column of the class-level
+reading is still written, computed by summing the contexts of
 each class, plus:
 
   shape_p_<class>  does the class's shift fall on its 16 contexts in
@@ -106,36 +124,33 @@ each class, plus:
                    shift, scaled by the context's tree-wide proportion, and
                    the p is against the same permutation draws.  A small p
                    says the shift is concentrated in particular contexts;
-                   which ones is in --output_context.  "Proportional" uses the
+                   which ones is in PREFIX_context.tsv.  "Proportional" uses the
                    tree-wide context mix, so a comparator whose own mix
                    differs a little from the tree's adds a second-order term.
   shape_omnibus_p  the same, summed over the classes.
 
---output_context has one row per test and context: the context's share of
+PREFIX_context.tsv (and _internal) has one row per test and context: the context's share of
 its class tree-wide, its shift, the shift a proportional spread would give,
 the excess over that, and a two-sided permutation p for the shift itself.
 Contexts that cannot be called -- a masked or unknown flank, or an adjacent
 change on the same branch -- are left out of every count, so the class
-totals differ slightly from a run without --context, and the draws differ, so do not
+totals differ slightly from the class-level reading, and the draws differ, so do not
 expect its p values to match one digit for digit.
 
 Usage:
     gene_hit_contrasts.py --input_tree tree.pb.gz \\
         --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
-        --genes tb_repair_genes.txt --fold --max_branch_length 250 \\
-        --output_events hit_events.tsv --output_summary hit_summary.tsv
-
-    gene_hit_contrasts.py --input_tree tree.pb.gz \\
-        --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
-        --genes dnaE2.txt --fold --context --mask masked.bed \\
-        --max_branch_length 250 --output_context hit_context.tsv \\
-        --output_events hit_events_ctx.tsv --output_summary hit_summary_ctx.tsv
+        --genes tb_repair_genes.txt --control control_genes.txt \\
+        --fold --max_branch_length 250 --permutations 10000 \\
+        --null_draws_genes dnaE2 --context_genes dnaE2 --mask masked.bed \\
+        > hit_summary.txt
 
     gene_hit_contrasts.py --selftest
 """
 
 import argparse
 import bisect
+import csv
 import math
 import os
 import random
@@ -170,7 +185,7 @@ EFFECT_SETS = {
 }
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Test whether coding changes in candidate genes shift the "
                     "mutation spectrum below them, against sibling subtrees.")
@@ -194,10 +209,16 @@ def parse_args():
     p.add_argument("--max_branch_length", type=int, default=None,
                    help="Match the search: branches above this contribute no "
                         "mutations (they still count for topology)")
-    p.add_argument("--top_branch", choices=("include", "exclude"),
-                   default="include",
-                   help="Count each child's own branch (default; needed for "
-                        "terminal hits) or only what lies below it")
+    p.add_argument("--top_branch", choices=("both", "include", "exclude"),
+                   default="both",
+                   help="include: count each child's own branch (needed for "
+                        "terminal hits); exclude: only what lies below it, "
+                        "so only internal hits count; both (default): run "
+                        "each, the second as the internal-only reading")
+    p.add_argument("--control", type=str, default=None,
+                   help="A control gene list (control_genes.py --output), "
+                        "tested the same way with every hit counted, as the "
+                        "baseline the list's excess is read against")
     p.add_argument("--min_focal", type=int, default=1,
                    help="Minimum mutations in the hit child's counted set for "
                         "the event to be used; siblings below this are not "
@@ -207,25 +228,24 @@ def parse_args():
                         "event to be used (default 10)")
     p.add_argument("--permutations", type=int, default=1000)
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--output_events", type=str, default="hit_events.tsv")
-    p.add_argument("--output_summary", type=str, default="hit_summary.tsv")
-    p.add_argument("--null_draws", type=str, default=None,
-                   help="Write every permutation's class shifts for the "
-                        "--null_draws_genes to this TSV, e.g. for "
-                        "plot_gene_hits.py")
+    p.add_argument("--prefix", type=str, default="hit",
+                   help="Prefix of the output TSVs (default hit: "
+                        "hit_summary.tsv, hit_events.tsv, ...; see the "
+                        "module docstring)")
     p.add_argument("--null_draws_genes", type=str, default=None,
-                   help="Comma-separated genes (or ALL) whose permutation "
-                        "draws --null_draws writes")
-    p.add_argument("--context", action="store_true",
-                   help="Count trinucleotide context classes: 96 folded with "
+                   help="Comma-separated genes (or ALL) whose every "
+                        "permutation's class shifts are written to "
+                        "PREFIX_null_draws.tsv (and _internal), for "
+                        "plot_gene_hits.py --prefix")
+    p.add_argument("--context_genes", type=str, default=None,
+                   help="Comma-separated genes from --genes to test again in "
+                        "trinucleotide context classes: 96 folded with "
                         "--fold, 192 forward-strand without (needs numpy); "
                         "see the module docstring")
     p.add_argument("--mask", type=str, default=None,
-                   help="With --context: comma-separated BED files the tree "
-                        "was masked with; a mutation with a masked flank has "
-                        "an unknown context and is not counted")
-    p.add_argument("--output_context", type=str, default="hit_context.tsv",
-                   help="With --context: per-test, per-context shifts")
+                   help="With --context_genes: comma-separated BED files the "
+                        "tree was masked with; a mutation with a masked flank "
+                        "has an unknown context and is not counted")
     p.add_argument("--calibrate_context", type=int, default=0, metavar="N",
                    help="Instead of a test on a tree: simulate N small trees "
                         "per scenario and report how often the --context "
@@ -236,7 +256,7 @@ def parse_args():
     p.add_argument("--selftest", action="store_true",
                    help="Check subtree bookkeeping, codon effects and the "
                         "permutation null on synthetic trees, then exit")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 # --------------------------------------------------------------------------
@@ -886,29 +906,20 @@ def main():
 
     fold_map, fold_labels = folded_index()
     if args.fold:
-        ncat, cats = 6, fold_labels
+        cats = fold_labels
     else:
-        ncat, cats, fold_map = 12, MUT_TYPES, None
-    if args.context:
+        cats, fold_map = MUT_TYPES, None
+    ctx_genes = [g for g in (args.context_genes or "").split(",") if g]
+    if ctx_genes:
         try:
-            import numpy
+            import numpy  # noqa: F401
         except ImportError:
-            print("error: --context needs numpy", file=sys.stderr)
+            print("error: --context_genes needs numpy", file=sys.stderr)
             return 1
-        import trinucleotide as tn
-        sch = tn.scheme(args.fold)
-        ncat = sch.n
-        assert sch.class_labels == list(cats), (sch.class_labels, cats)
     elif args.mask:
-        print("note: --mask only matters with --context; ignoring it",
+        print("note: --mask only matters with --context_genes; ignoring it",
               file=sys.stderr)
-    ### Vectors have ncat entries; the summary reports len(cats) classes.
-    nsum = len(cats)
-
-    def summary_vec(v):
-        if not args.context:
-            return v
-        return [sum(v[16 * k:16 * k + 16]) for k in range(nsum)]
+    null_genes = set(g for g in (args.null_draws_genes or "").split(",") if g)
 
     seqs = load_fasta(args.reference)
     if args.seqid:
@@ -924,19 +935,14 @@ def main():
               f"--seqid", file=sys.stderr)
         return 2
     features = load_annotation(args.annotation, args.seqid)
-    names = read_gene_list(args.genes)
-    index, genes, missing, aliases, no_cds = cds_index_for(features, names)
-    print(f"{len(genes)} of {len(names)} requested genes resolve to a CDS",
-          file=sys.stderr)
-    if missing:
-        print(f"  NOT FOUND in annotation: {', '.join(missing)}",
+    index, genes = resolve_list(features, args.genes)
+    missing_ctx = [g for g in ctx_genes if g not in genes]
+    if missing_ctx:
+        print(f"error: --context_genes {', '.join(missing_ctx)} not among the "
+              f"genes tested from {args.genes}: {', '.join(genes)}",
               file=sys.stderr)
-    if no_cds:
-        print(f"  found but not protein-coding (not tested): "
-              f"{', '.join(no_cds)}", file=sys.stderr)
-    for a, b in aliases:
-        print(f"  {a} is the same CDS as {b}; counted once, as {b}",
-              file=sys.stderr)
+        return 2
+    control = resolve_list(features, args.control) if args.control else None
 
     try:
         import bte
@@ -951,8 +957,35 @@ def main():
 
     cap = args.max_branch_length if args.max_branch_length is not None \
         else float("inf")
-    contexts = None
-    if args.context:
+    tops = ["include", "exclude"] if args.top_branch == "both" \
+        else [args.top_branch]
+    pre = args.prefix
+    written = []
+
+    ### The class-level tests: the list (both readings) and its control.
+    ncat = len(cats)
+    own = own_spectra(tree, tree.types, ncat, fold_map, cap)
+    V, T = subtree_sums(tree, own, ncat)
+    pbar = proportions(V)
+    events = hit_events(tree, index, ref, fold_map, None)
+    for top in tops:
+        ### run_analysis names the reading: PREFIX_summary.tsv, or
+        ### PREFIX_summary_internal.tsv for --top_branch exclude.
+        written += run_analysis(
+            tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
+            pre, null_genes)
+    if control is not None:
+        c_index, c_genes = control
+        c_events = hit_events(tree, c_index, ref, fold_map, None)
+        written += run_analysis(tree, c_events, c_genes, V, T, own, ncat,
+                                cats, args, "include", pbar,
+                                f"{pre}", set(), tag="_control")
+
+    ### The context tests, for the genes named.
+    if ctx_genes:
+        import trinucleotide as tn
+        sch = tn.scheme(args.fold)
+        assert sch.class_labels == list(cats), (sch.class_labels, cats)
         masked = tn.read_mask(args.mask.split(",") if args.mask else [],
                               len(ref))
         contexts, cstats = sch.call(tree.parent, tree.children,
@@ -966,23 +999,317 @@ def main():
                   f"reconstructed parent base; the FASTA is probably not the "
                   f"tree's root genome, and every context is suspect",
                   file=sys.stderr)
-        zero = [0] * ncat
-        own = []
+        n_ctx = sch.n
+        zero = [0] * n_ctx
+        own_c = []
         for i, carr in enumerate(contexts):
             if not carr or tree.raw_len[i] > cap:
-                own.append(zero)
+                own_c.append(zero)
                 continue
-            vec = [0] * ncat
+            vec = [0] * n_ctx
             for c in carr:
                 if c >= 0:
                     vec[c] += 1
-            own.append(vec)
-    else:
-        own = own_spectra(tree, tree.types, ncat, fold_map, cap)
-    V, T = subtree_sums(tree, own, ncat)
-    root_tot = sum(V[0])
-    pbar = [V[0][k] / root_tot if root_tot else 0.0 for k in range(ncat)]
+            own_c.append(vec)
+        V_c, T_c = subtree_sums(tree, own_c, n_ctx)
+        pbar_c = proportions(V_c)
+        ctx_events = [dict(e) for e in events if e["gene"] in ctx_genes]
+        for e in ctx_events:
+            carr = contexts[e["node"]]
+            e["hit_cats"] = [carr[k] for k in e["hit_k"] if carr[k] >= 0]
+        for top in tops:
+            tag = "" if top == "include" else "_internal"
+            written += run_analysis(
+                tree, ctx_events, ctx_genes, V_c, T_c, own_c, n_ctx, cats,
+                args, top, pbar_c, f"{pre}", set(), tag=f"_context{tag}",
+                sch=sch)
 
+    print(f"wrote {', '.join(written)}", file=sys.stderr)
+
+    ### The report: the class-level summaries read together.
+    main_rows = read_summary(f"{pre}_summary.tsv") \
+        if "include" in tops else read_summary(f"{pre}_summary_internal.tsv")
+    internal = read_summary(f"{pre}_summary_internal.tsv") \
+        if len(tops) == 2 else None
+    ctrl = read_summary(f"{pre}_summary_control.tsv") \
+        if control is not None else None
+    shim = argparse.Namespace(
+        summary=f"{pre}_summary.tsv",
+        internal=f"{pre}_summary_internal.tsv" if internal else None,
+        control=f"{pre}_summary_control.tsv" if ctrl else None)
+    summary_report(main_rows, shim, sys.stdout, internal, ctrl)
+    if ctx_genes:
+        context_report(pre, tops, cats, sys.stdout)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# the report (formerly summarize_gene_hits.py)
+# --------------------------------------------------------------------------
+
+NONSYN = "nonsynonymous"
+SYN = "synonymous"
+FEW_EFFECTIVE = 10
+
+
+def read_summary(path):
+    with open(path) as fh:
+        return list(csv.DictReader(fh, delimiter="\t"))
+
+
+def num(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(v) else v
+
+
+def classes_of(rows):
+    if not rows:
+        return []
+    return [c[len("diff_"):] for c in rows[0] if c.startswith("diff_")]
+
+
+def genes(rows, es):
+    """Per-gene rows (not ALL) of one effect set that have a test result."""
+    return [r for r in rows if r["effect_set"] == es and r["gene"] != "ALL"
+            and num(r.get("omnibus_p")) is not None]
+
+
+def pooled(rows, es):
+    for r in rows:
+        if r["effect_set"] == es and r["gene"] == "ALL":
+            return r
+    return None
+
+
+def permutations_from(rows):
+    """Smallest N for which every p is (integer)/(N + 1), or None."""
+    ps = [num(r[c]) for r in rows for c in r
+          if (c.startswith("p_") or c == "omnibus_p") and num(r[c])]
+    if not ps:
+        return None
+    for n in (100, 1000, 10000, 100000, 1000000):
+        if all(abs(p * (n + 1) - round(p * (n + 1))) < 1e-3 * max(1, p * n)
+               for p in ps):
+            return n
+    return None
+
+
+def binom_tail(k, n, p):
+    """P(X >= k), X ~ Binomial(n, p)."""
+    return sum(math.comb(n, i) * p ** i * (1 - p) ** (n - i)
+               for i in range(k, n + 1))
+
+
+def fisher_greater(a, b, c, d):
+    """One-sided Fisher p that row 1's rate a/(a+b) exceeds c/(c+d)."""
+    n1, n2, k = a + b, c + d, a + c
+
+    def h(x):
+        return math.comb(n1, x) * math.comb(n2, k - x) / math.comb(n1 + n2, k)
+    return sum(h(x) for x in range(a, min(n1, k) + 1))
+
+
+def counts(rows, es, cls):
+    g = genes(rows, es)
+    n = len(g)
+    o = sum(1 for r in g if num(r["omnibus_p"]) < 0.05)
+    tests = [(r, c) for r in g for c in cls if num(r.get(f"p_{c}")) is not None]
+    k = sum(1 for r, c in tests if num(r[f"p_{c}"]) < 0.05)
+    return n, o, len(tests), k
+
+
+def best_class(r, cls):
+    """(class, shift in points, p) for the class with the smallest p."""
+    best = None
+    for c in cls:
+        p, d = num(r.get(f"p_{c}")), num(r.get(f"diff_{c}"))
+        if p is None or d is None:
+            continue
+        key = (p, -abs(d))
+        if best is None or key < best[0]:
+            best = (key, c, 100 * d, p)
+    return best[1:] if best else (None, None, None)
+
+
+def fmt_p(p):
+    if p is None:
+        return "NA"
+    return f"{p:.1e}" if p < 0.001 else f"{p:.3g}"
+
+
+def eff_str(r):
+    e = num(r.get("effective_events")) if r else None
+    return f"{e:,.0f}" if e is not None else "NA"
+
+
+def by_gene(rows, es):
+    return {r["gene"]: r for r in rows if r["effect_set"] == es}
+
+
+def count_line(label, n, o, t, k, out):
+    eo, ek = 0.05 * n, 0.05 * t
+    print(f"  {label:<14} genes at omnibus p < 0.05: {o} of {n} "
+          f"(chance {eo:.1f}, P(>= {o}) = {fmt_p(binom_tail(o, n, 0.05))});  "
+          f"class tests at p < 0.05: {k} of {t} (chance {ek:.1f}, "
+          f"P = {fmt_p(binom_tail(k, t, 0.05))})", file=out)
+
+
+def summary_report(main, args, out, internal=None, control=None):
+    cls = classes_of(main)
+    n_perm = permutations_from(main)
+    floor = 1 / (n_perm + 1) if n_perm else None
+
+    print(f"GENE HIT CONTRASTS: {args.summary}", file=out)
+    for es in (NONSYN, SYN):
+        a = pooled(main, es)
+        if a:
+            print(f"  {es}: {len(genes(main, es))} genes tested, "
+                  f"{int(num(a['informative']) or 0):,} informative events"
+                  + (f" ({eff_str(a)} effective)"
+                     if num(a.get("effective_events")) else ""), file=out)
+    if n_perm:
+        print(f"  {n_perm:,} permutations (read from the p-values): the "
+              f"smallest possible p is {fmt_p(floor)}", file=out)
+
+    # 1. control ------------------------------------------------------------
+    print(file=out)
+    print("1. IS THE COMPARISON SOUND?  Synonymous hits should look like "
+          "chance.", file=out)
+    n, o, t, k = counts(main, SYN, cls)
+    if n:
+        count_line("synonymous", n, o, t, k, out)
+        bad = binom_tail(o, n, 0.05) < 0.01 or binom_tail(k, t, 0.05) < 0.01
+        print("  -> " + ("FAILS: the synonymous hits show more than chance, "
+                         "so the comparison is biased and the nonsynonymous "
+                         "rows cannot be read either."
+                         if bad else "passes: no more than chance."), file=out)
+    else:
+        print("  no synonymous rows; run with --effects including "
+              "synonymous", file=out)
+
+    # 2. signal -------------------------------------------------------------
+    print(file=out)
+    print("2. IS THERE SIGNAL?  Nonsynonymous hits against chance"
+          + (" and against the control genes." if control else "."),
+          file=out)
+    n, o, t, k = counts(main, NONSYN, cls)
+    count_line("nonsynonymous", n, o, t, k, out)
+    if control:
+        cn, co, ct, ck = counts(control, NONSYN, cls)
+        count_line("control genes", cn, co, ct, ck, out)
+        print(f"  list vs control, one-sided Fisher: genes p = "
+              f"{fmt_p(fisher_greater(o, n - o, co, cn - co))}, class tests "
+              f"p = {fmt_p(fisher_greater(k, t - k, ck, ct - ck))}", file=out)
+        for es in (NONSYN, SYN):
+            a = pooled(control, es)
+            if not a:
+                continue
+            shifts = ", ".join(f"{c} {100 * num(a[f'diff_{c}']):+.2f}"
+                               for c in cls if num(a.get(f"diff_{c}")) is not None)
+            print(f"  control baseline, any {es} hit (pooled, omnibus p "
+                  f"{fmt_p(num(a['omnibus_p']))}): {shifts} points", file=out)
+
+    # 3. genes that clear the bar ------------------------------------------
+    ns = genes(main, NONSYN)
+    bar = 0.05 / len(ns) if ns else None
+    print(file=out)
+    print(f"3. GENES THAT CLEAR THE BAR: omnibus p < 0.05 / {len(ns)} = "
+          f"{fmt_p(bar)}", file=out)
+    if floor and bar is not None and bar < floor:
+        print(f"  NOTE: the bar is below the smallest p {n_perm:,} "
+              f"permutations can give ({fmt_p(floor)}), so no gene can clear "
+              f"it.  Rerun with more --permutations.", file=out)
+    syn = by_gene(main, SYN)
+    inn = by_gene(internal, NONSYN) if internal else {}
+    clear = sorted((r for r in ns if num(r["omnibus_p"]) < bar),
+                   key=lambda r: num(r["omnibus_p"]))
+    if not clear:
+        print("  none", file=out)
+    for r in clear:
+        at_floor = floor and num(r["omnibus_p"]) <= floor * 1.0001
+        print(f"  {r['gene']}: omnibus p {fmt_p(num(r['omnibus_p']))}"
+              + (" (the permutation floor; the true p may be smaller)"
+                 if at_floor else ""), file=out)
+        shown = sorted((c for c in cls if num(r.get(f"p_{c}")) is not None
+                        and num(r[f"p_{c}"]) < 0.05),
+                       key=lambda c: num(r[f"p_{c}"]))
+        if not shown:
+            shown = [best_class(r, cls)[0]]
+        ri, rs = inn.get(r["gene"]), syn.get(r["gene"])
+        cols = [("all hits", r)] + ([("internal hits", ri)] if ri else []) \
+            + ([("synonymous", rs)] if rs else [])
+        table = [["  class"] + [name for name, _x in cols]]
+        for c in shown:
+            line = [f"  {c}"]
+            for _name, x in cols:
+                d, p = num(x.get(f"diff_{c}")), num(x.get(f"p_{c}"))
+                line.append(f"{100 * d:+.2f} pts, p {fmt_p(p)}"
+                            if d is not None else "NA")
+            table.append(line)
+        table.append(["  events"] + [
+            f"{int(num(x['informative']) or 0):,} ({eff_str(x)} effective)"
+            for _name, x in cols])
+        widths = [max(len(t[i]) for t in table) for i in range(len(table[0]))]
+        for t in table:
+            print("  " + "   ".join(v.ljust(w) for v, w in zip(t, widths))
+                  .rstrip(), file=out)
+        e = num(rs.get("effective_events")) if rs else None
+        if e is not None and e < FEW_EFFECTIVE:
+            print(f"    its synonymous control has only {e:.0f} effective "
+                  f"events: a weak control; the one across genes (section 1) "
+                  f"carries the weight", file=out)
+        e = num(r.get("effective_events"))
+        if e is not None and e < FEW_EFFECTIVE:
+            print(f"    WARNING: only {e:.0f} effective events; the result "
+                  f"is about those few branches", file=out)
+
+    # 4. leads --------------------------------------------------------------
+    leads = sorted((r for r in ns if bar <= num(r["omnibus_p"]) < 0.05),
+                   key=lambda r: num(r["omnibus_p"]))
+    print(file=out)
+    print(f"4. LEADS: omnibus p < 0.05 but above the bar ({len(leads)}; "
+          f"chance alone gives about {0.05 * len(ns):.1f})", file=out)
+    for r in leads:
+        c, d, p = best_class(r, cls)
+        extra = ""
+        ri = inn.get(r["gene"])
+        if ri and num(ri.get(f"diff_{c}")) is not None:
+            extra = (f"; internal {100 * num(ri[f'diff_{c}']):+.2f}, p "
+                     f"{fmt_p(num(ri[f'p_{c}']))}")
+        print(f"  {r['gene']:<10} omnibus p {fmt_p(num(r['omnibus_p'])):<8} "
+              f"{c} {d:+.2f} points (p {fmt_p(p)}), {eff_str(r)} effective"
+              f"{extra}", file=out)
+
+
+def proportions(V):
+    tot = sum(V[0])
+    return [v / tot if tot else 0.0 for v in V[0]]
+
+
+def resolve_list(features, path):
+    """(CDS index, genes tested) for a gene list, with what did not resolve
+    reported on stderr."""
+    names = read_gene_list(path)
+    index, genes, missing, aliases, no_cds = cds_index_for(features, names)
+    print(f"{path}: {len(genes)} of {len(names)} requested genes resolve to "
+          f"a CDS", file=sys.stderr)
+    if missing:
+        print(f"  NOT FOUND in annotation: {', '.join(missing)}",
+              file=sys.stderr)
+    if no_cds:
+        print(f"  found but not protein-coding (not tested): "
+              f"{', '.join(no_cds)}", file=sys.stderr)
+    for a, b in aliases:
+        print(f"  {a} is the same CDS as {b}; counted once, as {b}",
+              file=sys.stderr)
+    return index, genes
+
+
+def hit_events(tree, index, ref, fold_map, contexts):
+    """Every branch-gene hit event, with each hit's class (or context)."""
     events, ref_mismatch = find_hit_events(tree, index, ref)
     print(f"{len(events)} branch-gene hit events", file=sys.stderr)
     if ref_mismatch:
@@ -997,12 +1324,32 @@ def main():
     print("  by effect: " + ", ".join(f"{k} {by_effect[k]}" for k in SEVERITY
                                        if by_effect[k]), file=sys.stderr)
     for e in events:
-        if contexts is not None:
-            carr = contexts[e["node"]]
-            e["hit_cats"] = [carr[k] for k in e["hit_k"] if carr[k] >= 0]
-        else:
-            e["hit_cats"] = [fold_map[t] if fold_map else t
-                             for t in e["hit_types"]]
+        e["hit_cats"] = [fold_map[t] if fold_map else t
+                         for t in e["hit_types"]]
+    return events
+
+
+def run_analysis(tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
+                 prefix, null_genes, tag=None, sch=None):
+    """One reading: every effect set, every gene and ALL, under one
+    --top_branch, written to PREFIX_summary{tag}.tsv and PREFIX_events{tag}.tsv
+    (tag "" or "_internal" by top, unless given), plus the null draws for
+    null_genes and, with sch, the per-context table.  The random streams
+    start from --seed, so each reading reproduces on its own.  Returns the
+    paths written."""
+    import copy
+    a = copy.copy(args)
+    a.top_branch = top
+    if tag is None:
+        tag = "" if top == "include" else "_internal"
+    context = sch is not None
+    nsum = len(cats)
+    effect_sets = [x.strip() for x in args.effects.split(",") if x.strip()]
+
+    def summary_vec(v):
+        if not context:
+            return v
+        return [sum(v[16 * k:16 * k + 16]) for k in range(nsum)]
 
     rng = random.Random(args.seed)
     ev_cols = (["effect_set", "gene", "node_id", "parent_id", "effect",
@@ -1016,25 +1363,28 @@ def main():
                  "informative_terminal", "effective_events"]
                 + [f"diff_{c}" for c in cats] + [f"p_{c}" for c in cats]
                 + ["omnibus", "omnibus_p"])
-    if args.context:
+    paths = [f"{prefix}_summary{tag}.tsv", f"{prefix}_events{tag}.tsv"]
+    ctx_out = null_out = None
+    if context:
+        import numpy
         sum_cols += [f"shape_p_{c}" for c in cats] + ["shape_omnibus_p"]
         np_rng = numpy.random.default_rng(args.seed)
-        ctx_out = open(args.output_context, "w")
+        ### The context table is named for the reading, not the summary:
+        ### PREFIX_context.tsv and PREFIX_context_internal.tsv.
+        ctx_path = f"{prefix}{tag}.tsv"
+        paths.append(ctx_path)
+        ctx_out = open(ctx_path, "w")
         ctx_out.write("effect_set\tgene\tclass\tcontext\tclass_share\t"
                       "diff\tproportional_diff\texcess\tp\t"
                       "within_class_diff\twithin_class_p\n")
-
-    null_genes = set(args.null_draws_genes.split(",")) \
-        if args.null_draws_genes else set()
-    if args.null_draws and not null_genes:
-        print("error: --null_draws needs --null_draws_genes", file=sys.stderr)
-        return 2
-    null_out = open(args.null_draws, "w") if args.null_draws else None
-    if null_out:
+    if null_genes:
+        paths.append(f"{prefix}_null_draws{tag}.tsv")
+        null_out = open(paths[-1], "w")
         null_out.write("\t".join(["effect_set", "gene", "permutation"]
                                  + [f"diff_{c}" for c in cats]) + "\n")
-    with open(args.output_events, "w") as ev_out, \
-            open(args.output_summary, "w") as sum_out:
+    print(f"testing {prefix}{tag or ''} ({top} top branch) ...",
+          file=sys.stderr)
+    with open(paths[1], "w") as ev_out, open(paths[0], "w") as sum_out:
         ev_out.write("\t".join(ev_cols) + "\n")
         sum_out.write("\t".join(sum_cols) + "\n")
         for es in effect_sets:
@@ -1043,9 +1393,9 @@ def main():
                 test_events = in_set if gene == "ALL" else \
                     [e for e in in_set if e["gene"] == gene]
                 accumulator = ContextAccumulator(
-                    ncat, args.permutations, np_rng) if args.context else None
+                    ncat, args.permutations, np_rng) if context else None
                 rows, n_inf, result, n_eff = run_test(
-                    tree, test_events, V, T, own, ncat, args, pbar, rng,
+                    tree, test_events, V, T, own, ncat, a, pbar, rng,
                     accumulator)
                 if gene != "ALL":
                     for r in rows:
@@ -1064,12 +1414,12 @@ def main():
                        round(n_eff, 1)]
                 if result is None:
                     out += [float("nan")] * (2 * nsum + 2)
-                    if args.context:
+                    if context:
                         out += [float("nan")] * (nsum + 1)
                 else:
                     d, pc, om, pom, perm_d = result[:5]
                     out += d + pc + [om, pom]
-                    if args.context:
+                    if context:
                         cx = result[5]
                         out += cx["shape_p"] + [cx["shape_omnibus_p"]]
                         for c in range(ncat):
@@ -1089,18 +1439,39 @@ def main():
                                 + "\n")
                 sum_out.write("\t".join(fmt(x) for x in out) + "\n")
                 if result is not None and gene == "ALL":
-                    print(f"{es} ALL: {n_inf} informative events, omnibus "
-                          f"p {fmt(result[3])}",
-                          file=sys.stderr)
-    if null_out:
-        null_out.close()
-        print(f"wrote {args.null_draws}", file=sys.stderr)
-    if args.context:
-        ctx_out.close()
-        print(f"wrote {args.output_context}", file=sys.stderr)
-    print(f"wrote {args.output_events} and {args.output_summary}",
-          file=sys.stderr)
-    return 0
+                    print(f"  {es} ALL: {n_inf} informative events, omnibus "
+                          f"p {fmt(result[3])}", file=sys.stderr)
+    for fh in (ctx_out, null_out):
+        if fh:
+            fh.close()
+    return paths
+
+
+def context_report(pre, tops, cats, out):
+    """The context tests' shape p values, per gene, per reading."""
+    print("=" * 72, file=out)
+    print("TRINUCLEOTIDE CONTEXT (--context_genes)", file=out)
+    print("=" * 72, file=out)
+    print("  shape p: does a class's shift fall on its 16 contexts in "
+          "proportion to how", file=out)
+    print("  common each is (large p), or in particular ones (small p)?  "
+          "Read the omnibus", file=out)
+    print(f"  first; which contexts is in {pre}_context.tsv.", file=out)
+    for top in tops:
+        tag = "" if top == "include" else "_internal"
+        rows = read_summary(f"{pre}_summary_context{tag}.tsv")
+        print(f"\n  {'all hits' if top == 'include' else 'internal hits'} "
+              f"({pre}_summary_context{tag}.tsv):", file=out)
+        print("    " + "\t".join(["effect", "gene", "events", "effective",
+                                  "omnibus_p", "shape_omnibus_p"]
+                                 + [f"shape_{c}" for c in cats]), file=out)
+        for r in rows:
+            print("    " + "\t".join(
+                [r["effect_set"], r["gene"], r["informative"],
+                 r["effective_events"], fmt_p(num(r["omnibus_p"])),
+                 fmt_p(num(r["shape_omnibus_p"]))]
+                + [fmt_p(num(r[f"shape_p_{c}"])) for c in cats]), file=out)
+    print(file=out)
 
 
 # --------------------------------------------------------------------------
@@ -1312,6 +1683,11 @@ def selftest():
     print(f"ok: a 4x shift in one class on 25 hit subtrees is detected in "
           f"{power:.0%} of 10 simulated trees, in the right direction")
 
+    if _selftest_summary():
+        return 1
+    if _selftest_run():
+        return 1
+
     try:
         import numpy
     except ImportError:
@@ -1431,6 +1807,114 @@ def _selftest_context(np, targs):
           f"{frac(prop, 0):.0%} of trees with a proportional C>T shift (whose "
           f"class test fires in {frac(prop, 1):.0%}); a one-context shift is "
           f"found in {frac(conc, 0):.0%}")
+
+
+def _selftest_run():
+    """run_analysis on a simulated tree: both readings write their files,
+    null draws go only to the genes named, and a reading's results do not
+    depend on what ran before it."""
+    import tempfile
+    rng = random.Random(5)
+    root, hit_ids = _simulate(rng, 25, 3.0, 12)
+    tree = extract(root)
+    idx = {nid: i for i, nid in enumerate(tree.node_ids)}
+    own = own_spectra(tree, tree.types, 12, None, float("inf"))
+    V, T = subtree_sums(tree, own, 12)
+    events = [{"node": idx[x], "gene": "g" if i % 2 else "h",
+               "effect": "missense", "aa_changes": "", "mutations": "",
+               "hit_types": [], "hit_cats": [], "hit_k": []}
+              for i, x in enumerate(hit_ids)]
+    args = parse_args(["--permutations", "50", "--effects", "nonsynonymous"])
+    d = tempfile.mkdtemp()
+    pre = os.path.join(d, "t")
+    first = run_analysis(tree, events, ["g", "h"], V, T, own, 12, MUT_TYPES,
+                         args, "include", proportions(V), pre, {"g"})
+    internal = run_analysis(tree, events, ["g", "h"], V, T, own, 12,
+                            MUT_TYPES, args, "exclude", proportions(V), pre,
+                            set())
+    with open(first[0]) as fh:
+        a = fh.read()
+    again = run_analysis(tree, events, ["g", "h"], V, T, own, 12, MUT_TYPES,
+                         args, "include", proportions(V), pre + "2", {"g"})
+    with open(again[0]) as fh:
+        b = fh.read()
+    ok = (first[0].endswith("t_summary.tsv")
+          and internal[0].endswith("t_summary_internal.tsv")
+          and first[2].endswith("t_null_draws.tsv") and a == b
+          and all(os.path.getsize(x) > 0 for x in first + internal))
+    with open(first[2]) as fh:
+        genes_drawn = {line.split("\t")[1] for line in list(fh)[1:]}
+    ok = ok and genes_drawn == {"g"}
+    print(("ok" if ok else "FAIL") + ": both readings write their files, "
+          "null draws only for the genes named, and a reading reproduces "
+          "whatever ran before it")
+    return 0 if ok else 1
+
+
+def _selftest_summary():
+    import io
+    import random
+    ok = True
+
+    def check(cond, label):
+        nonlocal ok
+        print(("ok   " if cond else "FAIL ") + label)
+        ok = ok and cond
+
+    rng = random.Random(3)
+    cls = ["A", "B"]
+    n_perm = 1000
+
+    def p_of(k):
+        return f"{(k + 1) / (n_perm + 1):.6g}"
+
+    def row(es, gene, omni_k, a_k, a_diff, eff=50.0, inf=100):
+        return {"effect_set": es, "gene": gene, "events": str(inf),
+                "informative": str(inf), "informative_terminal": "0",
+                "effective_events": str(eff),
+                "diff_A": str(a_diff), "diff_B": "0.0",
+                "p_A": p_of(a_k), "p_B": p_of(500),
+                "omnibus": "1", "omnibus_p": p_of(omni_k)}
+
+    rows = []
+    for i in range(40):
+        g = f"g{i}"
+        if g == "g0":
+            rows.append(row(NONSYN, g, 0, 0, 0.01))       # clears the bar
+        elif g == "g1":
+            rows.append(row(NONSYN, g, 20, 20, 0.02))     # a lead
+        else:
+            k = rng.randrange(100, 1000)
+            rows.append(row(NONSYN, g, k, k, 0.0))
+        rows.append(row(SYN, g, rng.randrange(100, 1000), 600, 0.0,
+                        eff=2.0 if g == "g0" else 40.0))
+    rows.append(row(NONSYN, "ALL", 500, 500, 0.001, eff=900, inf=4000))
+    rows.append(row(SYN, "ALL", 500, 500, 0.0, eff=800, inf=3000))
+    check(permutations_from(rows) == 1000, "permutations read from p-values")
+    args = argparse.Namespace(summary="test.tsv", internal=None,
+                              control=None)
+    buf = io.StringIO()
+    summary_report(rows, args, buf)
+    text = buf.getvalue()
+    check("passes: no more than chance" in text, "synonymous control passes")
+    check("g0: omnibus p" in text and "permutation floor" in text,
+          "g0 clears the bar, at the floor")
+    check("a weak control" in text, "g0's synonymous control flagged weak")
+    check("\n  g1 " in text and "LEADS" in text, "g1 listed as a lead")
+    check("bar is below the smallest p" not in text,
+          "0.05 / 40 is within reach of 1,000 permutations")
+    more = rows + [row(NONSYN, f"h{i}", 600, 600, 0.0) for i in range(20)]
+    buf = io.StringIO()
+    summary_report(more, args, buf)
+    text = buf.getvalue()
+    check("bar is below the smallest p" in text and "g0: omnibus" not in text,
+          "0.05 / 60 is not, and nothing clears it")
+    check(abs(binom_tail(0, 10, 0.05) - 1.0) < 1e-12
+          and abs(fisher_greater(5, 5, 0, 10) - 0.01625) < 1e-4,
+          "binomial and Fisher tails")
+    print("selftest " + ("passed" if ok else "FAILED"))
+    return 0 if ok else 1
+
 
 
 if __name__ == "__main__":

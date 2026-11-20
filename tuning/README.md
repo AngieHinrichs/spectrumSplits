@@ -3,10 +3,10 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and eight need less: `prune_clade_check.py` and
+library and `bte`, and seven need less: `prune_clade_check.py` and
 `split_drivers.py` use `bte` only with `--input_tree`, and
 `check_gene_names.py`, `control_genes.py`,
-`summarize_gene_hits.py`, `split_confidence.py`, `split_composition.py` and
+`split_confidence.py`, `split_composition.py` and
 `match_splits.py` read text files only. Some need more: `split_contexts.py`
 and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
 `plot_split_contexts.py` draw figures and need matplotlib rather than `bte`.
@@ -46,7 +46,6 @@ and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
   - [`plot_split_contexts.py`](#plot_split_contextspy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`control_genes.py`](#control_genespy)
-  - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
   - [`plot_gene_hits.py`](#plot_gene_hitspy)
   - [`match_splits.py`](#match_splitspy)
   - [`trinucleotide.py`](#trinucleotidepy)
@@ -69,9 +68,8 @@ and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
 | [`split_contexts.py`](#split_contextspy) | 11 | Does a split also differ in trinucleotide context inside its classes, by more than any clade of its size would, on all branches and on internal branches alone? |
 | [`plot_split_contexts.py`](#plot_split_contextspy) | 11 | Figures of `split_contexts.py`'s results: which splits stand out from random clades, the context profiles of those that pass, and the context shifts of every split side by side. |
-| [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
+| [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism, with every hit and with internal hits only, against a control list, and reports the control, the excess, the genes that clear the bar and the leads. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
-| [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 | [`trinucleotide.py`](#trinucleotidepy) | 5, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
@@ -1925,12 +1923,30 @@ per split and context), `split_contexts_table.tsv` (the summary) and
 `split_contexts_controls.tsv` (the random clades, for the figures below).
 
 Each split's residual row is set against its clade parent's as a 2 x 96 table
-(2 x 192 unfolded).
-That table's G statistic is the sum of two parts. G(between) is the 2 x 6
-class table, which is what the search found. G(within) adds up, over the six
-classes, a 2 x 16 table of that class's contexts. It is zero whenever the
-context shares inside every class agree, whatever the class proportions, so
-it is the test.
+(2 x 192 unfolded), scored with the likelihood-ratio statistic G:
+
+  G = 2 Σ O ln(O / E)
+
+O is each cell's observed count and E its expected count if the two rows
+did not differ. This is the G-test of Sokal and Rohlf's *Biometry*, written
+G² or called the likelihood-ratio chi-squared or deviance in Agresti's
+*Categorical Data Analysis*. It is the likelihood-ratio counterpart of
+Pearson's chi-squared, which `spectrumSplits.py` uses, and on large tables
+the two nearly agree. G is used here because, unlike Pearson's statistic, it
+adds up exactly over nested tables, so the 2 x 96 table's G splits into two
+parts that sum to it:
+
+- **G(between)**, the 2 x 6 table of classes: the shift the search found.
+- **G(within)**, the sum over the six classes of a 2 x 16 table of that
+  class's contexts. It is zero whenever the context shares inside every
+  class agree, whatever the class proportions, so it is the test. In
+  statistical terms it tests conditional independence: is a mutation's
+  context independent of which row it is in, given its class? In a
+  log-linear model, that is the context x group | class term.
+
+The p values do not come from the chi-squared distribution G would follow
+if mutations were independent, because they are not: recurrent sites and
+shared ancestry tie them together. They come from the two nulls below.
 
 Two nulls are needed, and they answer different questions:
 
@@ -2052,15 +2068,40 @@ nothing: that branch carries every lineage-defining mutation, so co-occurrence
 is guaranteed. The evidence that would count is independent recurrence -- the
 same gene hit on unrelated branches, each followed by the same shift. This
 step looks for exactly that, starting from the genotype instead of the
-splits:
+splits. One run tests one gene list, read three ways (below), after
+`control_genes.py` has drawn the list's control:
 
 ```
+control_genes.py --annotation NC_012345.1.gff3.gz --match tb_repair_genes.txt \
+    --exclude resistance_genes.txt,alignment_loci.txt,tb_replication_genes.txt \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --exclude_product '(?i)(DNA|RNA|nucle|helicase|polymerase|recombin|repair|replicat|topoisomerase|primase|ligase|glycosylase|ribonucleotide|thymidyl|transposase|integrase)' \
+    --output control_genes.txt
+
 gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes tb_repair_genes.txt --fold --max_branch_length 250 \
-    --permutations 10000 \
-    --output_events hit_events.tsv --output_summary hit_summary.tsv
+    --genes tb_repair_genes.txt --control control_genes.txt \
+    --fold --max_branch_length 250 --permutations 10000 \
+    --null_draws_genes dnaE2 --context_genes dnaE2 \
+    --mask selection_loci.bed,alignment_loci.bed \
+    > hit_summary.txt
 ```
+
+The tree is read once, and the run writes, with the default `--prefix hit`:
+
+| File | What it holds |
+| --- | --- |
+| `hit_summary.tsv`, `hit_events.tsv` | The test with every hit counted: one row per gene and effect set, and one per hit event |
+| `hit_summary_internal.tsv`, `hit_events_internal.tsv` | The same with internal hits only (`--top_branch`, default `both`) |
+| `hit_summary_control.tsv`, `hit_events_control.tsv` | The control genes (`--control`), every hit counted |
+| `hit_null_draws.tsv`, `hit_null_draws_internal.tsv` | Every permutation's shifts for `--null_draws_genes`, for the figure below |
+| `hit_summary_context.tsv`, `hit_context.tsv` and their `_internal` versions | The context test for `--context_genes`, below |
+
+The report on stdout reads the summaries together ("What to read" below).
+`--null_draws_genes` and `--context_genes` are the last two subsections of
+this step. Leave them out on a first run, and rerun with the genes the
+report points to: the run is deterministic, so the summaries come out the
+same.
 
 `--permutations 10000` because the smallest p a permutation test can give is
 1 over the number of permutations plus one, and with dozens of genes the bar
@@ -2108,19 +2149,11 @@ chance of carrying the hit right, but not the extra branch time a real hit
 implies, and depth depends on that time. The spectrum statistics are
 proportions, which barely depend on depth, and they pass the same control.
 
-**Two more runs to read it against.** The first repeats the test on
+**Two more readings to read it against.** The first repeats the test on
 internal hits only. Per-genome error cannot reach an internal branch, so a
 shift that survives there is not a sequencing artifact, at the cost of the
-terminal hits, which are most of them:
-
-```
-gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes tb_repair_genes.txt --fold --max_branch_length 250 \
-    --permutations 10000 --top_branch exclude \
-    --output_events hit_events_internal.tsv \
-    --output_summary hit_summary_internal.tsv
-```
+terminal hits, which are most of them. Each reading starts its random draws
+from `--seed`, so it gives exactly what a run of it alone would.
 
 The second asks whether the excess is the list's own. The synonymous
 control says the comparison is unbiased. It cannot say whether a
@@ -2132,32 +2165,11 @@ none of them masked, in the lists given, or with a product matching
 other candidate list as well, such as `replication_genes.txt` below: the
 product pattern catches most of their genes but not all (on NC_000962.3 it
 misses `dcd`, `nrdH`, `nrdI` and `nrdR`), and a candidate gene does not belong
-in a control:
+in a control. Look at `control_genes.txt` before trusting it; that is why
+drawing it stays a separate step.
 
-```
-control_genes.py --annotation NC_012345.1.gff3.gz --match repair_genes.txt \
-    --exclude resistance_genes.txt,alignment_loci.txt,replication_genes.txt \
-    --mask selection_loci.bed,alignment_loci.bed \
-    --exclude_product '(?i)(DNA|RNA|nucle|helicase|polymerase|recombin|repair|replicat|topoisomerase|primase|ligase|glycosylase|ribonucleotide|thymidyl|transposase|integrase)' \
-    --output control_genes.txt
-
-gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes control_genes.txt --fold --max_branch_length 250 \
-    --permutations 10000 \
-    --output_events hit_events_control.tsv --output_summary hit_summary_control.tsv
-```
-
-**What to read.** `summarize_gene_hits.py` reads the three summaries
-and prints the punchline:
-
-```
-summarize_gene_hits.py --summary hit_summary.tsv \
-    --internal hit_summary_internal.tsv \
-    --control hit_summary_control.tsv > hit_summary.txt
-```
-
-In order: whether the synonymous control looks like chance; whether the
+**What to read.** The report reads the three summaries together and prints
+the punchline. In order: whether the synonymous control looks like chance; whether the
 nonsynonymous hits exceed chance and the control genes; each gene that clears
 the bar, with every class at p < 0.05 shown for all hits, internal hits and
 its own synonymous hits; and the leads below the bar. It also says when the
@@ -2186,8 +2198,9 @@ single small p.
 *Worked example.* `tb_repair_genes.txt` resolves to 56 genes and 42,433
 hit events, 25,233 nonsynonymous and 17,200 synonymous, of which 18,185 and
 13,857 were informative; about 60% of those are terminal. The control drew
-three genes per repair gene, 168 from 3,189 eligible. The three runs took 8,
-2 and 20 minutes.
+three genes per repair gene, 168 from 3,189 eligible. The run took 29
+minutes and 1.3 GB: 8 for every hit, 2 for internal hits, 20 for the control
+and under a minute for `dnaE2`'s context test.
 
 The synonymous control is clean with all hits and with internal hits only:
 genes with omnibus p < 0.05 number 3 and 2, against 2.8 expected by chance,
@@ -2259,13 +2272,16 @@ dNTP-supply genes not already in the repair list, as a separate family: its
 17 genes set their own bar rather than raising the repair list's.
 
 ```
-gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes tb_replication_genes.txt --fold --max_branch_length 250 \
-    --permutations 10000 \
-    --output_events hit_events_replication.tsv \
-    --output_summary hit_summary_replication.tsv
+control_genes.py ... --match tb_replication_genes.txt \
+    --exclude resistance_genes.txt,alignment_loci.txt,tb_repair_genes.txt \
+    --output control_replication.txt
+gene_hit_contrasts.py ... --genes tb_replication_genes.txt \
+    --control control_replication.txt --prefix hit_replication \
+    > hit_replication.txt
 ```
+
+A second list is a second run with its own `--prefix` and its own control,
+read on its own.
 
 On this tree, in 3 minutes, nothing in it reaches its bar: one gene in each
 effect set has omnibus p < 0.05 (`nrdE` nonsynonymous, `dcd` synonymous), as
@@ -2273,53 +2289,33 @@ chance predicts.
 
 **A figure.** `plot_gene_hits.py` shows one gene against the rest of its list
 and against its own null. It needs the permutation draws, which
-`gene_hit_contrasts.py` writes for the genes named in `--null_draws_genes`.
-With the same settings and seed as the run it accompanies, the summary is
-unchanged:
+`gene_hit_contrasts.py` writes for the genes named in `--null_draws_genes`,
+for both readings. The summaries are unchanged by asking for them. It needs
+only matplotlib, and `--prefix` finds the run's files:
 
 ```
-gene_hit_contrasts.py ... --permutations 10000 \
-    --null_draws null_draws.tsv --null_draws_genes dnaE2 \
-    --output_events hit_events.tsv --output_summary hit_summary.tsv
-gene_hit_contrasts.py ... --permutations 10000 --top_branch exclude \
-    --null_draws null_draws_internal.tsv --null_draws_genes dnaE2 \
-    --output_events hit_events_internal.tsv --output_summary hit_summary_internal.tsv
-
-plot_gene_hits.py --summary hit_summary.tsv --null null_draws.tsv \
-    --internal_summary hit_summary_internal.tsv \
-    --internal_null null_draws_internal.tsv \
-    --gene dnaE2 --class 'CG|GC,CT|GA' --label udgB,ogt,lexA \
-    --output dnaE2_figure.pdf
+plot_gene_hits.py --prefix hit --gene dnaE2 --class 'CG|GC,CT|GA' \
+    --label udgB,ogt,lexA --output dnaE2_figure.pdf
 ```
 
 Each class gets a column. On top, every gene in the list, both effect sets,
 by its shift in the class and its omnibus p, with the list's bar drawn in;
 below, the gene's null histogram for each run, with the observed shift, its
-p for the class and the effective event count. On this tree the all-hits run took 8 minutes and the internal-only run
-2.
+p for the class and the effective event count.
 
 **Where in the class: trinucleotide context.** A class shift can be spread
 over the class's 16 contexts in proportion to how common each one is, or it
 can sit in a few. Which one it is says more about mechanism than the class
-total does. `--context` repeats the test in the context classes, with the
-same events, comparators, draws and controls: the 96 folded ones with
-`--fold`, the 192 forward-strand ones without. It needs numpy.
-Give `--mask` the BEDs the tree was masked with, as for `profile_tree.py`, and
-the reference must be the root's genome (step 5). Run it on the genes worth a
-closer look, not the whole list:
-
-```
-echo dnaE2 > dnaE2.txt
-gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes dnaE2.txt --fold --context \
-    --mask selection_loci.bed,alignment_loci.bed \
-    --max_branch_length 250 --permutations 10000 \
-    --output_context hit_context.tsv \
-    --output_events hit_events_ctx.tsv --output_summary hit_summary_ctx.tsv
-```
-
-and the same with `--top_branch exclude` for internal hits only. The summary
+total does. `--context_genes` repeats the test for the genes named in the
+context classes, in both readings, with the same events, comparators and
+controls: the 96 folded ones with `--fold`, the 192 forward-strand ones
+without. It needs numpy. Give `--mask` the BEDs the tree was masked with, as
+for `profile_tree.py`, and the reference must be the root's genome (step 5).
+Name the genes worth a closer look, not the whole list: each costs about 25
+seconds and 1 GB per reading. The report ends with a TRINUCLEOTIDE CONTEXT
+section, the shape p values per gene, and the files are
+`hit_summary_context.tsv` (and `_internal`), with
+`hit_context.tsv` (and `_internal`) per context. The context summary
 has every column of a `--fold` run, with the class shifts computed by summing
 contexts (the self-test checks they equal the 6-class statistic for the same
 events). Contexts that cannot be called are dropped, and the draws differ,
@@ -3261,15 +3257,16 @@ files, and without controls.
 
 Used in [step 12](#12-test-a-candidate-mechanism-genotype-first). Finds every
 branch with a coding SNV in a listed gene and tests whether the spectrum below
-it differs from its siblings', pooled across all the independent hits. Needs
+it differs from its siblings', pooled across all the independent hits. One
+run tests one list, read three ways, and reports on them together. Needs
 `bte`; it reuses `annotate_sites.py`'s annotation and codon code and
 `permutation_null.py`'s spectrum code, so keep the three scripts together.
 
 ```
 gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes tb_repair_genes.txt --fold --max_branch_length 250 \
-    --output_events hit_events.tsv --output_summary hit_summary.tsv
+    --genes tb_repair_genes.txt --control control_genes.txt \
+    --fold --max_branch_length 250 --permutations 10000 > hit_summary.txt
 ```
 
 Inputs:
@@ -3278,6 +3275,9 @@ Inputs:
   tree's coordinates. `--seqid` picks one sequence if they hold several.
 - `--genes`: gene names or locus tags, one per line, `#` comments allowed;
   [`tb_repair_genes.txt`](#tb_repair_genestxt) works as it is.
+- `--control` (optional): a control list from `control_genes.py`, tested
+  the same way with every hit counted, as the baseline the list's excess is
+  read against.
 - `--fold` and `--max_branch_length`: match the search. A branch over the cap
   contributes no mutations but still counts for topology.
 
@@ -3286,53 +3286,89 @@ Options:
 - `--effects` (default `nonsynonymous,synonymous`): comma-separated effect
   sets to test, from `nonsynonymous`, `lof` (nonsense and start-loss),
   `missense` and `synonymous`. The synonymous set is the built-in control.
-- `--top_branch include` (the default) counts each child's own branch as well
-  as what is below it. It is the only way terminal hits contribute anything,
-  and most branches are terminal. Its cost is dilution: mutations that predate
-  the hit on the same branch are counted as if after it. That weakens a real
-  effect but cannot manufacture one, since siblings are treated identically.
-  `--top_branch exclude` is the cleaner check, usable only on internal hits.
+- `--top_branch both` (the default) runs two readings. `include` counts each
+  child's own branch as well as what is below it. It is the only way terminal
+  hits contribute anything, and most branches are terminal. Its cost is
+  dilution: mutations that predate the hit on the same branch are counted as
+  if after it. That weakens a real effect but cannot manufacture one, since
+  siblings are treated identically. `exclude` is the cleaner check, usable
+  only on internal hits. `--top_branch include` or `exclude` runs one.
 - `--min_focal` (default 1): the fewest counted mutations in the hit child
   for an event to be used. Siblings below it are not drawn as pseudo-hits.
 - `--min_comparator` (default 10): the fewest mutations in the pooled
   siblings for an event to be used.
 - `--permutations` (default 1000) and `--seed` (default 1). Use 10,000 when
-  the list is long enough that its bar is below 0.001 (step 12).
-- `--null_draws FILE` with `--null_draws_genes g1,g2` (or `ALL`): write every
-  permutation's class shifts for those genes, for `plot_gene_hits.py`.
-- `--context`: count trinucleotide context classes instead: the 96 folded
+  the list is long enough that its bar is below 0.001 (step 12). Each
+  reading starts its draws from the seed, so it gives what a run of it
+  alone would.
+- `--null_draws_genes g1,g2` (or `ALL`, the pooled row): write every
+  permutation's class shifts for those genes, in both readings, for
+  `plot_gene_hits.py`.
+- `--context_genes g1,g2`: test those genes, which must be in `--genes`,
+  again in trinucleotide context classes, in both readings: the 96 folded
   ones with `--fold`, the 192 forward-strand ones without (needs numpy; see
   step 12). `--mask` gives the BEDs the tree was masked with, so masked
-  flanks are unknown. `--output_context` (default `hit_context.tsv`) gets the
-  per-context rows. The events file and the `--null_draws` file still report
-  the 6 classes, or the 12 types.
+  flanks are unknown.
 - `--calibrate_context N`: instead of testing a tree, simulate N small trees
   in each of three scenarios and report how often the context tests reach
   p < 0.05: no shift, C>T raised 3× in proportion across its contexts, and
   one C>T context raised (step 12). It honours `--fold`, `--permutations`
   and `--seed`, and needs numpy but not `bte`.
+- `--prefix` (default `hit`) names the outputs.
 
-Outputs:
+Outputs, with the default prefix (`_internal` for the internal-only
+reading, `_control` for the control list):
 
-- `--output_events` (default `hit_events.tsv`): one row per hit event and
-  effect set, with the gene, hit and parent node, codon effect and amino-acid
-  changes, `nested_under`, how many siblings were used, the tips and
-  mutations on each side, the event's chi-squared, and the class
+- `hit_events.tsv`, `hit_events_internal.tsv`, `hit_events_control.tsv`: one
+  row per hit event and effect set, with the gene, hit and parent node, codon
+  effect and amino-acid changes, `nested_under`, how many siblings were used,
+  the tips and mutations on each side, the event's chi-squared, and the class
   proportions on both sides (`focal_<class>`, `comparator_<class>`).
-- `--output_summary` (default `hit_summary.tsv`): one row per gene and effect
-  set, plus a pooled `ALL`, with event counts, `effective_events`,
-  `diff_<class>` and `p_<class>`, and `omnibus` and `omnibus_p`. Step 12 says
-  how to read them. With `--context` it adds `shape_p_<class>` and
-  `shape_omnibus_p`.
+- `hit_summary.tsv`, `hit_summary_internal.tsv`, `hit_summary_control.tsv`:
+  one row per gene and effect set, plus a pooled `ALL`, with event counts,
+  `effective_events`, `diff_<class>` and `p_<class>`, and `omnibus` and
+  `omnibus_p`. Step 12 says how to read them.
+- `hit_null_draws.tsv` and `hit_null_draws_internal.tsv`, with
+  `--null_draws_genes`.
+- With `--context_genes`: `hit_summary_context.tsv` and
+  `hit_events_context.tsv` (and `_internal`), whose summary adds
+  `shape_p_<class>` and `shape_omnibus_p`, and `hit_context.tsv` (and
+  `_internal`), one row per test and context. The events file still reports
+  the 6 classes, or the 12 types.
+
+The report on stdout, in order:
+
+1. Whether the synonymous control looks like chance: how many genes reach
+   omnibus p < 0.05, and how many class tests reach p < 0.05, against what
+   chance predicts, with a binomial tail p for the excess.
+2. Whether the nonsynonymous hits exceed chance, and with `--control` the
+   control genes: a one-sided Fisher test of the list's rate against the
+   control's, and the control's pooled shift per class, the baseline a single
+   gene's shift should be read against.
+3. Each gene that clears the bar, 0.05 over the number of genes tested, with
+   every class at p < 0.05 (or the best one) for all hits, internal hits and
+   its own synonymous hits, with events and effective events.
+4. The leads: genes reaching p < 0.05 without clearing the bar. Chance alone
+   gives about one in twenty.
+5. With `--context_genes`, the shape p values per gene and reading.
+
+It also says when the smallest p is the permutation floor (more permutations
+could only lower it), when the bar is below that floor (no gene could clear
+it), and when a test rests on few effective events. The number of
+permutations is read from the p-values, which are (k + 1) / (permutations +
+1). Chance counts use a binomial tail at 5%; neither they nor the bar correct
+for the six classes being correlated, so read them as guides.
 
 `--selftest` checks codon effects on both strands (including ancestral codon
 state and two changes in one codon), checks the cut-subtree bookkeeping
 against brute force, and simulates star-of-polytomy trees for null
 calibration and power. In a larger run of the same simulation, 300 null trees
-gave per-class p < 0.05 at 4.5% and omnibus at 4.0%. With numpy it also checks
-`--context`: the summed contexts equal the 6-class statistic for the same
-events; the shape test stays near 5% with no effect and with a whole-class
-proportional shift; and it finds a shift in one context.
+gave per-class p < 0.05 at 4.5% and omnibus at 4.0%. It checks the report on
+a constructed summary, and that each reading writes its files and reproduces
+whatever ran before it. With numpy it also checks the context test: the
+summed contexts equal the 6-class statistic for the same events; the shape
+test stays near 5% with no effect and with a whole-class proportional shift;
+and it finds a shift in one context.
 
 ### `control_genes.py`
 
@@ -3353,37 +3389,20 @@ exclusions, the length window, the fallback and the seed.
 ### `plot_gene_hits.py`
 
 Used in [step 12](#12-test-a-candidate-mechanism-genotype-first), which has
-the commands. Needs only matplotlib, so it can run outside the `bte`
+the command. Needs only matplotlib, so it can run outside the `bte`
 environment.
 
-- `--summary`, `--null`: a `gene_hit_contrasts.py` summary and the
-  `--null_draws` file from the same run.
-- `--internal_summary`, `--internal_null` (optional): the same from a
-  `--top_branch exclude` run, for a third row in panel B.
+- `--prefix`: the `gene_hit_contrasts.py` run's prefix. It reads
+  `PREFIX_summary.tsv` and `PREFIX_null_draws.tsv`, and the internal-only
+  reading's `_internal` files, for a third row in panel B, when they exist.
+  `--summary`, `--null`, `--internal_summary` and `--internal_null` name the
+  files one by one instead.
 - `--gene`, `--class`: the gene, and the classes to show as the summary
   columns name them, comma-separated (`'CG|GC,CT|GA'`), one column each.
-  `summarize_gene_hits.py` lists the classes worth showing.
+  `gene_hit_contrasts.py`'s report lists the classes worth showing.
 - `--label`: other genes to name in panel A. `--title` replaces the default
   title. `--output`: the format follows the extension (`.png`, `.pdf`,
   `.svg`).
-
-### `summarize_gene_hits.py`
-
-Used in [step 12](#12-test-a-candidate-mechanism-genotype-first), which has
-the command and what the report contains. Reads only text.
-
-- `--summary`: a `gene_hit_contrasts.py` summary.
-- `--internal` (optional): the summary of a `--top_branch exclude` run, shown
-  beside each gene that clears the bar and each lead.
-- `--control` (optional): the summary of a control gene list
-  (`control_genes.py`), for the list-versus-control Fisher test and the
-  control's pooled baseline shift per class.
-
-The number of permutations is read from the p-values, which are
-(k + 1) / (permutations + 1). Chance counts use a binomial tail at 5%;
-neither they nor the bar correct for the six classes being correlated, so
-read them as guides. `--selftest` checks the report on a constructed
-summary.
 
 ### `match_splits.py`
 

@@ -16,23 +16,20 @@ One column per class given to --class (comma-separated), each with:
           given), and the synonymous control.  Histogram of the permuted
           shifts, with the observed shift and its p for the class.
 
-Needs only matplotlib.  The null draws come from gene_hit_contrasts.py
---null_draws, run with the same settings and seed as the summary it goes
-with, so the histograms are the nulls the p-values were computed from:
+Needs only matplotlib.  The null draws come from the same
+gene_hit_contrasts.py run as the summary, so the histograms are the nulls
+the p-values were computed from.  --prefix reads that run's files:
+PREFIX_summary.tsv and PREFIX_null_draws.tsv, and the internal-only reading,
+PREFIX_summary_internal.tsv and PREFIX_null_draws_internal.tsv, when they
+exist:
 
-  gene_hit_contrasts.py ... --permutations 10000 \\
-      --null_draws null_draws.tsv --null_draws_genes dnaE2 \\
-      --output_events hit_events.tsv --output_summary hit_summary.tsv
-  gene_hit_contrasts.py ... --permutations 10000 --top_branch exclude \\
-      --null_draws null_draws_internal.tsv --null_draws_genes dnaE2 \\
-      --output_events hit_events_internal.tsv \\
-      --output_summary hit_summary_internal.tsv
+  gene_hit_contrasts.py ... --permutations 10000 --null_draws_genes dnaE2
 
-  plot_gene_hits.py --summary hit_summary.tsv --null null_draws.tsv \\
-      --internal_summary hit_summary_internal.tsv \\
-      --internal_null null_draws_internal.tsv \\
-      --gene dnaE2 --class 'CG|GC,CT|GA' --label udgB,ogt,lexA \\
-      --output dnaE2_figure.png
+  plot_gene_hits.py --prefix hit --gene dnaE2 --class 'CG|GC,CT|GA' \\
+      --label udgB,ogt,lexA --output dnaE2_figure.png
+
+--summary, --null, --internal_summary and --internal_null name the files
+one by one instead.
 
 The output format follows the extension (.png, .pdf, .svg).
 """
@@ -200,9 +197,13 @@ def main():
         description="Plot one gene's spectrum shift against all genes and "
                     "its own permutation null.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--summary", required=True,
+    p.add_argument("--prefix", default=None,
+                   help="The gene_hit_contrasts.py --prefix: reads "
+                        "PREFIX_summary.tsv, PREFIX_null_draws.tsv and, if "
+                        "present, their _internal versions")
+    p.add_argument("--summary", default=None,
                    help="hit_summary.tsv from gene_hit_contrasts.py")
-    p.add_argument("--null", required=True,
+    p.add_argument("--null", default=None,
                    help="--null_draws TSV from the same run")
     p.add_argument("--internal_summary", default=None,
                    help="hit_summary.tsv from a --top_branch exclude run")
@@ -218,6 +219,18 @@ def main():
                    help="Figure title (default names the gene and class)")
     p.add_argument("--output", default="gene_hits.png")
     args = p.parse_args()
+    if args.prefix:
+        import os
+        pre = args.prefix
+        args.summary = args.summary or f"{pre}_summary.tsv"
+        args.null = args.null or f"{pre}_null_draws.tsv"
+        if not args.internal_summary and \
+                os.path.exists(f"{pre}_summary_internal.tsv") and \
+                os.path.exists(f"{pre}_null_draws_internal.tsv"):
+            args.internal_summary = f"{pre}_summary_internal.tsv"
+            args.internal_null = f"{pre}_null_draws_internal.tsv"
+    if not (args.summary and args.null):
+        p.error("give --prefix, or --summary and --null")
 
     try:
         import matplotlib
