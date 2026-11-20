@@ -3,10 +3,12 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and eight need less: `prune_clade_check.py`,
+library and `bte`, and nine need less: `prune_clade_check.py`,
 `split_drivers.py` and `null_by_size.py` use `bte` only with `--input_tree`,
-and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
-`split_composition.py` and `match_splits.py` read text files only.
+and `check_gene_names.py`, `control_genes.py`, `branch_hits.py`,
+`split_confidence.py`, `split_composition.py` and `match_splits.py` read text
+files only. One needs something else: `plot_gene_hits.py` draws a figure, and
+needs matplotlib rather than `bte`.
 
 ## Contents
 
@@ -42,10 +44,13 @@ and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
+  - [`control_genes.py`](#control_genespy)
+  - [`plot_gene_hits.py`](#plot_gene_hitspy)
   - [`match_splits.py`](#match_splitspy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
   - [`tb_resistance_genes.txt`, and a caution](#tb_resistance_genestxt-and-a-caution)
   - [`tb_repair_genes.txt`](#tb_repair_genestxt)
+  - [`tb_replication_genes.txt`](#tb_replication_genestxt)
   - [`tb_alignment_loci.txt`](#tb_alignment_locitxt)
 
 | Script | Step | What it answers |
@@ -62,6 +67,8 @@ and `check_gene_names.py`, `branch_hits.py`, `split_confidence.py`,
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
+| [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
+| [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 
 The steps depend on one another, so the order matters more than any single
@@ -1882,7 +1889,11 @@ decides whether terminal hits contribute at all; see the
 **What to read in `hit_summary.tsv`.** One row per gene and effect set, plus a
 pooled `ALL`. `omnibus_p` says whether to look further; `diff_<class>` is the
 weighted mean shift in that class's proportion (hit child minus siblings),
-with `p_<class>` its permutation p.
+with `p_<class>` its permutation p. `effective_events` says how many equally
+weighted events a test is worth. The weights grow with subtree size, so one
+deep branch can carry most of a test: read a result with a handful of
+effective events as a statement about those few branches, whatever its event
+count.
 
 There is no rate test. A mutator should also raise the mutation count below
 the hit, and an earlier version compared tip depth below hit children with
@@ -1930,10 +1941,14 @@ the hit:
 | `lexA` | 254 | +2.80 | 0.04 | 55 | +3.91 | 0.013 |
 
 Only `dnaE2` clears the bar for 56 genes on the omnibus test, at p 0.0001,
-the smallest 10,000 permutations can give, and its own synonymous hits are
-flat (`CT|GA` +0.25 points, p 0.44). It is also the one that keeps its full
-shift with terminal hits dropped, on hits where per-genome error cannot
-reach. `udgB`'s `CT|GA` p of 0.0001 clears the bar too, but as one class of
+the smallest 10,000 permutations can give. It is also the one that keeps its
+full shift with terminal hits dropped, on hits where per-genome error cannot
+reach. Its 1,109 events are worth 54 effective ones, and no few of them carry
+it: dropping the heaviest 1, 5, 10 or 20 leaves the shift at +1.0 to +1.1
+points. Its own synonymous hits are flat (`CT|GA` +0.25 points, p 0.44), but
+that control is weak: one deep branch carries 77% of their weight, so they
+are worth 2 effective events. The control that carries weight is the one
+across genes. `udgB`'s `CT|GA` p of 0.0001 clears the bar too, but as one class of
 six, its omnibus p is 0.014, and its internal hits alone do not reach
 significance. That is the shape of evidence step 8 could not provide: over a
 thousand independent hits, each against its own siblings, so no single
@@ -1942,6 +1957,79 @@ C>T and G>A, shift the same way by more but on fewer hits, and keep the
 direction but lose significance when the terminal hits are dropped; they are
 worth a closer look, not a claim. The shift is small throughout: `CT|GA` is half of all
 mutations, so +0.93 points is a 2% relative change.
+
+**Is the excess the list's own?** The synonymous control says the
+comparison is unbiased. It cannot say whether a nonsynonymous excess belongs
+to the genes tested or to nonsynonymous changes anywhere. Ordinary genes
+answer that: `control_genes.py` draws length-matched protein-coding genes,
+none of them masked, in the lists given, or with a product matching
+`--exclude_product`, and the same test runs on them:
+
+```
+control_genes.py --annotation NC_012345.1.gff3.gz --match repair_genes.txt \
+    --exclude resistance_genes.txt,alignment_loci.txt \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --exclude_product '(?i)(DNA|RNA|nucle|helicase|polymerase|recombin|repair|replicat|topoisomerase|primase|ligase|glycosylase|ribonucleotide|thymidyl|transposase|integrase)' \
+    --output control_genes.txt
+
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes control_genes.txt --fold --max_branch_length 250 \
+    --permutations 10000 \
+    --output_events hit_events_control.tsv --output_summary hit_summary_control.tsv
+```
+
+*Worked example.* Three control genes per repair gene gave 168, drawn from
+3,194 eligible; the run took 19 minutes. Their nonsynonymous hits behave as
+chance predicts: 8 of 167 genes (4.8%) at omnibus p < 0.05, against 9 of 56
+(16%) for the repair genes, a difference a one-sided Fisher test puts at
+p 0.01 (2×10⁻⁵ over the class tests). No control gene clears 0.05 / 167. So
+the repair genes' excess is theirs.
+
+The control's pooled rows show something its per-gene rows are too small
+to: any hit is followed by slightly more `CT|GA`, +0.14 points for
+nonsynonymous hits and +0.32 for synonymous (p 0.009, about 4,000 effective
+events). The likely reason is that most coding hits are themselves C>T or
+G>A, so they land more often on branches whose process favours those, while
+the size-biased draw matches branch length, not branch spectrum. The baseline
+for "a hit" is therefore a little above zero. `dnaE2`'s +0.93 is three to
+seven times it, and the per-gene false-positive rate in the control stays at
+the nominal 5%, but the comparison for a single gene is with that baseline,
+not with zero.
+
+**Replication genes.** `tb_replication_genes.txt` lists the replisome and
+dNTP-supply genes not already in the repair list, as a separate family: its
+17 genes set their own bar rather than raising the repair list's. Run it the
+same way with `--genes tb_replication_genes.txt`. On this tree nothing in it
+reaches its bar: one gene in each effect set has omnibus p < 0.05 (`nrdE`
+nonsynonymous, `dcd` synonymous), as chance predicts.
+
+**A figure.** `plot_gene_hits.py` shows one gene against the rest of its list
+and against its own null. It needs the permutation draws, which
+`gene_hit_contrasts.py` writes for the genes named in `--null_draws_genes`.
+With the same settings and seed as the run it accompanies, the summary is
+unchanged:
+
+```
+gene_hit_contrasts.py ... --permutations 10000 \
+    --null_draws null_draws.tsv --null_draws_genes dnaE2 \
+    --output_events hit_events.tsv --output_summary hit_summary.tsv
+gene_hit_contrasts.py ... --permutations 10000 --top_branch exclude \
+    --null_draws null_draws_internal.tsv --null_draws_genes dnaE2 \
+    --output_events hit_events_internal.tsv --output_summary hit_summary_internal.tsv
+
+plot_gene_hits.py --summary hit_summary.tsv --null null_draws.tsv \
+    --internal_summary hit_summary_internal.tsv \
+    --internal_null null_draws_internal.tsv \
+    --gene dnaE2 --class 'CT|GA' --label udgB,ogt,lexA \
+    --output dnaE2_figure.pdf
+```
+
+Panel A plots every gene in the list, both effect sets, by its shift in the
+class and its omnibus p, with the list's bar drawn in. Panel B is the gene's
+null histogram for each run, with the observed shift and the effective event
+count. On this tree the all-hits run took 8 minutes and the internal-only run
+2.
 
 **What it cannot see.** The tree carries SNVs only, so frameshifts,
 deletions and IS6110 insertions -- the commonest ways a gene is actually lost
@@ -2722,7 +2810,10 @@ Options:
   for an event to be used. Siblings below it are not drawn as pseudo-hits.
 - `--min_comparator` (default 10): the fewest mutations in the pooled
   siblings for an event to be used.
-- `--permutations` (default 1000) and `--seed` (default 1).
+- `--permutations` (default 1000) and `--seed` (default 1). Use 10,000 when
+  the list is long enough that its bar is below 0.001 (step 12).
+- `--null_draws FILE` with `--null_draws_genes g1,g2` (or `ALL`): write every
+  permutation's class shifts for those genes, for `plot_gene_hits.py`.
 
 Outputs:
 
@@ -2732,14 +2823,47 @@ Outputs:
   mutations on each side, the event's chi-squared, and the class
   proportions on both sides (`focal_<class>`, `comparator_<class>`).
 - `--output_summary` (default `hit_summary.tsv`): one row per gene and effect
-  set, plus a pooled `ALL`, with event counts, `diff_<class>` and `p_<class>`,
-  and `omnibus` and `omnibus_p`. Step 12 says how to read them.
+  set, plus a pooled `ALL`, with event counts, `effective_events`,
+  `diff_<class>` and `p_<class>`, and `omnibus` and `omnibus_p`. Step 12 says
+  how to read them.
 
 `--selftest` checks codon effects on both strands (including ancestral codon
 state and two changes in one codon), checks the cut-subtree bookkeeping
 against brute force, and simulates star-of-polytomy trees for null
 calibration and power. In a larger run of the same simulation, 300 null trees
 gave per-class p < 0.05 at 4.5% and omnibus at 4.0%.
+
+### `control_genes.py`
+
+Used in [step 12](#12-test-a-candidate-mechanism-genotype-first), which has
+the command. Draws a length-matched random control list for
+`gene_hit_contrasts.py`.
+
+For each gene of `--match`, `--per_gene` (default 3) protein-coding genes
+whose CDS length is within `--tolerance` (default 0.2) of it are drawn at
+random, or the closest ones if too few qualify, never the same gene twice. A
+gene is not eligible if it is named in `--match` or an `--exclude` list, if
+more than `--max_masked` (default 0.1) of its CDS lies in the `--mask` BED
+intervals, or if its product matches `--exclude_product`. The output is a
+gene list of locus tags, each with a comment naming the gene it was matched
+to. `--seed` (default 1) makes the draw reproducible. `--selftest` checks the
+exclusions, the length window, the fallback and the seed.
+
+### `plot_gene_hits.py`
+
+Used in [step 12](#12-test-a-candidate-mechanism-genotype-first), which has
+the commands. Needs only matplotlib, so it can run outside the `bte`
+environment.
+
+- `--summary`, `--null`: a `gene_hit_contrasts.py` summary and the
+  `--null_draws` file from the same run.
+- `--internal_summary`, `--internal_null` (optional): the same from a
+  `--top_branch exclude` run, for a third row in panel B.
+- `--gene`, `--class`: the gene and class to show, the class as the summary
+  columns name it (`'CT|GA'`).
+- `--label`: other genes to name in panel A. `--title` replaces the default
+  title. `--output`: the format follows the extension (`.png`, `.pdf`,
+  `.svg`).
 
 ### `match_splits.py`
 
@@ -2764,9 +2888,9 @@ report on a constructed pair of trees.
 
 ## Gene lists
 
-Three lists of *M. tuberculosis* loci ship with these scripts, for
-`annotate_sites.py --regions` and `--highlight`. Two are masked and one is
-deliberately not. Run [`check_gene_names.py`](#check_gene_namespy) on any of
+Four lists of *M. tuberculosis* loci ship with these scripts, for
+`annotate_sites.py --regions` and `--highlight` and `gene_hit_contrasts.py
+--genes`. Two are masked and two are deliberately not. Run [`check_gene_names.py`](#check_gene_namespy) on any of
 them, or on a list of your own, against the annotation you will use.
 
 ### `tb_resistance_genes.txt`, and a caution
@@ -2811,6 +2935,17 @@ each checked against that annotation's product line; without them, nucS, the
 mycobacterial mismatch-repair surrogate, went unmatched. With them, every entry
 resolves against that annotation. Verify any you rely on against Mycobrowser or
 the NCBI H37Rv annotation.
+
+### `tb_replication_genes.txt`
+
+`tb_replication_genes.txt` lists replisome and dNTP-supply genes that
+`tb_repair_genes.txt` does not: `dnaA`, `dnaB`, `dnaG`, `dnaZX`, `ssb`,
+`priA`, `topA`, the ribonucleotide reductases and their partners, `ndkA`,
+`dcd` and `tmk`. Like the repair list, it is never masked. It is kept
+separate so that each list is its own family in step 12: adding its 17 genes
+to the repair list would raise every repair gene's bar. `gyrA`, `gyrB`,
+`thyA` and `thyX` are in the resistance list, so they are masked and carry no
+hits. Every name resolves against NC_000962.3 (`check_gene_names.py`).
 
 ### `tb_alignment_loci.txt`
 

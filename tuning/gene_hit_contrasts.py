@@ -64,6 +64,12 @@ Statistics, per test (one gene and one effect set, plus a pooled ALL row):
   omnibus_p      one statistic over all classes: sum of squared centred diffs
                  scaled by the tree-wide class proportions.  Use it to decide
                  whether to look at the per-class columns at all.
+  effective_events
+                 (sum of weights)^2 / sum of squared weights.  The weights
+                 grow with subtree size, so one deep branch can carry most
+                 of a test; this is how many equally weighted events the
+                 test is worth.  A handful means the result is about those
+                 few branches, whatever the event count.
 
 No rate test.  A mutator should also raise the mutation count below the hit,
 but this permutation cannot test that honestly.  The size-biased draw gets
@@ -168,6 +174,13 @@ def parse_args():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--output_events", type=str, default="hit_events.tsv")
     p.add_argument("--output_summary", type=str, default="hit_summary.tsv")
+    p.add_argument("--null_draws", type=str, default=None,
+                   help="Write every permutation's class shifts for the "
+                        "--null_draws_genes to this TSV, e.g. for "
+                        "plot_gene_hits.py")
+    p.add_argument("--null_draws_genes", type=str, default=None,
+                   help="Comma-separated genes (or ALL) whose permutation "
+                        "draws --null_draws writes")
     p.add_argument("--selftest", action="store_true",
                    help="Check subtree bookkeeping, codon effects and the "
                         "permutation null on synthetic trees, then exit")
@@ -488,7 +501,7 @@ def permutation_test(preps, ncat, pbar, permutations, rng):
         ### bisect_right on a value in [0, total) never returns len(cum).
         perm_d.append(statistic(preps, choice, ncat))
     if not permutations:
-        return obs_d, [float("nan")] * ncat, float("nan"), float("nan")
+        return obs_d, [float("nan")] * ncat, float("nan"), float("nan"), []
     mean_d = [sum(d[k] for d in perm_d) / permutations for k in range(ncat)]
 
     def omni(d):
@@ -503,7 +516,7 @@ def permutation_test(preps, ncat, pbar, permutations, rng):
     o = omni(obs_d)
     p_omni = (sum(1 for d in perm_d if omni(d) >= o - 1e-15) + 1) / \
         (permutations + 1)
-    return obs_d, p_class, o, p_omni
+    return obs_d, p_class, o, p_omni, perm_d
 
 
 def run_test(tree, test_events, V, T, own, ncat, fold_map, args,
@@ -542,7 +555,18 @@ def run_test(tree, test_events, V, T, own, ncat, fold_map, args,
     result = None
     if preps:
         result = permutation_test(preps, ncat, pbar, args.permutations, rng)
-    return rows, len(preps), result
+    return rows, len(preps), result, effective_events(preps)
+
+
+def effective_events(preps):
+    """(sum w)^2 / sum w^2 over the real hit children's weights.
+
+    The weights grow with subtree size, so one deep branch can carry most of
+    a test.  This says how many equally weighted events the test is worth.
+    """
+    ws = [p.w[0] for p in preps]
+    s2 = sum(w * w for w in ws)
+    return sum(ws) ** 2 / s2 if s2 > 0 else 0.0
 
 
 # --------------------------------------------------------------------------
@@ -648,10 +672,19 @@ def main():
                + [f"focal_{c}" for c in cats]
                + [f"comparator_{c}" for c in cats])
     sum_cols = (["effect_set", "gene", "events", "informative",
-                 "informative_terminal"]
+                 "informative_terminal", "effective_events"]
                 + [f"diff_{c}" for c in cats] + [f"p_{c}" for c in cats]
                 + ["omnibus", "omnibus_p"])
 
+    null_genes = set(args.null_draws_genes.split(",")) \
+        if args.null_draws_genes else set()
+    if args.null_draws and not null_genes:
+        print("error: --null_draws needs --null_draws_genes", file=sys.stderr)
+        return 2
+    null_out = open(args.null_draws, "w") if args.null_draws else None
+    if null_out:
+        null_out.write("\t".join(["effect_set", "gene", "permutation"]
+                                 + [f"diff_{c}" for c in cats]) + "\n")
     with open(args.output_events, "w") as ev_out, \
             open(args.output_summary, "w") as sum_out:
         ev_out.write("\t".join(ev_cols) + "\n")
@@ -661,7 +694,7 @@ def main():
             for gene in genes + ["ALL"]:
                 test_events = in_set if gene == "ALL" else \
                     [e for e in in_set if e["gene"] == gene]
-                rows, n_inf, result = run_test(
+                rows, n_inf, result, n_eff = run_test(
                     tree, test_events, V, T, own, ncat, fold_map,
                     args, pbar, rng)
                 if gene != "ALL":
@@ -676,17 +709,26 @@ def main():
                         ev_out.write("\t".join(fmt(x) for x in out) + "\n")
                 n_inf_term = sum(1 for r in rows
                                  if r["informative"] and r["terminal"])
-                out = [es, gene, len(rows), n_inf, n_inf_term]
+                out = [es, gene, len(rows), n_inf, n_inf_term,
+                       round(n_eff, 1)]
                 if result is None:
                     out += [float("nan")] * (2 * ncat + 2)
                 else:
-                    d, pc, om, pom = result
+                    d, pc, om, pom, perm_d = result
                     out += d + pc + [om, pom]
+                    if null_out and gene in null_genes:
+                        for i, pd in enumerate(perm_d, 1):
+                            null_out.write("\t".join(
+                                [es, gene, str(i)] + [fmt(x) for x in pd])
+                                + "\n")
                 sum_out.write("\t".join(fmt(x) for x in out) + "\n")
                 if result is not None and gene == "ALL":
                     print(f"{es} ALL: {n_inf} informative events, omnibus "
                           f"p {fmt(result[3])}",
                           file=sys.stderr)
+    if null_out:
+        null_out.close()
+        print(f"wrote {args.null_draws}", file=sys.stderr)
     print(f"wrote {args.output_events} and {args.output_summary}",
           file=sys.stderr)
     return 0
@@ -871,7 +913,7 @@ def selftest():
                 "aa_changes": "", "mutations": "", "hit_types": []}
                for x in hit_ids]
         pbar = [1 / 12.0] * 12
-        _rows, n_inf, res = run_test(tree, evs, V, T, own, 12,
+        _rows, n_inf, res, _n_eff = run_test(tree, evs, V, T, own, 12,
                                      None, targs, pbar, rng)
         pvals.append((res[1][0], res[3]))
     frac_class = sum(1 for p, _ in pvals if p < 0.05) / len(pvals)
@@ -890,7 +932,7 @@ def selftest():
         evs = [{"node": idx[x], "gene": "g", "effect": "missense",
                 "aa_changes": "", "mutations": "", "hit_types": []}
                for x in hit_ids]
-        _rows, n_inf, res = run_test(tree, evs, V, T, own, 12,
+        _rows, n_inf, res, _n_eff = run_test(tree, evs, V, T, own, 12,
                                      None, targs, [1 / 12.0] * 12, rng)
         assert res[0][0] > 0, res[0]
         hits_p.append(res[1][0])

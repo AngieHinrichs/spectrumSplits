@@ -1,0 +1,44 @@
+# M. tuberculosis replication and dNTP-supply genes not already in
+# tb_repair_genes.txt.
+#
+# ---------------------------------------------------------------------------
+# DO NOT MASK THESE.  Like tb_repair_genes.txt, this is a list of candidate
+# EXPLANATIONS for a spectrum shift, for gene_hit_contrasts.py --genes (step
+# 12) or annotate_sites.py --highlight.
+#
+# Kept separate from tb_repair_genes.txt on purpose: each list is tested as
+# its own family, so adding these genes to the repair list would raise the
+# multiple-testing bar for every repair gene.
+#
+# The replicative and translesion polymerases (dnaE1, dnaE2, dnaN, dnaQ,
+# polA, dinX, dinP), ligA and rnhB are in tb_repair_genes.txt, and dut and
+# mazG are there under dNTP pool sanitation.  gyrA, gyrB, thyA and thyX are
+# in tb_resistance_genes.txt, so they are masked and the tree carries no hits
+# for them.
+#
+# Every name was checked with check_gene_names.py against NCBI's NC_000962.3
+# annotation; the locus tags in comments are that annotation's.
+# ---------------------------------------------------------------------------
+
+# --- replisome -------------------------------------------------------------
+dnaA     # Rv0001, replication initiator
+dnaB     # Rv0058, replicative helicase
+dnaG     # Rv2343c, primase
+dnaZX    # Rv3721c, DNA polymerase III subunit gamma/tau (clamp loader)
+ssb      # Rv0054, single-strand DNA-binding protein
+priA     # Rv1402, primosomal protein N' (replication restart)
+topA     # Rv3646c, topoisomerase I
+
+# --- dNTP supply -----------------------------------------------------------
+# An unbalanced or depleted dNTP pool changes which mistakes the polymerase
+# makes, so it shifts the spectrum directly.
+nrdE     # Rv3051c, ribonucleotide reductase class Ib, alpha
+nrdF1    # Rv1981c, ribonucleotide reductase beta NrdF1
+nrdF2    # Rv3048c, ribonucleotide reductase beta NrdF2
+nrdH     # Rv3053c, glutaredoxin-like electron donor to NrdEF
+nrdI     # Rv3052c, flavodoxin for NrdF
+nrdR     # Rv2718c, ribonucleotide reductase transcriptional regulator
+nrdZ     # Rv0570, class II (B12-dependent) ribonucleotide reductase
+ndkA     # Rv2445c, nucleoside diphosphate kinase
+dcd      # Rv0321, dCTP deaminase
+tmk      # Rv3247c, thymidylate kinase
