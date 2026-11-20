@@ -77,6 +77,8 @@ Outputs, named from --prefix (default split_contexts):
                                     one row per split and context, per run
                                     (_192 without --fold)
   PREFIX_table.tsv                  the summary table
+  PREFIX_controls.tsv               the random control clades of both runs,
+                                    for plot_split_contexts.py
 The report goes to stdout.
 
 What it cannot tell you: whether a search scoring contexts would find splits
@@ -419,9 +421,10 @@ def fmt_p(p):
 
 
 def run(np, tree, contexts, stats, group, roots, comp, totals, args, out,
-        internal_only=False):
+        internal_only=False, controls_out=None):
     """One run: every split on all branches, or on internal branches only.
-    Starts its own random stream from --seed, so each run reproduces alone."""
+    Starts its own random stream from --seed, so each run reproduces alone.
+    The control clades drawn are appended to controls_out, if given."""
     cap = args.max_branch_length
     sch = tn.scheme(args.fold)
     ncls = sch.ncls
@@ -510,6 +513,8 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out,
     for r, q in zip(rows, qs):
         r["q"] = q
     ctrl = run_controls(np, tree, X, group, roots, members, rows, args, rng)
+    if controls_out is not None and ctrl:
+        controls_out.extend(ctrl)
     if ctrl is None:
         for r in rows:
             r.setdefault("control_p", None)
@@ -611,7 +616,9 @@ def run_controls(np, tree, X, group, roots, members, rows, args, rng):
             tot = res["null"].sum(1)
             obs = float(res["obs"].sum())
             nm = float(tot.mean())
-            drawn[v] = {"size": int(sub[v]), "excess": obs / nm if nm else 0,
+            drawn[v] = {"node": tree.node_ids[v],
+                        "group": tree.node_ids[group[v]],
+                        "size": int(sub[v]), "excess": obs / nm if nm else 0,
                         "p": perm_p(obs, tot)}
         print(f"  controls [{k + 1}/{len(tested)}]: {len(drawn)} drawn",
               file=sys.stderr)
@@ -906,7 +913,8 @@ def write_tsv(rows, path, sch):
     cols = ["node", "comparator", "split_mutations", "comparator_mutations",
             "split_branches", "comparator_branches", "g_between", "g_within",
             "within_share", "null_mean", "excess", "p", "q",
-            "control_n", "control_median", "control_p", "control_q"]
+            "control_n", "control_median", "control_p", "control_q",
+            "control_floor", "control_reachable"]
     cols += [f"g_within_{c}" for c in L] + [f"p_{c}" for c in L]
     cols += ["top_contexts"]
 
@@ -919,7 +927,9 @@ def write_tsv(rows, path, sch):
     with open(path, "w") as fh:
         fh.write("\t".join(cols) + "\n")
         for r in rows:
-            vals = [r.get(c) for c in cols[:17]]
+            vals = [r.get(c) for c in cols[:18]]
+            vals.append("" if r.get("control_floor") is None
+                        else ("no" if r.get("unreachable") else "yes"))
             vals += [float(x) for x in r["g_within_cls"]] + list(r["p_cls"])
             vals.append(",".join(
                 f"{sch.labels[t['ctx']]}{'+' if t['s'] > t['c'] else '-'}"
@@ -1259,9 +1269,12 @@ def main(argv=None):
         else None
     out = sys.stdout
     runs = {}
+    controls = {}
     for internal_only in (False, True):
+        controls[internal_only] = []
         runs[internal_only] = run(np, tree, contexts, stats, group, roots,
-                                  comp, totals, args, out, internal_only)
+                                  comp, totals, args, out, internal_only,
+                                  controls[internal_only])
         print(file=out)
     summary = summarize(runs[False], runs[True], args, sch, comp_tab)
     report_summary(summary, args, out)
@@ -1274,6 +1287,13 @@ def main(argv=None):
         write_contexts(runs[internal_only], paths[-1], sch)
     paths.append(f"{pre}_table.tsv")
     write_summary(summary[0], paths[-1])
+    paths.append(f"{pre}_controls.tsv")
+    with open(paths[-1], "w") as fh:
+        fh.write("branches\tnode\tgroup\tmutations\texcess\tp\n")
+        for internal_only, label in ((False, "all"), (True, "internal")):
+            for c in controls[internal_only]:
+                fh.write(f"{label}\t{c['node']}\t{c['group']}\t{c['size']}\t"
+                         f"{c['excess']:.6g}\t{c['p']:.6g}\n")
     print(f"Wrote {', '.join(paths)}", file=sys.stderr)
     return 0
 

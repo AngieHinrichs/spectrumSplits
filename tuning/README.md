@@ -44,6 +44,7 @@ needs matplotlib rather than `bte`.
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
   - [`split_contexts.py`](#split_contextspy)
+  - [`plot_split_contexts.py`](#plot_split_contextspy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`control_genes.py`](#control_genespy)
   - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
@@ -70,6 +71,7 @@ needs matplotlib rather than `bte`.
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
 | [`split_contexts.py`](#split_contextspy) | 11 | Does a split also differ in trinucleotide context inside its classes, by more than any clade of its size would, on all branches and on internal branches alone? |
+| [`plot_split_contexts.py`](#plot_split_contextspy) | 11 | Figures of `split_contexts.py`'s results: which splits stand out from random clades, the context profiles of those that pass, and the context shifts of every split side by side. |
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
 | [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
@@ -1931,7 +1933,8 @@ which keeps out per-genome error as in
 section for each run, then a summary of the splits that pass on both. The
 TSVs are `split_contexts.tsv` and `split_contexts_internal.tsv` (one row per
 split), `split_contexts_96.tsv` and `split_contexts_internal_96.tsv` (one row
-per split and context), and `split_contexts_table.tsv` (the summary).
+per split and context), `split_contexts_table.tsv` (the summary) and
+`split_contexts_controls.tsv` (the random clades, for the figures below).
 
 Each split's residual row is set against its clade parent's as a 2 x 96 table
 (2 x 192 unfolded).
@@ -2022,6 +2025,33 @@ own right:
   `node_76366`, the lineage 4.8 split nested inside it. So it belongs to the
   branches between the two nodes, not to lineage 4.8 as a whole.
 - **`node_14331`.** Beijing doubles C[T>C]C.
+
+**Figures.** `plot_split_contexts.py` draws three from the same files. It
+needs only matplotlib, so it can run outside the `bte` environment:
+
+```
+plot_split_contexts.py --prefix split_contexts
+```
+
+- `split_contexts_overview.pdf`: excess against split size, one panel per
+  run, over the grey cloud of random clades. This is the `ctrl_p` comparison
+  drawn out. The summary splits stand clear of the cloud. The crosses on the
+  right are the large splits that can't be judged, `node_57208` at excess 5
+  among them, where the cloud runs out.
+- `split_contexts_profiles.pdf`: one row per summary split, the 96 contexts
+  in signature order. Bars are the change in each context's share of its
+  class on all branches, dots the same on internal branches only. A class
+  shifted in proportion draws flat. `node_7246`'s A[T>G]G stands out in its
+  row, and `node_76364`'s rise is all C>A after a T. Triangles mark contexts
+  where one site carries 20% or more of the split's count. None of the named
+  contexts has one, but several others do, mostly T>A: read those bars as one
+  site each.
+- `split_contexts_heatmap.pdf`: every split by every context, coloured by
+  signed √(G contribution), with cells below nominal significance drawn
+  neutral. It shows what the profiles can't: contexts that recur across
+  splits, such as G[T>G]G in `node_21970`, `node_71721`, `node_54603` and
+  `node_52706`. That is either a process shared across lineages or a shared
+  artifact; either is worth checking.
 
 What this cannot tell you is whether a search scoring all the contexts would
 find splits this one did not. That needs the search itself to score
@@ -3186,13 +3216,18 @@ The TSVs, with the default prefix:
 
 - `split_contexts.tsv` and `split_contexts_internal.tsv`, one row per split:
   `g_between`, `g_within`, `within_share`, `null_mean`, `excess`, `p` and
-  `q`; `control_n`, `control_median`, `control_p` and `control_q`; G(within)
-  and p per class; and `top_contexts`.
+  `q`; `control_n`, `control_median`, `control_p` and `control_q`;
+  `control_floor`, the smallest `ctrl_p` its control count allows, and
+  `control_reachable`, whether that floor could reach `--control_alpha`;
+  G(within) and p per class; and `top_contexts`.
 - `split_contexts_96.tsv` and `split_contexts_internal_96.tsv` (`_192`
   without `--fold`), the 2 x 96 (or 2 x 192) table: counts, within-class
   shares, each context's G contribution, and the split's most frequent site
   in that context with its share of the count (`split_top_site`,
   `split_top_site_share`).
+- `split_contexts_controls.tsv`, the random control clades of both runs
+  (`branches`, `node`, `group`, `mutations`, `excess`, `p`), for
+  `plot_split_contexts.py`.
 - `split_contexts_table.tsv`, the summary: `split`, `comparator`, `clade`
   (top clades of the residual samples and flags, from `--composition`),
   excess, `ctrl_p`, `ctrl_q` and q on each run, `contexts` (the contexts carrying most
@@ -3214,6 +3249,43 @@ The TSVs, with the default prefix:
   `--control_alpha`;
 - the summary's selection, ordering, contexts, site shares and
   `--summary_top`.
+
+### `plot_split_contexts.py`
+
+Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism).
+Draws three figures from one `split_contexts.py` run. Needs only matplotlib.
+
+```
+plot_split_contexts.py --prefix split_contexts
+plot_split_contexts.py --prefix split_contexts --format png --output figs/sc
+```
+
+It reads `PREFIX.tsv`, `PREFIX_internal.tsv`, the two context tables
+(`_96` or `_192`), `PREFIX_table.tsv` and `PREFIX_controls.tsv`. Without the
+controls file, from a `split_contexts.py` older than the figures, the
+overview draws without the cloud and says so.
+
+- `PREFIX_overview`: excess against split size, all branches and internal
+  branches only, over the random control clades. Summary splits are filled
+  and labelled. Splits that pass the shuffle but whose control count can't
+  reach `--control_alpha` are crosses.
+- `PREFIX_profiles`: one row per summary split. Bars are the change in each
+  context's share of its class, split minus comparator, on all branches;
+  dots, internal branches only. The summary's contexts are named. A
+  triangle marks a context where one site carries `--one_site` (default
+  0.2) or more of a count of at least `--site_min_count` (default 20).
+- `PREFIX_heatmap`: every split tested, by all-branch excess, against every
+  context, coloured by sign(share change) × √(G contribution). Cells below
+  `--min_cell_g` (default 3.84, nominal p 0.05 at one degree of freedom) are
+  drawn neutral.
+
+Colours follow the context classes: one per folded class, with the class
+names printed over the blocks. In the 192 classes, each folded pair of types
+shares a colour and the purine-reference type is hatched. `--output` sets
+the figures' prefix (default `--prefix`), and `--format` sets pdf, png or
+svg. `--selftest` checks the share change, the signed deviance, the
+colours, and that all three figures draw from constructed 96- and 192-class
+files, and without controls.
 
 ### `gene_hit_contrasts.py`
 
