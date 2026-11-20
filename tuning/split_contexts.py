@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Does trinucleotide context separate a split beyond its 6-class shift?
+"""Does trinucleotide context separate a split beyond its class shift?
 
-spectrumSplits.py scores the strand-folded 6-class spectrum.  Two clades with
-the same 6-class proportions can still differ inside a class -- more C>T at
-CpG and less elsewhere, say -- and a split found on a 6-class shift may or may
-not carry a context shift too.  This script asks that of every accepted split,
+spectrumSplits.py scores a spectrum of mutation classes: 6 strand-folded
+classes with --fold, 12 forward-strand types without.  Two clades with the
+same class proportions can still differ inside a class -- more C>T at CpG and
+less elsewhere, say -- and a split found on a class shift may or may not
+carry a context shift too.  This script asks that of every accepted split,
 after the fact, without touching the search.
+
+Match the search: with --fold, the 96 folded context classes (6 classes x 16
+flank pairs); without it, the 192 forward-strand ones (12 types x 16), which
+keep apart the two strands an unfolded search keeps apart.
 
 For each split, its residual row (its mutations minus those of splits nested
 in it, as spectra.tsv reports) is set against its comparator's residual row as
-a 2 x 96 table of contexts.  The likelihood-ratio statistic G of that table
-splits exactly in two:
+a 2 x 96 (or 2 x 192) table of contexts.  The likelihood-ratio statistic G of
+that table splits exactly in two:
 
-  G(96) = G(between)  +  G(within)
+  G(contexts) = G(between)  +  G(within)
 
-  G(between)  the 2 x 6 table of classes: the shift spectrumSplits found.
-  G(within)   the sum over the six classes of a 2 x 16 table of that class's
+  G(between)  the 2 x 6 (or 2 x 12) table of classes: the shift
+              spectrumSplits scored.
+  G(within)   the sum over the classes of a 2 x 16 table of that class's
               contexts.  It is zero when the two rows have the same context
               shares inside every class, whatever their class proportions.
 
@@ -38,15 +44,15 @@ Contexts come from the parent's genome (trinucleotide.call_contexts), so
 --reference must be the ROOT's genome -- the rerooted reference on a rerooted
 tree.  Mutations with an unknown or masked flank, and both halves of an
 adjacent same-branch pair, are left out of every table, including G(between),
-so between + within = G(96) exactly.  --mask should be the masks the tree was
+so between + within = G(contexts) exactly.  --mask should be the masks the tree was
 built with.
 
-What it cannot tell you: whether a 96-class search would find splits this
-one did not.  That needs the search to score contexts.
+What it cannot tell you: whether a search scoring contexts would find splits
+this one did not.  That needs the search to score contexts.
 
 Usage:
     split_contexts.py --input_tree tree.pruned.masked.pb.gz \\
-        --spectra spectra.tsv --max_branch_length 250 \\
+        --spectra spectra.tsv --fold --max_branch_length 250 \\
         --reference root_genome.fa --mask selection_loci.bed,alignment_loci.bed \\
         --output split_contexts.tsv --output_contexts split_contexts_96.tsv \\
         > split_contexts.txt
@@ -66,7 +72,6 @@ from permutation_null import extract
 from branch_class_spectra import residual_groups
 import trinucleotide as tn
 
-NCLS = 6
 PER = 16
 
 
@@ -78,6 +83,10 @@ def parse_args(argv=None):
     p.add_argument("--spectra",
                    help="spectrumSplits.py --output_spectrum TSV; split roots "
                         "and residual totals are read from it")
+    p.add_argument("--fold", action="store_true",
+                   help="Use the 96 folded context classes, for a search run "
+                        "with --fold; without it, the 192 forward-strand "
+                        "classes of an unfolded search")
     p.add_argument("--max_branch_length", type=int, default=None,
                    help="Match the search; branches above it contribute "
                         "nothing")
@@ -138,17 +147,19 @@ def _xlogx(np, a):
 
 
 def g_parts(np, A, B):
-    """G statistics of 2 x 96 tables, rows A and B (arrays of shape (..., 96)).
+    """G statistics of 2 x n tables, rows A and B (arrays of shape (..., n)),
+    n = 16 x classes (96 or 192).
 
-    Returns (between, within_by_class) with shapes (...) and (..., 6).
+    Returns (between, within_by_class) with shapes (...) and (..., classes).
     G = 2 * [sum O ln O - sum rows ln rows - sum cols ln cols + N ln N],
-    so between + within.sum(-1) equals the 2 x 96 G exactly.
+    so between + within.sum(-1) equals the 2 x n G exactly.
     """
     A = np.asarray(A, dtype=np.float64)
     B = np.asarray(B, dtype=np.float64)
     shp = A.shape[:-1]
-    A6 = A.reshape(shp + (NCLS, PER))
-    B6 = B.reshape(shp + (NCLS, PER))
+    ncls = A.shape[-1] // PER
+    A6 = A.reshape(shp + (ncls, PER))
+    B6 = B.reshape(shp + (ncls, PER))
     C6 = A6 + B6
     rA = A6.sum(-1)
     rB = B6.sum(-1)
@@ -169,19 +180,19 @@ def g_parts(np, A, B):
 def shuffle_test(np, Xs, Xc, permutations, rng, chunk=256):
     """Branch-shuffle null for G(within).
 
-    Xs, Xc: (branches, 96) context counts of the split's and the comparator's
+    Xs, Xc: (branches, contexts) counts of the split's and the comparator's
     branches; branches with no called context are dropped by the caller.
     Each shuffle reassigns which branches belong to the split, keeping the
     number of split branches, and recomputes G(within) per class.
 
-    Returns dict with obs (6,), null (permutations, 6).
+    Returns dict with obs (classes,), null (permutations, classes).
     """
     X = np.vstack([Xs, Xc]).astype(np.float32)
     ns, n = Xs.shape[0], X.shape[0]
     T = X.sum(0, dtype=np.float64)
     A = Xs.sum(0, dtype=np.float64)
     _, obs = g_parts(np, A, T - A)
-    null = np.empty((permutations, NCLS))
+    null = np.empty((permutations, X.shape[1] // PER))
     done = 0
     while done < permutations:
         c = min(chunk, permutations - done)
@@ -225,8 +236,8 @@ def cell_contributions(np, A, B):
     """Each context's share of G(within): 2 * sum over the column's two cells
     of O ln(O/E), with E from that class's row and column totals.  Never
     negative (log-sum inequality), and sums to G(within)."""
-    A = np.asarray(A, dtype=np.float64).reshape(NCLS, PER)
-    B = np.asarray(B, dtype=np.float64).reshape(NCLS, PER)
+    A = np.asarray(A, dtype=np.float64).reshape(-1, PER)
+    B = np.asarray(B, dtype=np.float64).reshape(-1, PER)
     rA = A.sum(1, keepdims=True)
     rB = B.sum(1, keepdims=True)
     col = A + B
@@ -240,7 +251,7 @@ def cell_contributions(np, A, B):
 
 
 def within_shares(np, A):
-    A = np.asarray(A, dtype=np.float64).reshape(NCLS, PER)
+    A = np.asarray(A, dtype=np.float64).reshape(-1, PER)
     r = A.sum(1, keepdims=True)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(r > 0, A / r, 0.0).reshape(-1)
@@ -264,7 +275,8 @@ def read_fasta(path):
 
 
 def read_spectra(path):
-    """Ordered split IDs and Total_Mutations per split."""
+    """Ordered split IDs, Total_Mutations per split, and whether the file has
+    folded columns (a --fold search writes them, e.g. CT|GA)."""
     with open(path) as fh:
         hdr = fh.readline().rstrip("\n").split("\t")
         try:
@@ -272,6 +284,7 @@ def read_spectra(path):
         except ValueError:
             raise SystemExit("error: --spectra has no Node_ID column")
         ti = hdr.index("Total_Mutations") if "Total_Mutations" in hdr else None
+        folded = any("|" in h for h in hdr)
         ids, totals = [], {}
         for line in fh:
             f = line.rstrip("\n").split("\t")
@@ -279,15 +292,15 @@ def read_spectra(path):
                 ids.append(f[ci])
                 if ti is not None:
                     totals[f[ci]] = float(f[ti])
-    return ids, totals
+    return ids, totals, folded
 
 
-def branch_matrix(np, tree, contexts, group, cap, internal_only):
-    """(nodes, 96) called-context counts per branch, plus per-group totals of
+def branch_matrix(np, tree, contexts, group, cap, internal_only, n_ctx):
+    """(nodes, n_ctx) called-context counts per branch, plus per-group totals of
     parsed SNVs (called or not) for the check against spectra.tsv.  Branches
     over the cap, outside every group or excluded by --branches are zero."""
     n = len(tree.node_ids)
-    X = np.zeros((n, tn.N_CONTEXTS), dtype=np.int32)
+    X = np.zeros((n, n_ctx), dtype=np.int32)
     snvs = Counter()
     for i in range(n):
         g = group[i]
@@ -303,7 +316,7 @@ def branch_matrix(np, tree, contexts, group, cap, internal_only):
             c = np.frombuffer(ctx, dtype=np.int16)
             c = c[c >= 0]
             if len(c):
-                X[i] = np.bincount(c, minlength=tn.N_CONTEXTS)
+                X[i] = np.bincount(c, minlength=n_ctx)
     return X, snvs
 
 
@@ -354,8 +367,10 @@ def fmt_p(p):
 
 def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
     cap = args.max_branch_length
+    sch = tn.scheme(args.fold)
+    ncls = sch.ncls
     X, snvs = branch_matrix(np, tree, contexts, group, cap,
-                            args.branches == "internal")
+                            args.branches == "internal", sch.n)
     members = {}
     for i in range(len(tree.node_ids)):
         if group[i] >= 0:
@@ -393,11 +408,11 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
         row["g_between"] = float(between)
         row["g_within_cls"] = within
         row["g_within"] = float(within.sum())
-        g96 = row["g_between"] + row["g_within"]
-        row["within_share"] = row["g_within"] / g96 if g96 > 0 else 0.0
+        g_all = row["g_between"] + row["g_within"]
+        row["within_share"] = row["g_within"] / g_all if g_all > 0 else 0.0
         if len(ms) < 2 or len(mc) < 2:
             row.update(p=None, null_mean=None, excess=None,
-                       p_cls=[None] * NCLS, excess_cls=[None] * NCLS)
+                       p_cls=[None] * ncls, excess_cls=[None] * ncls)
         else:
             res = shuffle_test(np, Xs, Xc, args.permutations, rng)
             tot_null = res["null"].sum(1)
@@ -406,10 +421,10 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
                              if row["null_mean"] > 0 else None)
             row["p"] = perm_p(row["g_within"], tot_null)
             row["p_cls"] = [perm_p(within[j], res["null"][:, j])
-                            for j in range(NCLS)]
+                            for j in range(ncls)]
             nm = res["null"].mean(0)
             row["excess_cls"] = [within[j] / nm[j] if nm[j] > 0 else None
-                                 for j in range(NCLS)]
+                                 for j in range(ncls)]
         contrib = cell_contributions(np, A, B)
         row["contrib"] = contrib
         sa, sb = within_shares(np, A), within_shares(np, B)
@@ -423,10 +438,10 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
                          "s": float(sa[ci]), "c": float(sb[ci]),
                          "site": ts, "pos": pos})
         row["tops"] = tops
-        rA = A.reshape(NCLS, PER).sum(1)
-        rB = B.reshape(NCLS, PER).sum(1)
+        rA = A.reshape(ncls, PER).sum(1)
+        rB = B.reshape(ncls, PER).sum(1)
         row["few"] = [bool(rA[j] < args.min_class or rB[j] < args.min_class)
-                      for j in range(NCLS)]
+                      for j in range(ncls)]
         rows.append(row)
         print(f"  [{k + 1}/{len(ordered)}] {row['node']} vs "
               f"{row['comparator']}: G(within) {row['g_within']:.1f}, "
@@ -529,10 +544,12 @@ def run_controls(np, tree, X, group, roots, members, rows, args, rng):
 
 
 def report(rows, stats, args, out, ctrl=None):
-    L = tn.CLASS_LABELS
+    sch = tn.scheme(args.fold)
+    L, ncls = sch.class_labels, sch.ncls
     print("=" * 72, file=out)
     print("TRINUCLEOTIDE CONTEXT WITHIN CLASSES, PER SPLIT", file=out)
     print("=" * 72, file=out)
+    print(f"  context classes: {sch.name}", file=out)
     tot = sum(stats.values()) or 1
     print(f"  contexts called: {stats['called']:,} of {tot:,} SNVs "
           f"({100 * stats['called'] / tot:.2f}%); unknown "
@@ -550,7 +567,7 @@ def report(rows, stats, args, out, ctrl=None):
           f"per split", file=out)
     print("  G(within) is the context shift inside classes; within% is its "
           "share of the", file=out)
-    print("  2 x 96 G; excess is G(within) over its shuffled mean (about 1 "
+    print(f"  2 x {sch.n} G; excess is G(within) over its shuffled mean (about 1 "
           "under the null).", file=out)
     print("  q is Benjamini-Hochberg over the splits.  Top class is the "
           "class with the", file=out)
@@ -565,7 +582,7 @@ def report(rows, stats, args, out, ctrl=None):
     if ctrl:
         cp = sum(1 for c in ctrl if c["p"] <= 0.05)
         ex = sorted(c["excess"] for c in ctrl)
-        sx = sorted(r["excess"] for r in tested)
+        sx = sorted(r["excess"] for r in tested if r["excess"] is not None)
         print(f"  {len(ctrl)} random non-split clades, size-matched to the "
               f"splits: {cp} ({100 * cp / len(ctrl):.0f}%) with p <= 0.05; "
               f"median excess {ex[len(ex) // 2]:.2f}, against "
@@ -586,7 +603,7 @@ def report(rows, stats, args, out, ctrl=None):
     print("\n" + head, file=out)
     for r in sorted(rows, key=lambda r: (r["p"] is None, r["p"] or 1,
                                          -r["g_within"])):
-        j = int(max(range(NCLS), key=lambda j: r["g_within_cls"][j]))
+        j = int(max(range(ncls), key=lambda j: r["g_within_cls"][j]))
         exc = f"{r['excess']:.2f}" if r["excess"] is not None else "-"
         topc = (f"{L[j]} p {fmt_p(r['p_cls'][j])}"
                 f"{' (few)' if r['few'][j] else ''}")
@@ -603,7 +620,7 @@ def report(rows, stats, args, out, ctrl=None):
     else:
         show, what = hits, "for splits with q < 0.05"
     if not show:
-        show = sorted(tested, key=lambda r: (r["p"], -r["excess"]))[:5]
+        show = sorted(tested, key=lambda r: (r["p"], -(r["excess"] or 0)))[:5]
         what = "for the five lowest p (none pass)"
     print(f"\n  Contexts carrying G(within), {what}:", file=out)
     print("  share = the context's share of its class, split vs comparator; "
@@ -612,13 +629,13 @@ def report(rows, stats, args, out, ctrl=None):
           "frequent site.", file=out)
     for r in show:
         cls = ", ".join(f"{L[j]} {fmt_p(r['p_cls'][j])}"
-                        f"{'*' if r['few'][j] else ''}" for j in range(NCLS))
+                        f"{'*' if r['few'][j] else ''}" for j in range(ncls))
         print(f"\n  {r['node']} (q {fmt_p(r['q'])}, ctrl_p "
               f"{fmt_p(r.get('control_p'))}); per-class p: {cls}", file=out)
         for t in r["tops"]:
             arrow = "+" if t["s"] > t["c"] else "-"
             flag = "  <- one site" if t["site"] >= 0.2 else ""
-            print(f"    {tn.CONTEXT_LABELS[t['ctx']]:9s} {arrow} "
+            print(f"    {sch.labels[t['ctx']]:9s} {arrow} "
                   f"G {t['g']:7.1f}  share {t['s']:.3f} vs {t['c']:.3f}  "
                   f"site {t['site']:.2f} at {t['pos']}{flag}", file=out)
     if any(any(r["few"]) for r in show):
@@ -626,8 +643,8 @@ def report(rows, stats, args, out, ctrl=None):
               file=out)
 
 
-def write_tsv(rows, path):
-    L = tn.CLASS_LABELS
+def write_tsv(rows, path, sch):
+    L = sch.class_labels
     cols = ["node", "comparator", "split_mutations", "comparator_mutations",
             "split_branches", "comparator_branches", "g_between", "g_within",
             "within_share", "null_mean", "excess", "p", "q",
@@ -647,21 +664,21 @@ def write_tsv(rows, path):
             vals = [r.get(c) for c in cols[:16]]
             vals += [float(x) for x in r["g_within_cls"]] + list(r["p_cls"])
             vals.append(",".join(
-                f"{tn.CONTEXT_LABELS[t['ctx']]}{'+' if t['s'] > t['c'] else '-'}"
+                f"{sch.labels[t['ctx']]}{'+' if t['s'] > t['c'] else '-'}"
                 f":{t['g']:.1f}" for t in r["tops"]))
             fh.write("\t".join(f(v) for v in vals) + "\n")
 
 
-def write_contexts(rows, path):
+def write_contexts(rows, path, sch):
     with open(path, "w") as fh:
         fh.write("node\tcomparator\tclass\tcontext\tsplit_count\t"
                  "comparator_count\tsplit_class_share\t"
                  "comparator_class_share\tg_contribution\n")
         for r in rows:
-            for ci in range(tn.N_CONTEXTS):
+            for ci in range(sch.n):
                 fh.write(f"{r['node']}\t{r['comparator']}\t"
-                         f"{tn.CLASS_LABELS[ci // PER]}\t"
-                         f"{tn.CONTEXT_LABELS[ci]}\t{int(r['A'][ci])}\t"
+                         f"{sch.class_labels[ci // PER]}\t"
+                         f"{sch.labels[ci]}\t{int(r['A'][ci])}\t"
                          f"{int(r['B'][ci])}\t{r['share_s'][ci]:.6f}\t"
                          f"{r['share_c'][ci]:.6f}\t{r['contrib'][ci]:.4f}\n")
 
@@ -675,10 +692,11 @@ def selftest():
     rng = np.random.default_rng(7)
 
     # ---- the decomposition is exact --------------------------------
-    for _ in range(20):
-        A = rng.integers(0, 50, 96)
-        B = rng.integers(0, 50, 96)
-        A[rng.integers(0, 96, 10)] = 0
+    for rep in range(40):
+        n = 96 if rep % 2 else 192
+        A = rng.integers(0, 50, n)
+        B = rng.integers(0, 50, n)
+        A[rng.integers(0, n, 10)] = 0
         b, w = g_parts(np, A, B)
         T = np.vstack([A, B]).astype(float)
         E = T.sum(1, keepdims=True) * T.sum(0, keepdims=True) / T.sum()
@@ -687,8 +705,8 @@ def selftest():
         assert abs(b + w.sum() - g96) < 1e-6 * max(1, g96), (b, w.sum(), g96)
         assert abs(cell_contributions(np, A, B).sum() - w.sum()) < 1e-6
         assert (cell_contributions(np, A, B) >= -1e-9).all()
-    print("ok: G(between) + G(within) equals the 2 x 96 G, and the per-"
-          "context contributions sum to G(within)")
+    print("ok: G(between) + G(within) equals the 2 x 96 and 2 x 192 G, and "
+          "the per-context contributions sum to G(within)")
 
     ### A pure class shift has no within-class part, a pure context shift
     ### no between-class part.
@@ -720,7 +738,8 @@ def selftest():
     reps = 150
     null_p, prop_p, ctx_p = [], [], []
     shifted = probs.copy()
-    shifted[2 * PER + 2] *= 3.0
+    ### The class's commonest context, so power does not hang on the draw.
+    shifted[2 * PER + int(np.argmax(probs[2 * PER:3 * PER]))] *= 3.0
     shifted /= shifted.sum()
     for _ in range(reps):
         Xc = branches(300, probs)
@@ -769,6 +788,7 @@ def selftest():
     args.min_class = 1
     args.controls = 0
     args.control_alpha = 0.05
+    args.fold = True
     comp = comparators(tree, group, roots, args)
     idx = {nid: i for i, nid in enumerate(tree.node_ids)}
     assert comp[idx["a"]] == idx["root"] and comp[idx["root"]] is None
@@ -788,8 +808,46 @@ def selftest():
     print("ok: on a constructed tree the split's context shift is all "
           "within-class, names the two contexts and is significant")
 
+    ### The same tree with 192 forward-strand classes finds the same two
+    ### contexts, as forward-strand C>T.
+    s192 = tn.scheme(False)
+    c192, _st = s192.call(tree.parent, tree.children, tree.positions,
+                          tree.types, ref)
+    args.fold = False
+    r = run(np, tree, c192, stats, group, roots, comp, {}, args,
+            io.StringIO())[0]
+    assert r["g_between"] < 1e-9 and r["within_share"] > 0.99
+    assert {t["ctx"] for t in r["tops"]} == {
+        tn.stranded_context_index("A", "C", "G", "T"),
+        tn.stranded_context_index("A", "C", "C", "T")}, r["tops"]
+    print("ok: without --fold the same tree gives the same result in the 192 "
+          "forward-strand classes")
+
+    ### A strand-only difference: the split's leaves carry C>T at ACG and
+    ### the rest G>A at CGT, the same folded context on the other strand.
+    ### Folded, nothing differs; unfolded, the class (type) differs.
+    ref2 = "AACGTTAAAACGTTAA"
+    la = [N(f"a{i}", ["C3T"]) for i in range(6)]
+    lr = [N(f"r{i}", ["G12A"]) for i in range(6)]
+    tree2 = extract(N("root", [], [N("a", [], la)] + lr))
+    g2, roots2, _m = residual_groups(tree2, ["root", "a"])
+    comp2 = comparators(tree2, g2, roots2, args)
+    for fold in (True, False):
+        args.fold = fold
+        c2, st2 = tn.scheme(fold).call(tree2.parent, tree2.children,
+                                        tree2.positions, tree2.types, ref2)
+        r = run(np, tree2, c2, st2, g2, roots2, comp2, {}, args,
+                io.StringIO())[0]
+        if fold:
+            assert r["g_between"] < 1e-9 and r["g_within"] < 1e-9, r
+        else:
+            assert r["g_between"] > 5 and r["g_within"] < 1e-9, r
+    args.fold = True
+    print("ok: a difference only in strand is invisible folded and a class "
+          "difference in the 192 classes")
+
     ### Clade sizes stop at nested splits: root's clade is its own residual.
-    X, _ = branch_matrix(np, tree, contexts, group, None, False)
+    X, _ = branch_matrix(np, tree, contexts, group, None, False, 96)
     sz = clade_sizes(np, tree, X, group)
     assert sz[idx["root"]] == 6 and sz[idx["a"]] == 6, sz
     assert sz[idx["a0"]] == 1
@@ -837,8 +895,15 @@ def main(argv=None):
               "use for spectrumSplits.py", file=sys.stderr)
         return 1
 
-    split_ids, totals = read_spectra(args.spectra)
+    split_ids, totals, folded = read_spectra(args.spectra)
     print(f"{len(split_ids)} splits in {args.spectra}", file=sys.stderr)
+    if folded != args.fold:
+        print(f"  WARNING: {args.spectra} looks like a search run "
+              f"{'with' if folded else 'without'} --fold, but this run is "
+              f"{'with' if args.fold else 'without'} it.  Match the search: "
+              f"96 folded classes for a --fold search, 192 forward-strand "
+              f"ones for an unfolded one.", file=sys.stderr)
+    sch = tn.scheme(args.fold)
     ref = read_fasta(args.reference)
     masked = tn.read_mask(args.mask.split(",") if args.mask else [], len(ref))
     print(f"Reading {args.input_tree} ...", file=sys.stderr)
@@ -850,18 +915,17 @@ def main(argv=None):
         print(f"  WARNING: {len(missing)} split root(s) not in this tree, "
               f"e.g. {missing[0]}; node IDs are assigned when a tree is read, "
               f"so use the tree the search ran on.", file=sys.stderr)
-    print("Calling contexts ...", file=sys.stderr)
-    contexts, stats = tn.call_contexts(tree.parent, tree.children,
-                                       tree.positions, tree.types, ref,
-                                       masked)
+    print(f"Calling contexts, {sch.name} ...", file=sys.stderr)
+    contexts, stats = sch.call(tree.parent, tree.children, tree.positions,
+                               tree.types, ref, masked)
     comp = comparators(tree, group, roots, args)
     rows = run(np, tree, contexts, stats, group, roots, comp, totals, args,
                sys.stdout)
     if args.output:
-        write_tsv(rows, args.output)
+        write_tsv(rows, args.output, sch)
         print(f"Per-split table written to {args.output}", file=sys.stderr)
     if args.output_contexts:
-        write_contexts(rows, args.output_contexts)
+        write_contexts(rows, args.output_contexts, sch)
         print(f"Per-context table written to {args.output_contexts}",
               file=sys.stderr)
     return 0

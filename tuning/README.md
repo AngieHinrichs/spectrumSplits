@@ -864,6 +864,12 @@ all 96 at once need about 18,000 mutations on the smaller side, and the
 rarest within-class test (`TG|AC`'s 16 contexts) needs about 850 `TG|AC`
 mutations, about 11,000 in total.
 
+The 96 classes fold the two strands together, as `--fold` does. If step 5
+decides not to fold, rerun this with `--stranded_context` for the 192
+forward-strand classes (the 12 types x 16 flank pairs), which keep apart
+what an unfolded search keeps apart. On the walkthrough tree all 192 at once
+need about 39,000 mutations.
+
 ### 5. Decide whether to fold
 
 Read this off `profile_masked.txt` from step 4. Its GLOBAL SPECTRUM section
@@ -967,6 +973,14 @@ and |z| up to about 3. A synthetic tree with an extra 10% of one clade's
 G>A turned into forward C>T gave chi2/df 26 and z 13 for that clade. The test
 reports the clade, so if it fires, look there for a reference or alignment
 problem before you unfold.
+
+If you do unfold, the context analyses follow. The 96 context classes fold
+the strands together, so they can't see the forward-strand signal that made
+you unfold. Use the 192 forward-strand classes instead: `profile_tree.py
+--stranded_context` in step 4, and leave out `--fold` for
+`split_contexts.py` in step 11 and `gene_hit_contrasts.py --context` in
+step 12. On a single-stranded genome this matters most: C>U and G>A, say, are
+different processes with different contexts.
 
 Settle this now: it changes both the floor in step 6 and the null in step 7.
 
@@ -1881,13 +1895,15 @@ The search scores six classes. Two clades can share those six proportions and
 still differ inside a class, for example more C>T at CpG and less elsewhere.
 A split found on a class shift may or may not carry a context shift as well.
 `split_contexts.py` asks that of every split, after the fact, without
-changing the search. Use the tree, `--max_branch_length` and masks the search
-used, and the root's genome as `--reference` (on the MTBC tree, the rerooted
-`modified_NC_000962.3.fa`):
+changing the search. Use the tree, `--fold`, `--max_branch_length` and masks
+the search used, and the root's genome as `--reference` (on the MTBC tree,
+the rerooted `modified_NC_000962.3.fa`). With `--fold` it counts the 96
+folded context classes. Without it, for an unfolded search, it counts the 192
+forward-strand ones, and the classes below are the 12 types instead of 6.
 
 ```
 split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
-    --max_branch_length 250 --reference modified_NC_000962.3.fa \
+    --fold --max_branch_length 250 --reference modified_NC_000962.3.fa \
     --mask selection_loci.bed,alignment_loci.bed \
     --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
     > split_contexts.txt
@@ -1895,7 +1911,8 @@ split_contexts.py ... --branches internal --output split_contexts_internal.tsv \
     > split_contexts_internal.txt
 ```
 
-Each split's residual row is set against its clade parent's as a 2 x 96 table.
+Each split's residual row is set against its clade parent's as a 2 x 96 table
+(2 x 192 unfolded).
 That table's G statistic is the sum of two parts. G(between) is the 2 x 6
 class table, which is what the search found. G(within) adds up, over the six
 classes, a 2 x 16 table of that class's contexts. It is zero whenever the
@@ -1963,7 +1980,7 @@ right:
   branches between the two nodes, not to lineage 4.8 as a whole.
 - **`node_14331`.** Beijing doubles C[T>C]C.
 
-What this cannot tell you is whether a search scoring all 96 contexts would
+What this cannot tell you is whether a search scoring all the contexts would
 find splits this one did not. That needs the search itself to score
 contexts.
 
@@ -2223,8 +2240,9 @@ p for the class and the effective event count. On this tree the all-hits run too
 **Where in the class: trinucleotide context.** A class shift can be spread
 over the class's 16 contexts in proportion to how common each one is, or it
 can sit in a few. Which one it is says more about mechanism than the class
-total does. `--context` repeats the test in the 96 context classes, with the
-same events, comparators, draws and controls. It needs `--fold` and numpy.
+total does. `--context` repeats the test in the context classes, with the
+same events, comparators, draws and controls: the 96 folded ones with
+`--fold`, the 192 forward-strand ones without. It needs numpy.
 Give `--mask` the BEDs the tree was masked with, as for `profile_tree.py`, and
 the reference must be the root's genome (step 4). Run it on the genes worth a
 closer look, not the whole list:
@@ -2542,7 +2560,7 @@ Reports:
 | Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
 | Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
 | Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
-| Context spectrum (with `--reference`) | The 96 trinucleotide context classes, with flanks from each mutation's parent genome: how many could be called, a check that the FASTA is the root's genome, count, share, opportunity and relative rate per context, any context dominated by one site, and the count floors a context test needs. [Step 4](#4-re-profile-and-check-what-the-mask-bought) reads it |
+| Context spectrum (with `--reference`) | The 96 trinucleotide context classes (192 forward-strand ones with `--stranded_context`), with flanks from each mutation's parent genome: how many could be called, a check that the FASTA is the root's genome, count, share, opportunity and relative rate per context, any context dominated by one site, and the count floors a context test needs. [Step 4](#4-re-profile-and-check-what-the-mask-bought) reads it |
 | Strand asymmetry (with `--reference`, or `--terminus`) | Complementary-pair log2 ratios on the leading and lagging arms, in + and − strand genes (with `--annotation`), and per annotated clade, with a heterogeneity chi-squared for each pair. It ends with a FOLD TEST and a verdict. This is what step 5 reads |
 
 The strand asymmetry section needs the origin and terminus of replication.
@@ -2565,7 +2583,9 @@ trinucleotides are left out of the opportunity counts. Pass the BEDs the tree
 was masked with. `relative rate` divides each context's count by how often its
 trinucleotide occurs, relative to its class's average (1 is average).
 `--context_table` writes the 96 rows as a TSV, and `--no_context` skips the
-section.
+section. `--stranded_context` reports the 192 forward-strand classes instead,
+for a tree that step 5 decides not to fold. Their opportunity counts are over
+the 64 forward-strand trinucleotides.
 
 `--node_table` writes one row per node (branch and subtree counts, tips,
 mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.
@@ -3042,7 +3062,7 @@ Tests every split for a trinucleotide-context shift inside its classes. Needs
 
 ```
 split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
-    --max_branch_length 250 --reference root_genome.fa \
+    --fold --max_branch_length 250 --reference root_genome.fa \
     --mask selection_loci.bed,alignment_loci.bed \
     --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
     > split_contexts.txt
@@ -3050,15 +3070,18 @@ split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
 
 Inputs:
 
-- `--input_tree`, `--spectra` and `--max_branch_length` must be the search's.
-  Residual totals are rebuilt from the tree and checked against
-  `spectra.tsv`'s `Total_Mutations`.
+- `--input_tree`, `--spectra`, `--fold` and `--max_branch_length` must be
+  the search's. Residual totals are rebuilt from the tree and checked against
+  `spectra.tsv`'s `Total_Mutations`. A `spectra.tsv` with folded columns and
+  no `--fold`, or the reverse, is warned about.
 - `--reference` must be the root's genome. More than 1% of mutations
   disagreeing with it is reported as a warning.
 - `--mask` takes BED files. A context with a masked flank is not called.
 
 Options:
 
+- `--fold`: the 96 folded context classes in 6 classes. Without it, the
+  192 forward-strand classes in the 12 types, for an unfolded search.
 - `--against`. `clade` (the default) compares against the nearest
   enclosing split's residual. `search` compares against the subtree the
   search found the split in, read from `--splits_log`, as `split_drivers.py`
@@ -3088,14 +3111,17 @@ context comes with the most frequent site's share of it.
 - G(within) and p per class;
 - `top_contexts`.
 
-`--output_contexts` writes the 2 x 96 table: counts, within-class shares and
-each context's G contribution. `--selftest` checks the following, then exits:
+`--output_contexts` writes the 2 x 96 (or 2 x 192) table: counts,
+within-class shares and each context's G contribution. `--selftest` checks
+the following, then exits:
 
-- that G(between) and G(within) add up to the 2 x 96 G exactly;
+- that G(between) and G(within) add up to the 2 x 96 and 2 x 192 G exactly;
 - the shuffle's calibration, under the null and under a proportional class
   shift;
 - its power for a one-context shift;
-- the pipeline on a constructed tree;
+- the pipeline on a constructed tree, in both class sets;
+- that a difference only in strand is invisible folded and a class
+  difference unfolded;
 - that control clades stop at nested splits.
 
 ### `gene_hit_contrasts.py`
@@ -3141,11 +3167,12 @@ Options:
   the list is long enough that its bar is below 0.001 (step 12).
 - `--null_draws FILE` with `--null_draws_genes g1,g2` (or `ALL`): write every
   permutation's class shifts for those genes, for `plot_gene_hits.py`.
-- `--context`: count the 96 trinucleotide context classes instead (needs
-  `--fold` and numpy; see step 12). `--mask` gives the BEDs the tree was
-  masked with, so masked flanks are unknown. `--output_context` (default
-  `hit_context.tsv`) gets the per-context rows. The events file and the
-  `--null_draws` file still report the six classes.
+- `--context`: count trinucleotide context classes instead: the 96 folded
+  ones with `--fold`, the 192 forward-strand ones without (needs numpy; see
+  step 12). `--mask` gives the BEDs the tree was masked with, so masked
+  flanks are unknown. `--output_context` (default `hit_context.tsv`) gets the
+  per-context rows. The events file and the `--null_draws` file still report
+  the 6 classes, or the 12 types.
 
 Outputs:
 
@@ -3262,14 +3289,24 @@ sequence (ends are not wrapped, even for a circular genome), or when the
 adjacent position changed on the same branch. Double substitutions are a
 signature of their own and are counted separately rather than called twice.
 Folding to 96 has the same blind spot as `--fold`: a leading- or
-transcribed-strand process cancels between the replication arms. Oriented
-classes would need the `--orient` recoding that is parked for
-`spectrumSplits.py`.
+transcribed-strand process cancels between the replication arms.
+
+For an unfolded tree there are also 192 forward-strand classes: the 12 types
+in the order of the 12-type spectrum, each with its 16 flank pairs as read on
+the reference's forward strand, with no reverse complement. They need no
+notion of which strand leads or is transcribed. `scheme(fold)` bundles
+either set's size, labels and opportunity counts, so `profile_tree.py`,
+`split_contexts.py` and `gene_hit_contrasts.py` choose in one place. Oriented
+classes, by leading or coding strand, would need the `--orient` recoding that
+is parked for `spectrumSplits.py`.
 
 `--selftest` checks the class order and folding against `folded_index()`,
 flanks that change on an ancestral branch, reversions, sibling isolation,
 doublets, masks and a wrong reference. It also checks 30 random trees against
-a brute-force walk up the tree, and the opportunity counts.
+a brute-force walk up the tree, and the opportunity counts. For the 192
+classes, it checks that each strand-specific type gets its own class, that
+the 192 calls fold onto the 96 on random trees, and that the 64
+forward-strand opportunity counts fold onto the 32.
 
 ## Gene lists
 

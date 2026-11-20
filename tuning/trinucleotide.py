@@ -14,9 +14,18 @@ is a purine is reverse-complemented, trinucleotide and all, so G>A in xGy is
 counted as C>T in comp(y) C comp(x).
 
 Folding to 96 has the same blind spot as --fold: a process tied to the leading
-or transcribed strand cancels between the two replication arms.  Oriented 192
-classes would be the context-level counterpart of spectrumSplits.py
---orient (parked); this module does not do that yet.
+or transcribed strand cancels between the two replication arms.
+
+Unfolded: 192 forward-strand classes.  For a tree searched without --fold,
+call_contexts(..., stranded=True) keeps the 12 types of the reference's
+forward strand, in MUT_TYPES order (AC, AG, ... TG) so class k is type k of
+the 12-type spectrum, each with its 16 flank pairs as read on the forward
+strand: G>A in xGy stays G>A in xGy.  That is the context counterpart of an
+unfolded search, and needs no notion of which strand leads or is
+transcribed.  Oriented classes, by leading or coding strand, would be the
+counterpart of spectrumSplits.py --orient (parked); this module does not do
+that.  scheme(fold) bundles either set's sizes, labels and opportunity
+counts, so a caller picks one in one place.
 
 Where the flanking bases come from.  Not the reference: the PARENT's genome,
 i.e. the reference with every mutation on the path from the root applied.  One
@@ -56,7 +65,7 @@ from array import array
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from permutation_null import MUT_TYPES
+from permutation_null import MUT_INDEX, MUT_TYPES
 
 BASES = "ACGT"
 BASE_INDEX = {b: i for i, b in enumerate(BASES)}
@@ -71,6 +80,7 @@ CLASS_LABELS = ["CA|GT", "CG|GC", "CT|GA", "TA|AT", "TC|AG", "TG|AC"]
 UNKNOWN = -1
 DOUBLET = -2
 N_CONTEXTS = 96
+N_STRANDED = 192
 
 
 def context_label(idx):
@@ -94,6 +104,37 @@ def context_index(left, ref, right, alt):
                                  COMPLEMENT[left], COMPLEMENT[alt])
     return (CLASS_INDEX[(ref, alt)] * 16 + BASE_INDEX[left] * 4
             + BASE_INDEX[right])
+
+
+def stranded_label(idx):
+    """Forward-strand label, e.g. A[G>A]C."""
+    t, rest = divmod(idx, 16)
+    left, right = divmod(rest, 4)
+    mt = MUT_TYPES[t]
+    return f"{BASES[left]}[{mt[0]}>{mt[1]}]{BASES[right]}"
+
+
+STRANDED_LABELS = [stranded_label(i) for i in range(N_STRANDED)]
+
+
+def stranded_context_index(left, ref, right, alt):
+    """0..191 for a fully known forward-strand context, else UNKNOWN."""
+    if left not in COMPLEMENT or right not in COMPLEMENT \
+            or ref not in COMPLEMENT or alt not in COMPLEMENT or ref == alt:
+        return UNKNOWN
+    return (MUT_INDEX[ref + alt] * 16 + BASE_INDEX[left] * 4
+            + BASE_INDEX[right])
+
+
+def stranded_trinuc_of_context(idx):
+    """Index 0..63 of the forward-strand trinucleotide a stranded context
+    sits in: centre base, then 5', then 3'."""
+    t, rest = divmod(idx, 16)
+    return BASE_INDEX[MUT_TYPES[t][0]] * 16 + rest
+
+
+STRANDED_TRINUC_LABELS = [f"{BASES[l]}{c}{BASES[r]}" for c in BASES
+                          for l in range(4) for r in range(4)]
 
 
 def class_of(idx):
@@ -128,7 +169,8 @@ def read_mask(paths, length):
     return masked
 
 
-def call_contexts(parent, children, positions, types, ref, masked=None):
+def call_contexts(parent, children, positions, types, ref, masked=None,
+                  stranded=False):
     """Context index for every parsed SNV on every branch.
 
     parent, children, positions, types: as in permutation_null.FlatTree
@@ -140,7 +182,9 @@ def call_contexts(parent, children, positions, types, ref, masked=None):
     mutation's own reference base disagrees with the reconstructed parent
     base) and flank_changed (a called context whose flank differs from the
     reference, i.e. one that reference flanks would have got wrong).
+    stranded: 192 forward-strand indices instead of the 96 folded ones.
     """
+    index_of = stranded_context_index if stranded else context_index
     n = len(parent)
     L = len(ref)
     contexts = [None] * n
@@ -181,7 +225,7 @@ def call_contexts(parent, children, positions, types, ref, masked=None):
                 stats["doublet"] += 1
                 continue
             left, right = flank(p - 1), flank(p + 1)
-            idx = context_index(left, mt[0], right, mt[1])
+            idx = index_of(left, mt[0], right, mt[1])
             out.append(idx)
             if idx < 0:
                 stats["unknown"] += 1
@@ -222,6 +266,59 @@ def opportunity(ref, masked=None):
         counts[(0 if c == "C" else 16) + BASE_INDEX[left] * 4
                + BASE_INDEX[right]] += 1
     return counts
+
+
+def opportunity_stranded(ref, masked=None):
+    """Occurrences of each of the 64 forward-strand trinucleotides, over
+    centres whose three bases are A/C/G/T and unmasked."""
+    counts = [0] * 64
+    L = len(ref)
+    for p in range(2, L):
+        if masked is not None and (masked[p - 1] or masked[p]
+                                   or masked[p + 1]):
+            continue
+        left, c, right = ref[p - 2], ref[p - 1], ref[p]
+        if left not in COMPLEMENT or c not in COMPLEMENT \
+                or right not in COMPLEMENT:
+            continue
+        counts[BASE_INDEX[c] * 16 + BASE_INDEX[left] * 4
+               + BASE_INDEX[right]] += 1
+    return counts
+
+
+class Scheme(object):
+    """One context class set: 96 folded or 192 forward-strand.
+
+    n contexts in ncls classes of 16; class k is contexts 16k .. 16k+15.
+    class_labels match the 6-type folded or 12-type spectrum's order.
+    """
+
+    def __init__(self, fold):
+        self.fold = fold
+        self.stranded = not fold
+        if fold:
+            self.n, self.class_labels = N_CONTEXTS, list(CLASS_LABELS)
+            self.labels = CONTEXT_LABELS
+            self.trinuc_of = trinuc_of_context
+            self.trinuc_labels = TRINUC_LABELS
+            self.opportunity = opportunity
+            self.name = "96 pyrimidine-centred (folded)"
+        else:
+            self.n, self.class_labels = N_STRANDED, list(MUT_TYPES)
+            self.labels = STRANDED_LABELS
+            self.trinuc_of = stranded_trinuc_of_context
+            self.trinuc_labels = STRANDED_TRINUC_LABELS
+            self.opportunity = opportunity_stranded
+            self.name = "192 forward-strand (unfolded)"
+        self.ncls = self.n // 16
+
+    def call(self, parent, children, positions, types, ref, masked=None):
+        return call_contexts(parent, children, positions, types, ref, masked,
+                             stranded=self.stranded)
+
+
+def scheme(fold=True):
+    return Scheme(fold)
 
 
 # --------------------------------------------------------------------------
@@ -395,6 +492,87 @@ def selftest():
     assert sum(opportunity("ACGTT", m)) == 2
     print("ok: opportunity folds purine centres and skips masked or "
           "unknown trinucleotides")
+
+    # ---- 192 forward-strand classes ----------------------------------
+    assert STRANDED_LABELS[0] == "A[A>C]A" and STRANDED_LABELS[191] == "T[T>G]T"
+    seen = Counter()
+    for l in BASES:
+        for r in BASES:
+            for ref_b in BASES:
+                for alt in BASES:
+                    if ref_b != alt:
+                        i = stranded_context_index(l, ref_b, r, alt)
+                        seen[i] += 1
+                        assert STRANDED_LABELS[i] == f"{l}[{ref_b}>{alt}]{r}"
+                        ### Folding the stranded class gives the folded one.
+                        f = context_index(l, ref_b, r, alt)
+                        assert _fold_map[i // 16] == class_of(f)
+                        assert STRANDED_TRINUC_LABELS[
+                            stranded_trinuc_of_context(i)] == l + ref_b + r
+    assert len(seen) == 192 and set(seen.values()) == {1}
+    ### The two strands stay apart: A[C>T]G and C[G>A]T are different.
+    assert stranded_context_index("A", "C", "G", "T") != \
+        stranded_context_index("C", "G", "T", "A")
+    print("ok: 192 forward-strand classes in MUT_TYPES order, one per "
+          "strand-specific type, and they fold onto the 96")
+
+    ### Same calls on a random tree: stranded and folded agree after folding.
+    rng = random.Random(5)
+    for rep in range(10):
+        L = 60
+        ref_s = "".join(rng.choice("ACGT") for _ in range(L))
+        counter = [0]
+
+        def grow2(depth, genome):
+            muts, used = [], set()
+            for _ in range(rng.randint(0, 4)):
+                p = rng.randint(1, L)
+                if p in used:
+                    continue
+                cur = genome.get(p, ref_s[p - 1])
+                alt = rng.choice([b for b in BASES if b != cur])
+                muts.append(f"{cur}{p}{alt}")
+                used.add(p)
+            g2 = dict(genome)
+            for m in muts:
+                g2[int(m[1:-1])] = m[-1]
+            counter[0] += 1
+            kids = [grow2(depth + 1, g2) for _ in range(
+                rng.randint(0, 3) if depth < 4 else 0)]
+            return N(f"s{counter[0]}", muts, kids)
+        tree = extract(grow2(0, {}))
+        f96, _s1 = scheme(True).call(tree.parent, tree.children,
+                                     tree.positions, tree.types, ref_s)
+        s192, _s2 = scheme(False).call(tree.parent, tree.children,
+                                       tree.positions, tree.types, ref_s)
+        assert _s1 == _s2
+        for a, b, typs in zip(f96, s192, tree.types):
+            for x, y, t in zip(a, b, typs):
+                assert (x < 0) == (y < 0), (x, y)
+                if y >= 0:
+                    assert y // 16 == t
+                    assert _fold_map[y // 16] == class_of(x)
+    print("ok: on 10 random trees the 192 calls fold onto the 96 calls, and "
+          "each stranded class is the mutation's own type")
+
+    opp = opportunity_stranded("ACGTT")
+    want = [0] * 64
+    want[BASE_INDEX["C"] * 16 + BASE_INDEX["A"] * 4 + BASE_INDEX["G"]] = 1
+    want[BASE_INDEX["G"] * 16 + BASE_INDEX["C"] * 4 + BASE_INDEX["T"]] = 1
+    want[BASE_INDEX["T"] * 16 + BASE_INDEX["G"] * 4 + BASE_INDEX["T"]] = 1
+    assert opp == want, opp
+    ### Folding the 64 gives the 32.
+    folded = [0] * 32
+    for i, k in enumerate(opp):
+        c = BASES[i // 16]
+        l, r = BASES[(i % 16) // 4], BASES[i % 4]
+        if c in "GA":
+            l, c, r = COMPLEMENT[r], COMPLEMENT[c], COMPLEMENT[l]
+        folded[(0 if c == "C" else 16) + BASE_INDEX[l] * 4
+               + BASE_INDEX[r]] += k
+    assert folded == opportunity("ACGTT")
+    print("ok: forward-strand opportunity counts 64 trinucleotides and folds "
+          "onto the 32")
     print("all self-tests passed")
     return 0
 

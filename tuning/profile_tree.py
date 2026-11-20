@@ -24,7 +24,9 @@ Reports:
   * with --reference: the 96-class trinucleotide context spectrum, with
     flanks taken from each mutation's parent genome, normalised by how often
     each trinucleotide occurs, and the count floors a context test needs
-    (see trinucleotide.py; --mask makes masked flanks unknown)
+    (see trinucleotide.py; --mask makes masked flanks unknown).  With
+    --stranded_context, the 192 forward-strand classes instead, for a tree
+    that step 5's FOLD TEST says not to fold
 
 Nothing is modified; the tree is read only.
 
@@ -107,7 +109,11 @@ def parse_args():
                         "of the opportunity counts.  Pass the BEDs the tree was "
                         "masked with")
     parser.add_argument("--context_table", type=str, default=None,
-                        help="Write the 96-class context spectrum to this TSV")
+                        help="Write the context spectrum to this TSV")
+    parser.add_argument("--stranded_context", action="store_true",
+                        help="Report the 192 forward-strand context classes "
+                        "instead of the 96 folded ones, for a tree that will "
+                        "be searched without --fold")
     parser.add_argument("--no_context", action="store_true",
                         help="Skip the CONTEXT SPECTRUM section even with --reference")
     return parser.parse_args()
@@ -358,22 +364,23 @@ def homogeneity_chi2(pairs):
 def report_context(tn, parent, children, positions, types, ref, args, out):
     """The CONTEXT SPECTRUM section, and --context_table."""
     masked = tn.read_mask(args.mask.split(",") if args.mask else [], len(ref))
+    sch = tn.scheme(not args.stranded_context)
     print("Calling trinucleotide contexts ...", file=sys.stderr)
-    contexts, stats = tn.call_contexts(parent, children, positions, types,
-                                       ref, masked)
-    counts = [0] * tn.N_CONTEXTS
-    per_site = [Counter() for _ in range(tn.N_CONTEXTS)]
+    contexts, stats = sch.call(parent, children, positions, types, ref,
+                               masked)
+    counts = [0] * sch.n
+    per_site = [Counter() for _ in range(sch.n)]
     for pos_arr, ctx_arr in zip(positions, contexts):
         for p, c in zip(pos_arr, ctx_arr):
             if c >= 0:
                 counts[c] += 1
                 per_site[c][p] += 1
-    opp = tn.opportunity(ref, masked)
+    opp = sch.opportunity(ref, masked)
     total = sum(counts)
     n_all = stats["called"] + stats["unknown"] + stats["doublet"]
 
     print("=" * 72, file=out)
-    print("CONTEXT SPECTRUM  (96 pyrimidine-centred trinucleotide classes)", file=out)
+    print(f"CONTEXT SPECTRUM  ({sch.name} trinucleotide classes)", file=out)
     print("=" * 72, file=out)
     print("  Flanks come from each mutation's parent genome, reconstructed down", file=out)
     print("  the tree from the reference, which must be the root's genome.", file=out)
@@ -403,18 +410,19 @@ def report_context(tn, parent, children, positions, types, ref, args, out):
 
     ### Within each class, the rate in a context relative to the class's
     ### average rate per available trinucleotide: 1 is average, 2 twice as hot.
-    cls_count = [sum(counts[16 * k:16 * k + 16]) for k in range(6)]
-    cls_opp = [sum(opp[tn.trinuc_of_context(16 * k + j)] for j in range(16))
-               for k in range(6)]
+    ncls = sch.ncls
+    cls_count = [sum(counts[16 * k:16 * k + 16]) for k in range(ncls)]
+    cls_opp = [sum(opp[sch.trinuc_of(16 * k + j)] for j in range(16))
+               for k in range(ncls)]
     rows = []
-    for c in range(tn.N_CONTEXTS):
-        k = tn.class_of(c)
-        o = opp[tn.trinuc_of_context(c)]
+    for c in range(sch.n):
+        k = c // 16
+        o = opp[sch.trinuc_of(c)]
         rel = (counts[c] / o) / (cls_count[k] / cls_opp[k]) \
             if o and cls_count[k] and cls_opp[k] else float("nan")
         top = per_site[c].most_common(1)
         top_share = top[0][1] / counts[c] if top and counts[c] else 0.0
-        rows.append((tn.CLASS_LABELS[k], tn.CONTEXT_LABELS[c], counts[c],
+        rows.append((sch.class_labels[k], sch.labels[c], counts[c],
                      counts[c] / total,
                      counts[c] / cls_count[k] if cls_count[k] else float("nan"),
                      o, rel, top[0][0] if top else "", top_share))
@@ -441,20 +449,20 @@ def report_context(tn, parent, children, positions, types, ref, args, out):
     if zero:
         print(f"    {zero} contexts have no mutations at all", file=out)
     if p_min:
-        print(f"    96 cells at once: rarest context p={p_min:.5f} -> the smaller", file=out)
+        print(f"    {sch.n} cells at once: rarest context p={p_min:.5f} -> the smaller", file=out)
         print(f"    side needs >= {math.ceil(5 / p_min)} mutations", file=out)
     print("    16 contexts within one class (the conditional test of whether a", file=out)
     print("    class's context mix shifted), in mutations of that class and in", file=out)
     print("    total mutations at this tree's class shares:", file=out)
-    for k in range(6):
+    for k in range(ncls):
         sub = counts[16 * k:16 * k + 16]
         nz = [c for c in sub if c]
         if not nz or not cls_count[k]:
             continue
         s_min = min(nz) / cls_count[k]
         need = math.ceil(5 / s_min)
-        print(f"      {tn.CLASS_LABELS[k]}: rarest context share {s_min:.4f} -> "
-              f">= {need} {tn.CLASS_LABELS[k]} mutations "
+        print(f"      {sch.class_labels[k]}: rarest context share {s_min:.4f} -> "
+              f">= {need} {sch.class_labels[k]} mutations "
               f"(~{math.ceil(need * total / cls_count[k])} total)", file=out)
     print(file=out)
 

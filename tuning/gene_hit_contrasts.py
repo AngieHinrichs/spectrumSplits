@@ -91,11 +91,13 @@ genes whose mechanisms differ: a gene that raises CT|GA and one that raises
 CA|GT cancel there.  ALL is a screen.  The evidence is in the per-gene rows.
 
 Trinucleotide context (--context).  The same events, comparators, draws and
-controls, counted in the 96 pyrimidine-centred context classes of
-trinucleotide.py instead of 6 classes, to ask where inside a class a shift
-falls.  It needs --fold (the 96 classes are folded) and numpy.  Every
-summary column of a --fold run is still written, computed by summing the
-contexts of each class, plus:
+controls, counted in trinucleotide context classes instead of mutation
+classes, to ask where inside a class a shift falls.  With --fold, the 96
+pyrimidine-centred classes (6 classes x 16 flank pairs); without it, the 192
+forward-strand classes (12 types x 16), which keep the strands apart as an
+unfolded run does.  Needs numpy.  Every summary column of the same run
+without --context is still written, computed by summing the contexts of
+each class, plus:
 
   shape_p_<class>  does the class's shift fall on its 16 contexts in
                    proportion to how common each context is in the tree?
@@ -107,14 +109,14 @@ contexts of each class, plus:
                    which ones is in --output_context.  "Proportional" uses the
                    tree-wide context mix, so a comparator whose own mix
                    differs a little from the tree's adds a second-order term.
-  shape_omnibus_p  the same, summed over the six classes.
+  shape_omnibus_p  the same, summed over the classes.
 
 --output_context has one row per test and context: the context's share of
 its class tree-wide, its shift, the shift a proportional spread would give,
 the excess over that, and a two-sided permutation p for the shift itself.
 Contexts that cannot be called -- a masked or unknown flank, or an adjacent
 change on the same branch -- are left out of every count, so the class
-totals differ slightly from a --fold run's, and the draws differ, so do not
+totals differ slightly from a run without --context, and the draws differ, so do not
 expect its p values to match one digit for digit.
 
 Usage:
@@ -215,8 +217,9 @@ def parse_args():
                    help="Comma-separated genes (or ALL) whose permutation "
                         "draws --null_draws writes")
     p.add_argument("--context", action="store_true",
-                   help="Count the 96 trinucleotide context classes (needs "
-                        "--fold and numpy); see the module docstring")
+                   help="Count trinucleotide context classes: 96 folded with "
+                        "--fold, 192 forward-strand without (needs numpy); "
+                        "see the module docstring")
     p.add_argument("--mask", type=str, default=None,
                    help="With --context: comma-separated BED files the tree "
                         "was masked with; a mutation with a masked flank has "
@@ -505,10 +508,10 @@ def prepare_event(tree, h, hits, V, T, own, adj, top, ncat,
 
     prep = Prepared()
     prep.wd, prep.w, prep.cum = [], [], []
-    ### With 96 context classes, also the within-class version: each class's
-    ### 16 context shares, weighted by that class's counts.  See
+    ### With context classes (96 or 192), also the within-class version: each
+    ### class's 16 context shares, weighted by that class's counts.  See
     ### ContextAccumulator for why the shape test needs it.
-    blocks = ncat // 16 if ncat == 96 else 0
+    blocks = ncat // 16 if ncat % 16 == 0 else 0
     prep.wd2, prep.w2 = [], []
     acc = 0
     for v, wt in elig:
@@ -618,7 +621,7 @@ def run_test(tree, test_events, V, T, own, ncat, args, pbar, rng,
         rows.append(row)
         if prep is not None:
             w0.append(prep.w[0])
-            ### With 96 classes, holding every event's draws until the end
+            ### With context classes, holding every event's draws until the end
             ### costs gigabytes on a large list; the accumulator consumes
             ### each event as it is built.
             if accumulator is not None:
@@ -643,7 +646,8 @@ def effective_events(ws):
 
 
 class ContextAccumulator(object):
-    """The permutation test of permutation_test(), for 96 context classes.
+    """The permutation test of permutation_test(), for context classes
+    (96 folded or 192 forward-strand: any multiple of 16).
 
     Vectorised with numpy and fed one event at a time.  Each event's draws
     for all permutations are taken at once, and its contribution added to a
@@ -794,18 +798,15 @@ def main():
     else:
         ncat, cats, fold_map = 12, MUT_TYPES, None
     if args.context:
-        if not args.fold:
-            print("error: --context counts the 96 folded context classes; "
-                  "pass --fold as well, so the summary's classes say so",
-                  file=sys.stderr)
-            return 2
         try:
             import numpy
         except ImportError:
             print("error: --context needs numpy", file=sys.stderr)
             return 1
         import trinucleotide as tn
-        ncat = tn.N_CONTEXTS
+        sch = tn.scheme(args.fold)
+        ncat = sch.n
+        assert sch.class_labels == list(cats), (sch.class_labels, cats)
     elif args.mask:
         print("note: --mask only matters with --context; ignoring it",
               file=sys.stderr)
@@ -862,9 +863,8 @@ def main():
     if args.context:
         masked = tn.read_mask(args.mask.split(",") if args.mask else [],
                               len(ref))
-        contexts, cstats = tn.call_contexts(tree.parent, tree.children,
-                                            tree.positions, tree.types, ref,
-                                            masked)
+        contexts, cstats = sch.call(tree.parent, tree.children,
+                                    tree.positions, tree.types, ref, masked)
         n_snv = sum(cstats[k] for k in ("called", "unknown", "doublet"))
         print(f"contexts: {cstats['called']} of {n_snv} SNVs called, "
               f"{cstats['unknown']} unknown flank, {cstats['doublet']} "
@@ -984,7 +984,7 @@ def main():
                             k = c // 16
                             prop = d[k] * cx["q"][c]
                             ctx_out.write("\t".join(
-                                [es, gene, cats[k], tn.CONTEXT_LABELS[c]]
+                                [es, gene, cats[k], sch.labels[c]]
                                 + [fmt(x) for x in (
                                     cx["q"][c], cx["d"][c], prop,
                                     cx["d"][c] - prop, cx["p"][c],
@@ -1232,7 +1232,8 @@ def selftest():
 
 
 def _context_tree(rng, base, shifted):
-    """A _simulate topology with 96-class vectors drawn per branch.
+    """A _simulate topology with context-class vectors (len(base) of them)
+    drawn per branch.
 
     Branches inside a hit subtree draw contexts from `shifted`, all others
     from `base`.
@@ -1246,8 +1247,9 @@ def _context_tree(rng, base, shifted):
     for i in range(len(tree.node_ids)):
         p = tree.parent[i]
         inside[i] = i in hit_set or (p >= 0 and inside[p])
-        vec = [0] * 96
-        for c in rng.choices(range(96), weights=shifted if inside[i] else base,
+        vec = [0] * len(base)
+        for c in rng.choices(range(len(base)),
+                             weights=shifted if inside[i] else base,
                              k=len(tree.types[i])):
             vec[c] += 1
         own.append(vec)
@@ -1288,6 +1290,27 @@ def _selftest_context(np, targs):
         (res[0], res6[0])
     assert abs(sum(res[5]["d"][32:48]) - res[0][2]) < 1e-12
     print("ok: --context class shifts are exactly the 6-class shifts")
+
+    ### The same with 192 forward-strand classes, against the 12 types.
+    base192 = [1.0 + (c % 5) for c in range(192)]
+    t192 = sum(base192)
+    pbar192 = [b / t192 for b in base192]
+    sh192 = list(base192)
+    sh192[5 * 16 + 3] += 2.0
+    tree, own, evs = _context_tree(rng, base192, sh192)
+    V, T = subtree_sums(tree, own, 192)
+    acc = ContextAccumulator(192, 50, np.random.default_rng(3))
+    _r, _n, res, _e = run_test(tree, evs, V, T, own, 192, targs, pbar192,
+                               rng, acc)
+    own12 = [[sum(v[16 * k:16 * k + 16]) for k in range(12)] for v in own]
+    V12, T12 = subtree_sums(tree, own12, 12)
+    pbar12 = [sum(pbar192[16 * k:16 * k + 16]) for k in range(12)]
+    _r, _n, res12, _e = run_test(tree, evs, V12, T12, own12, 12, targs0,
+                                 pbar12, rng)
+    assert all(abs(a - b) < 1e-12 for a, b in zip(res[0], res12[0]))
+    assert len(res[5]["shape_p"]) == 12
+    print("ok: with 192 forward-strand classes, the class shifts are exactly "
+          "the 12-type shifts, with a shape p per type")
 
     ### Shape test, on C>T (contexts 32..47, class 2).  No effect; the whole
     ### class raised in proportion to its contexts, which should move the
