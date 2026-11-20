@@ -106,6 +106,8 @@ def label_points(ax, points, gene):
                     color=INK if g == gene else INK_2,
                     fontweight="bold" if g == gene else "normal",
                     fontstyle="italic",
+                    bbox=dict(boxstyle="square,pad=0.1", fc=SURFACE,
+                              ec="none"),
                     arrowprops=None if dy == 0 else dict(
                         arrowstyle="-", color=INK_3, lw=0.6,
                         shrinkA=0, shrinkB=3))
@@ -135,33 +137,38 @@ def panel_a(ax, summary, cls, gene, labels, n_perm):
             placed = [(x, y, g) for x, y, g in zip(xs, ys, names)
                       if g == gene or g in labels]
     bar = -math.log10(0.05 / n_genes)
-    ax.axhline(bar, color=INK_2, lw=1, ls=(0, (4, 3)), zorder=1)
-    ax.text(ax.get_xlim()[1], bar, f"p = 0.05 / {n_genes} genes ",
-            va="bottom", ha="right", fontsize=8, color=INK_2)
+    lines = [(ax.axhline(bar, color=INK_2, lw=1, ls=(0, (4, 3)), zorder=1),
+              f"p = 0.05 / {n_genes} genes")]
+    top = bar
     if n_perm:
         floor = math.log10(n_perm + 1)
-        ax.axhline(floor, color=INK_3, lw=0.8, ls=(0, (1, 2)), zorder=1)
-        ax.text(ax.get_xlim()[0], floor,
-                f" smallest p with {n_perm:,} permutations",
-                va="top", ha="left", fontsize=8, color=INK_3)
+        lines.append((ax.axhline(floor, color=INK_3, lw=0.8,
+                                 ls=(0, (1, 2)), zorder=1),
+                      f"smallest p with {n_perm:,} permutations"))
+        top = max(top, floor)
+    ax.set_ylim(0, max(ax.get_ylim()[1], top) + 0.35)
     label_points(ax, placed, gene)
     ax.axvline(0, color=INK_3, lw=0.8, zorder=1)
     ax.set_xlabel(f"{class_label(cls)} shift below the hit "
                   f"(percentage points)")
     ax.set_ylabel("omnibus  −log$_{10}$ p")
-    ax.set_ylim(0, max(ax.get_ylim()[1], bar + 0.5))
-    ax.legend([handles[e] for e, _n, _c in EFFECTS if e in handles],
-              [n for e, n, _c in EFFECTS if e in handles],
-              loc="upper right", frameon=False, fontsize=8.5,
-              bbox_to_anchor=(1, 0.9))
+    series = [(handles[e], n) for e, n, _c in EFFECTS if e in handles]
+    ### Outside the plot, so nothing in it competes with the points.
+    ax.legend([h for h, _n in series + lines], [n for _h, n in series + lines],
+              loc="upper left", bbox_to_anchor=(0, -0.13), ncol=2,
+              frameon=False, fontsize=8.5, columnspacing=1.5,
+              handlelength=2.2)
     ax.set_title(f"A   All {n_genes} genes", loc="left", fontsize=10.5,
-                 color=INK, fontweight="bold")
+                 color=INK, fontweight="bold", pad=16)
 
 
 def panel_b(axes, rows, cls):
     lo = min(min(min(r[1]), r[2]) for r in rows)
     hi = max(max(max(r[1]), r[2]) for r in rows)
     pad = 0.08 * (hi - lo)
+    ### The observed value and its p sit to the right of the line, clear of
+    ### the histogram, so the axis runs on far enough to hold them.
+    right = max(hi + pad, max(r[2] for r in rows) + 0.45 * (hi - lo))
     edges_n = 60
     width = (hi - lo + 2 * pad) / edges_n
     bins = [lo - pad + i * width for i in range(edges_n + 1)]
@@ -169,10 +176,11 @@ def panel_b(axes, rows, cls):
         ax.hist(null, bins=bins, color=NULL_FILL, edgecolor=SURFACE,
                 linewidth=0.5)
         ax.axvline(obs, color=colour, lw=2)
-        top = ax.get_ylim()[1]
-        ax.text(obs, top * 0.92, f"  observed {obs:+.2f}  \n  p = {fmt_p(p)}  ",
-                color=INK, fontsize=8.5, va="top",
-                ha="left" if obs < hi - 0.25 * (hi - lo) else "right")
+        ax.annotate(f"observed {obs:+.2f}\np = {fmt_p(p)}", (obs, 1.0),
+                    xycoords=("data", "axes fraction"), xytext=(6, -2),
+                    textcoords="offset points", color=INK, fontsize=8.5,
+                    va="top", ha="left")
+        ax.set_xlim(lo - pad, right)
         events = f"{k:,} events" + (f", {eff:,.0f} effective" if eff else "")
         ax.text(0.0, 1.02, f"{label}  ({events})", transform=ax.transAxes,
                 fontsize=8.5, color=INK_2, va="bottom")
@@ -251,9 +259,9 @@ def main():
                     "synonymous, all hits (control)", GREY))
     rows = [r for r in rows if r]
 
-    fig = plt.figure(figsize=(10, 4.6))
+    fig = plt.figure(figsize=(10, 6.4))
     grid = fig.add_gridspec(len(rows), 2, width_ratios=[1.15, 1],
-                            wspace=0.22, hspace=0.75)
+                            wspace=0.22, hspace=0.95, top=0.85, bottom=0.2)
     ax_a = fig.add_subplot(grid[:, 0])
     labels = {g for g in args.label.split(",") if g}
     panel_a(ax_a, summary, args.cls, args.gene, labels, n_perm)
@@ -268,7 +276,7 @@ def main():
     title = args.title or (f"Coding changes in {args.gene} are followed by "
                            f"more {class_label(args.cls)} in the subtree "
                            f"below, relative to sibling subtrees")
-    fig.suptitle(title, x=0.06, ha="left", fontsize=11.5, color=INK, y=1.0)
+    fig.suptitle(title, x=0.06, ha="left", fontsize=11.5, color=INK, y=0.97)
     fig.savefig(args.output, dpi=200, bbox_inches="tight")
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
