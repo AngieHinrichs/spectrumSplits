@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tabulate what qc/prune_mutation_sample_ratio.py removed, by clade.
 
-This builds the tables in README.md step 2 ("Check what it removed, by clade"
-and "Where the pruned samples sat") from files that step already produces:
+This builds the tables in METHODS.md step 2 ("What the divergence prune removed
+by clade" and "Where the pruned samples sat") from files step 2 produces:
 
     matUtils summary -i tree.pb.gz -s samples_raw.txt
     matUtils summary -i tree.pb.gz --sample-clades clades_raw.txt
@@ -20,7 +20,7 @@ Tables written (markdown, to stdout):
      a terminal branch >= threshold, how many were pruned, and how many of
      those went by a terminal-branch crossing vs. an internal-node crossing.
      A clade with pruned > tips >= threshold lost samples through an internal
-     node -- the stem-driven behaviour the README describes.
+     node -- the stem-driven behaviour METHODS.md step 2 describes.
   3. Internal-node prunings: each pruned subtree rooted at an internal node,
      with its subtree mutation total (ratio x tips), the sum of its tips'
      terminal branches, and the remainder (stem + internal branches).  With

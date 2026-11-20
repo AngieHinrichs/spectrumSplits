@@ -819,7 +819,7 @@ def calibrate_context(args):
 
     For each, the share of p < 0.05 for: the shape test of every class, the
     shape test of the C>T class, the within-class test of every context, and
-    the C>T class test.  These are the rates the README quotes.  The trees
+    the C>T class test.  These are the rates METHODS.md step 12 quotes.  The trees
     are small, so the shifts are large; the point is calibration under the
     null and the proportional shift, and that power is there at all.
     """

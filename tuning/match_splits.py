@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Match the splits of two searches by sample membership.
 
-For the "Testing the method" section of the tuning README.  Node IDs do not
+For the "Testing the method" section of tuning/METHODS.md.  Node IDs do not
 survive a mask, a prune or any other change to the tree, so the splits of a
 second search are matched to the first by the samples they contain.  Each
 input is a node<TAB>sample table, one per tree, made by running matUtils
