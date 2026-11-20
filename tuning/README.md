@@ -1999,10 +1999,20 @@ not with zero.
 
 **Replication genes.** `tb_replication_genes.txt` lists the replisome and
 dNTP-supply genes not already in the repair list, as a separate family: its
-17 genes set their own bar rather than raising the repair list's. Run it the
-same way with `--genes tb_replication_genes.txt`. On this tree nothing in it
-reaches its bar: one gene in each effect set has omnibus p < 0.05 (`nrdE`
-nonsynonymous, `dcd` synonymous), as chance predicts.
+17 genes set their own bar rather than raising the repair list's.
+
+```
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes tb_replication_genes.txt --fold --max_branch_length 250 \
+    --permutations 10000 \
+    --output_events hit_events_replication.tsv \
+    --output_summary hit_summary_replication.tsv
+```
+
+On this tree, in 3 minutes, nothing in it reaches its bar: one gene in each
+effect set has omnibus p < 0.05 (`nrdE` nonsynonymous, `dcd` synonymous), as
+chance predicts.
 
 **A figure.** `plot_gene_hits.py` shows one gene against the rest of its list
 and against its own null. It needs the permutation draws, which
