@@ -320,21 +320,29 @@ def branch_matrix(np, tree, contexts, group, cap, internal_only, n_ctx):
     return X, snvs
 
 
-def top_site_share(tree, contexts, members, ctx_id, cap):
-    """(share, position) of the most frequent site among a group's mutations
-    in one context."""
-    sites = Counter()
+def top_sites(tree, contexts, members, cap, internal_only, n_ctx):
+    """Per context, (share, position) of the most frequent site among a
+    group's counted mutations in it, or (0.0, None) if it has none.  Counts
+    the same branches as branch_matrix, so the shares are of the counts the
+    tests use."""
+    sites = [Counter() for _ in range(n_ctx)]
     for i in members:
         if cap is not None and tree.raw_len[i] > cap:
             continue
+        if internal_only and not tree.children[i]:
+            continue
         for p, c in zip(tree.positions[i], contexts[i]):
-            if c == ctx_id:
-                sites[p] += 1
-    tot = sum(sites.values())
-    if not tot:
-        return 0.0, None
-    pos, k = sites.most_common(1)[0]
-    return k / tot, pos
+            if c >= 0:
+                sites[c][p] += 1
+    out = []
+    for cnt in sites:
+        tot = sum(cnt.values())
+        if not tot:
+            out.append((0.0, None))
+            continue
+        pos, k = cnt.most_common(1)[0]
+        out.append((k / tot, pos))
+    return out
 
 
 def comparators(tree, group, roots, args):
@@ -429,11 +437,13 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
         row["contrib"] = contrib
         sa, sb = within_shares(np, A), within_shares(np, B)
         row["share_s"], row["share_c"] = sa, sb
+        row["sites"] = top_sites(tree, contexts, members[r], cap,
+                                 args.branches == "internal", sch.n)
         tops = []
         for ci in np.argsort(-contrib)[:args.top]:
             if contrib[ci] <= 0:
                 break
-            ts, pos = top_site_share(tree, contexts, members[r], int(ci), cap)
+            ts, pos = row["sites"][int(ci)]
             tops.append({"ctx": int(ci), "g": float(contrib[ci]),
                          "s": float(sa[ci]), "c": float(sb[ci]),
                          "site": ts, "pos": pos})
@@ -673,14 +683,17 @@ def write_contexts(rows, path, sch):
     with open(path, "w") as fh:
         fh.write("node\tcomparator\tclass\tcontext\tsplit_count\t"
                  "comparator_count\tsplit_class_share\t"
-                 "comparator_class_share\tg_contribution\n")
+                 "comparator_class_share\tg_contribution\t"
+                 "split_top_site\tsplit_top_site_share\n")
         for r in rows:
             for ci in range(sch.n):
+                share, pos = r["sites"][ci]
                 fh.write(f"{r['node']}\t{r['comparator']}\t"
                          f"{sch.class_labels[ci // PER]}\t"
                          f"{sch.labels[ci]}\t{int(r['A'][ci])}\t"
                          f"{int(r['B'][ci])}\t{r['share_s'][ci]:.6f}\t"
-                         f"{r['share_c'][ci]:.6f}\t{r['contrib'][ci]:.4f}\n")
+                         f"{r['share_c'][ci]:.6f}\t{r['contrib'][ci]:.4f}\t"
+                         f"{'' if pos is None else pos}\t{share:.4f}\n")
 
 
 # --------------------------------------------------------------------------
@@ -805,8 +818,13 @@ def selftest():
             tn.context_index("A", "C", "C", "T")}
     assert {t["ctx"] for t in r["tops"]} == want, r["tops"]
     assert r["p"] < 0.05, r["p"]
+    ### Every split mutation is the same site, so its top site holds all.
+    acg = tn.context_index("A", "C", "G", "T")
+    assert r["sites"][acg] == (1.0, 3), r["sites"][acg]
+    assert r["sites"][tn.context_index("A", "C", "C", "T")] == (0.0, None)
     print("ok: on a constructed tree the split's context shift is all "
-          "within-class, names the two contexts and is significant")
+          "within-class, names the two contexts and is significant, and "
+          "the top site's share is counted per context")
 
     ### The same tree with 192 forward-strand classes finds the same two
     ### contexts, as forward-strand C>T.

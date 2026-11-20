@@ -44,6 +44,7 @@ needs matplotlib rather than `bte`.
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
   - [`split_contexts.py`](#split_contextspy)
+  - [`summarize_split_contexts.py`](#summarize_split_contextspy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`control_genes.py`](#control_genespy)
   - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
@@ -70,6 +71,7 @@ needs matplotlib rather than `bte`.
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
 | [`split_contexts.py`](#split_contextspy) | 11 | Does a split also differ in trinucleotide context inside its classes, and by more than any clade of its size would? |
+| [`summarize_split_contexts.py`](#summarize_split_contextspy) | 11 | Which splits pass both of `split_contexts.py`'s nulls on all branches and on internal branches, and in which contexts? |
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
 | [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
@@ -1977,12 +1979,29 @@ the lowest `ctrl_p` on all branches, 0.024 or below, by excess:
 | `node_21970` | lineage 2.2.1 | 2.7 / 1.8 | G[T>G]G 0.189 vs 0.129; G[C>T]A 0.074 vs 0.059 |
 | `node_71721` | lineage 4.6.1 | 2.7 / 1.5 | G[T>G]G 0.166 vs 0.103; G[T>G]C 0.185 vs 0.138 |
 | `node_3548` | La3 | 2.3 / 1.6 | G[T>C]G 0.137 vs 0.176; G[C>A]C 0.125 vs 0.078 |
-| `node_54608` | lineage 4.2.2 | 2.2 / 1.6 | C[T>G]T 0.114 vs 0.077 |
-| `node_72678` | lineage 4.7 | 2.0 / 1.4 | T[C>A]G 0.095 vs 0.070 |
+| `node_54608` | lineage 4.2.2 | 2.2 / 1.6 | C[T>G]T 0.114 vs 0.077; C[C>T]C 0.066 vs 0.055 |
+| `node_72678` | lineage 4.7 | 2.0 / 1.4 | T[C>A]G 0.095 vs 0.070; C[C>T]G 0.155 vs 0.141 |
 
-None of these contexts comes from a single site: the most frequent site
-carries at most 5% of the split's count in each. Three are leads in their own
-right:
+To derive this table from the two runs, with `split_composition.tsv` from
+above for the clades:
+
+```
+summarize_split_contexts.py --all split_contexts.tsv \
+    --internal split_contexts_internal.tsv \
+    --contexts split_contexts_96.tsv --composition split_composition.tsv \
+    --top 12 > split_contexts_table.tsv
+```
+
+Without `--top` it lists all sixteen. It also names, on stderr, the splits
+that pass on only one run: here `node_14336`, `node_36254` and `node_51867`
+on all branches only, and five splits on internal branches only. And it
+checks each listed context for one site carrying 20% or more of the split's
+count: here none does.
+
+None of these contexts comes from a single site. The most frequent site
+carries at most 3.9% of the split's count in each, `node_21970`'s G[T>G]G;
+the script's `top_site_shares` column has them all. Three are leads in their
+own right:
 
 - **`node_7246`.** A[T>G]G is a fifth of the clade's T>G, against 2% in the
   rest of lineage 1.1.3, and it holds on internal branches. A ninefold shift
@@ -3129,8 +3148,10 @@ context comes with the most frequent site's share of it.
 - `top_contexts`.
 
 `--output_contexts` writes the 2 x 96 (or 2 x 192) table: counts,
-within-class shares and each context's G contribution. `--selftest` checks
-the following, then exits:
+within-class shares, each context's G contribution, and the split's most
+frequent site in that context with its share of the count
+(`split_top_site`, `split_top_site_share`). `--selftest` checks the
+following, then exits:
 
 - that G(between) and G(within) add up to the 2 x 96 and 2 x 192 G exactly;
 - the shuffle's calibration, under the null and under a proportional class
@@ -3140,6 +3161,48 @@ the following, then exits:
 - that a difference only in strand is invisible folded and a class
   difference unfolded;
 - that control clades stop at nested splits.
+
+### `summarize_split_contexts.py`
+
+Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism).
+Reads the two `split_contexts.py` runs and derives step 11's table. Needs
+only the standard library.
+
+```
+summarize_split_contexts.py --all split_contexts.tsv \
+    --internal split_contexts_internal.tsv \
+    --contexts split_contexts_96.tsv --composition split_composition.tsv \
+    --top 12 > split_contexts_table.tsv
+```
+
+A split is listed when it has q below `--max_q` (default 0.05) and `ctrl_p`
+at or below `--max_ctrl_p` (default 0.05) in both runs. `--top N` keeps the
+N with the lowest all-branch `ctrl_p`. Rows are sorted by all-branch excess.
+
+The columns are:
+
+- `split` and `comparator`;
+- `clade`, the top clades of the split's residual samples and its flags,
+  from `--composition` (`split_composition.py --output`);
+- `excess_all`, `excess_internal`, `ctrl_p_all`, `ctrl_p_internal`, `q_all`
+  and `q_internal`;
+- `contexts`, the `--per_split` (default 2) contexts carrying most of
+  G(within) on all branches. Each comes with its share of its class, split
+  vs comparator, from `--contexts` (the all-branch run's
+  `--output_contexts`). Without `--contexts`, it falls back to the
+  `top_contexts` column.
+- `top_site_shares`, for each of those contexts the share of the split's
+  count from its single most frequent site, and `max_site_share`, the largest.
+  They need `--contexts` from a `split_contexts.py` that writes
+  `split_top_site_share`.
+
+A listed context whose top site carries `--one_site` (default 0.2, as in
+`split_contexts.py`'s report) or more is named on stderr, with the site.
+
+Stderr gives the number passing both runs, names the splits that pass on
+only one, and gives the one-site check's result. `--output` writes to a file instead of stdout. `--selftest` checks
+the selection, the ordering, `--top` and the context lookup on constructed
+tables, and that site shares follow the listed contexts.
 
 ### `gene_hit_contrasts.py`
 
