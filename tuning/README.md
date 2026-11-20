@@ -1888,9 +1888,57 @@ decides whether terminal hits contribute at all; see the
 [script reference](#gene_hit_contrastspy) for the trade-off, and for what
 `--selftest` checks.
 
-**What to read in `hit_summary.tsv`.** `summarize_gene_hits.py` reads it,
-and the internal-hits-only and control summaries if you have them (both
-below), and prints the punchline:
+There is no rate test. A mutator should also raise the mutation count below
+the hit, and an earlier version compared tip depth below hit children with
+their siblings'. On the MTBC tree that comparison failed the synonymous
+control in 31 of 56 genes: real hit children sit shallower than the
+size-biased draw expects, whatever the gene. The draw gets each child's
+chance of carrying the hit right, but not the extra branch time a real hit
+implies, and depth depends on that time. The spectrum statistics are
+proportions, which barely depend on depth, and they pass the same control.
+
+**Two more runs to read it against.** The first repeats the test on
+internal hits only. Per-genome error cannot reach an internal branch, so a
+shift that survives there is not a sequencing artifact, at the cost of the
+terminal hits, which are most of them:
+
+```
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes tb_repair_genes.txt --fold --max_branch_length 250 \
+    --permutations 10000 --top_branch exclude \
+    --output_events hit_events_internal.tsv \
+    --output_summary hit_summary_internal.tsv
+```
+
+The second asks whether the excess is the list's own. The synonymous
+control says the comparison is unbiased. It cannot say whether a
+nonsynonymous excess belongs to the genes tested or to nonsynonymous changes
+anywhere. Ordinary genes
+answer that: `control_genes.py` draws length-matched protein-coding genes,
+none of them masked, in the lists given, or with a product matching
+`--exclude_product`, and the same test runs on them. Give `--exclude` every
+other candidate list as well, such as `replication_genes.txt` below: the
+product pattern catches most of their genes but not all (on NC_000962.3 it
+misses `dcd`, `nrdH`, `nrdI` and `nrdR`), and a candidate gene does not belong
+in a control:
+
+```
+control_genes.py --annotation NC_012345.1.gff3.gz --match repair_genes.txt \
+    --exclude resistance_genes.txt,alignment_loci.txt,replication_genes.txt \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --exclude_product '(?i)(DNA|RNA|nucle|helicase|polymerase|recombin|repair|replicat|topoisomerase|primase|ligase|glycosylase|ribonucleotide|thymidyl|transposase|integrase)' \
+    --output control_genes.txt
+
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes control_genes.txt --fold --max_branch_length 250 \
+    --permutations 10000 \
+    --output_events hit_events_control.tsv --output_summary hit_summary_control.tsv
+```
+
+**What to read.** `summarize_gene_hits.py` reads the three summaries
+and prints the punchline:
 
 ```
 summarize_gene_hits.py --summary hit_summary.tsv \
@@ -1904,23 +1952,13 @@ the bar, with every class at p < 0.05 shown for all hits, internal hits and
 its own synonymous hits; and the leads below the bar. It also says when the
 smallest p is the permutation floor, and when a control rests on few
 effective events. The columns underneath, for reading the file itself: one
-row per gene and effect set, plus a
-pooled `ALL`. `omnibus_p` says whether to look further; `diff_<class>` is the
+row per gene and effect set, plus a pooled `ALL`. `omnibus_p` says whether to look further; `diff_<class>` is the
 weighted mean shift in that class's proportion (hit child minus siblings),
 with `p_<class>` its permutation p. `effective_events` says how many equally
 weighted events a test is worth. The weights grow with subtree size, so one
 deep branch can carry most of a test: read a result with a handful of
 effective events as a statement about those few branches, whatever its event
 count.
-
-There is no rate test. A mutator should also raise the mutation count below
-the hit, and an earlier version compared tip depth below hit children with
-their siblings'. On the MTBC tree that comparison failed the synonymous
-control in 31 of 56 genes: real hit children sit shallower than the
-size-biased draw expects, whatever the gene. The draw gets each child's
-chance of carrying the hit right, but not the extra branch time a real hit
-implies, and depth depends on that time. The spectrum statistics are
-proportions, which barely depend on depth, and they pass the same control.
 
 **Read the synonymous control first.** It runs by default (`--effects
 nonsynonymous,synonymous`). Synonymous hits in the same genes should show no
@@ -1936,20 +1974,16 @@ single small p.
 
 *Worked example.* `tb_repair_genes.txt` resolves to 56 genes and 42,433
 hit events, 25,233 nonsynonymous and 17,200 synonymous, of which 18,185 and
-13,857 were informative; about 60% of those are terminal. Then the cleaner
-check on internal hits only:
+13,857 were informative; about 60% of those are terminal. The control drew
+three genes per repair gene, 168 from 3,189 eligible. The three runs took 8,
+2 and 20 minutes.
 
-```
-gene_hit_contrasts.py ... --permutations 10000 --top_branch exclude \
-    --output_events hit_events_internal.tsv --output_summary hit_summary_internal.tsv
-```
-
-The synonymous control is clean in both runs: genes with omnibus p < 0.05
-number 3 and 2, against 2.8 expected by chance, and per-class p < 0.05 come
-to 17 and 12 against 16.8. The nonsynonymous hits show about twice the chance
-count, 9 genes and 37 class tests with every hit counted, and 5 and 26 with
-internal hits only. Most of that excess points one way, more `CT|GA` below
-the hit:
+The synonymous control is clean with all hits and with internal hits only:
+genes with omnibus p < 0.05 number 3 and 2, against 2.8 expected by chance,
+and per-class p < 0.05 come to 17 and 12 against 16.8. The nonsynonymous hits
+show about twice the chance count, 9 genes and 37 class tests with every hit
+counted, and 5 and 26 with internal hits only. Most of that excess points one
+way, more `CT|GA` below the hit:
 
 | gene | events | `CT\|GA` shift, all hits | p | internal hits | shift | p |
 |---|---|---|---|---|---|---|
@@ -1989,44 +2023,25 @@ direction but lose significance when the terminal hits are dropped; they are
 worth a closer look, not a claim. The shift is small throughout: `CT|GA` is half of all
 mutations, so +0.93 points is a 2% relative change.
 
-**Is the excess the list's own?** The synonymous control says the
-comparison is unbiased. It cannot say whether a nonsynonymous excess belongs
-to the genes tested or to nonsynonymous changes anywhere. Ordinary genes
-answer that: `control_genes.py` draws length-matched protein-coding genes,
-none of them masked, in the lists given, or with a product matching
-`--exclude_product`, and the same test runs on them:
-
-```
-control_genes.py --annotation NC_012345.1.gff3.gz --match repair_genes.txt \
-    --exclude resistance_genes.txt,alignment_loci.txt \
-    --mask selection_loci.bed,alignment_loci.bed \
-    --exclude_product '(?i)(DNA|RNA|nucle|helicase|polymerase|recombin|repair|replicat|topoisomerase|primase|ligase|glycosylase|ribonucleotide|thymidyl|transposase|integrase)' \
-    --output control_genes.txt
-
-gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --genes control_genes.txt --fold --max_branch_length 250 \
-    --permutations 10000 \
-    --output_events hit_events_control.tsv --output_summary hit_summary_control.tsv
-```
-
-*Worked example.* Three control genes per repair gene gave 168, drawn from
-3,194 eligible; the run took 19 minutes. Their nonsynonymous hits behave as
-chance predicts: 8 of 167 genes (4.8%) at omnibus p < 0.05, against 9 of 56
-(16%) for the repair genes, a difference a one-sided Fisher test puts at
-p 0.01 (2×10⁻⁵ over the class tests). No control gene clears 0.05 / 167. So
-the repair genes' excess is theirs.
+The control genes' nonsynonymous hits behave as chance predicts: 9 of 167
+genes (5.4%) at omnibus p < 0.05, against 9 of 56 (16%) for the repair genes,
+a difference a one-sided Fisher test puts at p 0.016 (2×10⁻⁴ over the class
+tests). No control gene clears 0.05 / 167. So the repair genes' excess is
+theirs.
 
 The control's pooled rows show something its per-gene rows are too small
-to: any hit is followed by slightly more `CT|GA`, +0.14 points for
-nonsynonymous hits and +0.32 for synonymous (p 0.009, about 4,000 effective
-events). The likely reason is that most coding hits are themselves C>T or
-G>A, so they land more often on branches whose process favours those, while
-the size-biased draw matches branch length, not branch spectrum. The baseline
-for "a hit" is therefore a little above zero. `dnaE2`'s +0.93 is three to
-seven times it, and the per-gene false-positive rate in the control stays at
-the nominal 5%, but the comparison for a single gene is with that baseline,
-not with zero.
+to. A synonymous hit in an ordinary gene is followed by slightly more
+`CT|GA`, +0.32 points (p 0.007; omnibus p 0.015, about 3,800 effective
+events); a nonsynonymous one by +0.03, which is nothing. A possible reason is
+that a hit marks its branch as one whose process produced that kind of
+change, and most coding changes are C>T or G>A, while the size-biased draw
+matches branch length, not branch spectrum; why it shows for synonymous hits
+and not nonsynonymous ones is not clear. An earlier draw of the control,
+before the replication genes were excluded, gave +0.32 and +0.14, so read
+these as a few tenths of a point, not as exact. `dnaE2`'s +0.93 is well
+above the nonsynonymous baseline, and the per-gene false-positive rate in
+the control stays at the nominal 5%, but the comparison for a single gene is
+with that baseline, not with zero.
 
 **Replication genes.** `tb_replication_genes.txt` lists the replisome and
 dNTP-supply genes not already in the repair list, as a separate family: its
