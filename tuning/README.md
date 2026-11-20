@@ -48,6 +48,7 @@ needs matplotlib rather than `bte`.
   - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
   - [`plot_gene_hits.py`](#plot_gene_hitspy)
   - [`match_splits.py`](#match_splitspy)
+  - [`trinucleotide.py`](#trinucleotidepy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
   - [`tb_resistance_genes.txt`, and a caution](#tb_resistance_genestxt-and-a-caution)
   - [`tb_repair_genes.txt`](#tb_repair_genestxt)
@@ -72,6 +73,7 @@ needs matplotlib rather than `bte`.
 | [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
+| [`trinucleotide.py`](#trinucleotidepy) | 4, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py` and `gene_hit_contrasts.py --context`. |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -822,6 +824,43 @@ gene families are the usual source.
 
 Node IDs changed when the tree was masked, so compare clades between the two
 profiles by sample membership, not by ID.
+
+**The context spectrum.** With `--reference`, the profile also reports the 96
+trinucleotide context classes. It is not needed to tune the search, but read
+it before using `gene_hit_contrasts.py --context` (step 12). Give it the BEDs
+the tree was masked with, so a context through a masked base counts as
+unknown rather than as the reference base:
+
+```
+profile_tree.py --input_tree tree.pruned.masked.pb.gz \
+    --reference NC_012345.1.fna --annotation NC_012345.1.gff3.gz \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --context_table context.tsv > profile_masked.txt
+```
+
+The flanking bases come from each mutation's parent genome, reconstructed
+down the tree, so **the FASTA must be the root's genome**. On a rerooted tree
+that is the rerooted reference, not the published assembly (see "Know how
+your tree was rooted"). The report counts the SNVs whose own reference base
+disagrees with the reconstructed parent base, and warns above 1%.
+
+Check four things. Disagreements should be near zero. The unknown and
+doublet counts say what the context analysis cannot see. No context should
+be dominated by one site: the report lists any where a single site carries
+20% or more, which would be a hotspot standing in for a context. And the
+floors say how many mutations a context test needs.
+
+*Worked example.* On the masked walkthrough tree, using the rerooted
+reference, 2,829,239 of 2,843,878 SNVs (99.5%) get a context, and **none**
+disagree with the parent base. 310 have an unknown flank, and 14,329 (0.5%)
+sit next to another change on the same branch and are left out as doublets.
+1,442 contexts (0.05%) would have been miscalled using the reference's
+flanks; reconstructing the parent genome costs nothing extra, but on a tree
+this shallow it barely matters. No context has a site carrying even 5% of its
+count. The context floors explain why the search itself stays at 6 classes:
+all 96 at once need about 18,000 mutations on the smaller side, and the
+rarest within-class test (`TG|AC`'s 16 contexts) needs about 850 `TG|AC`
+mutations, about 11,000 in total.
 
 ### 5. Decide whether to fold
 
@@ -2087,6 +2126,68 @@ below, the gene's null histogram for each run, with the observed shift, its
 p for the class and the effective event count. On this tree the all-hits run took 8 minutes and the internal-only run
 2.
 
+**Where in the class: trinucleotide context.** A class shift can be spread
+over the class's 16 contexts in proportion to how common each one is, or it
+can sit in a few. Which one it is says more about mechanism than the class
+total does. `--context` repeats the test in the 96 context classes, with the
+same events, comparators, draws and controls. It needs `--fold` and numpy.
+Give `--mask` the BEDs the tree was masked with, as for `profile_tree.py`, and
+the reference must be the root's genome (step 4). Run it on the genes worth a
+closer look, not the whole list:
+
+```
+echo dnaE2 > dnaE2.txt
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes dnaE2.txt --fold --context \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --max_branch_length 250 --permutations 10000 \
+    --output_context hit_context.tsv \
+    --output_events hit_events_ctx.tsv --output_summary hit_summary_ctx.tsv
+```
+
+and the same with `--top_branch exclude` for internal hits only. The summary
+has every column of a `--fold` run, with the class shifts computed by summing
+contexts (the self-test checks they equal the 6-class statistic for the same
+events). Contexts that cannot be called are dropped, and the draws differ,
+so the p values will not match the 6-class run digit for digit. It adds
+`shape_p_<class>`: does the class's mix of contexts change below the hit? It
+compares each context's share *of its class*, hit child against siblings, so
+it asks where the class shift falls, not whether there is one. The test does
+not penalise a shift spread in proportion across contexts: in the self-test, a
+3× rise of a whole class gave shape p < 0.05 in none of 30 trees while its
+class test fired in all of them. A version built on the overall shifts got
+this wrong 40% of the time, because a class that really rises has noisier
+contexts than any no-shift permutation. In 200 simulated null trees, shape p
+< 0.05 came out at 5.4%. `hit_context.tsv` then says which contexts: per test
+and context, the context's tree-wide share of its class, its shift, the
+shift a proportional spread would give, the excess, the within-class share
+shift and their p values. Read the shape p before any one context's: in
+simulation a strong class shift pushed per-context within-class p < 0.05 to
+6.8%, and with 96 of them a few small ones are expected regardless.
+
+*Worked example*, `dnaE2`, 10,000 permutations, about 25 seconds and 1 GB per run. The
+class result reproduces: `CG|GC` p 0.0001 and `CT|GA` p 0.0003 (internal
+hits: 0.005 and 0.007), on the same 1,109 informative events worth 54
+effective ones. The context breakdown does not localise the shift:
+
+| | shape p, `CG\|GC` | shape p, `CT\|GA` | shape p, all six |
+|---|---|---|---|
+| nonsynonymous, all hits | 0.23 | 0.046 | 0.042 |
+| nonsynonymous, internal hits | 0.49 | 0.16 | 0.081 |
+| synonymous (2 effective events) | 0.62 | 0.096 | 0.47 |
+
+The `CG|GC` fall is spread across its contexts as their frequencies predict.
+`CT|GA`'s marginal shape p is not stable: the contexts that lead it with all
+hits (`T[C>T]G`, `T[C>T]C`, `A[C>T]A` up; `C[C>T]A` down) are not the ones that
+lead it on internal hits (`C[C>T]G` and `A[C>T]A` up; `G[C>T]C` down), and
+nothing survives counting 16 contexts. So on this tree `dnaE2`'s shift is a
+change in how much of each class there is, not in which contexts it falls.
+That is worth knowing: a mechanism that predicts a strong context preference
+-- most do -- would have to explain why none shows. It is also as far as 54
+effective events go: a +0.93-point class shift split 16 ways leaves about
+0.06 points per context, near the noise.
+
 **What it cannot see.** The tree carries SNVs only, so frameshifts,
 deletions and IS6110 insertions -- the commonest ways a gene is actually lost
 -- are invisible, as are promoter changes. A negative result here does not
@@ -2333,6 +2434,8 @@ Used in [step 1](#1-profile-the-raw-tree) and again in
 profile_tree.py --input_tree tree.pb.gz
 profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
 profile_tree.py --input_tree tree.pb.gz --reference ref.fna --annotation genes.gff3.gz
+profile_tree.py --input_tree tree.pb.gz --reference ref.fna \
+    --mask masked.bed --context_table context.tsv
 ```
 
 Reports:
@@ -2345,6 +2448,7 @@ Reports:
 | Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
 | Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
 | Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
+| Context spectrum (with `--reference`) | The 96 trinucleotide context classes, with flanks from each mutation's parent genome: how many could be called, a check that the FASTA is the root's genome, count, share, opportunity and relative rate per context, any context dominated by one site, and the count floors a context test needs. [Step 4](#4-re-profile-and-check-what-the-mask-bought) reads it |
 | Strand asymmetry (with `--reference`, or `--terminus`) | Complementary-pair log2 ratios on the leading and lagging arms, in + and − strand genes (with `--annotation`), and per annotated clade, with a heterogeneity chi-squared for each pair. It ends with a FOLD TEST and a verdict. This is what step 5 reads |
 
 The strand asymmetry section needs the origin and terminus of replication.
@@ -2359,6 +2463,15 @@ pair's log2 ratio would have a standard error of at most `--strand_max_se`
 spectrum, and `--strand_min_clade` replaces it with a fixed size. The FOLD
 TEST uses the same clades. Its limits are `--fold_max_dispersion` (default 3)
 and `--fold_max_z` (default 5); step 5 explains both.
+
+The context spectrum needs the reference to be the root's genome (the
+rerooted reference on a rerooted tree). `--mask` takes comma-separated BED
+files: a mutation with a masked flank gets an unknown context, and masked
+trinucleotides are left out of the opportunity counts. Pass the BEDs the tree
+was masked with. `relative rate` divides each context's count by how often its
+trinucleotide occurs, relative to its class's average (1 is average).
+`--context_table` writes the 96 rows as a TSV, and `--no_context` skips the
+section.
 
 `--node_table` writes one row per node (branch and subtree counts, tips,
 mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.
@@ -2870,6 +2983,11 @@ Options:
   the list is long enough that its bar is below 0.001 (step 12).
 - `--null_draws FILE` with `--null_draws_genes g1,g2` (or `ALL`): write every
   permutation's class shifts for those genes, for `plot_gene_hits.py`.
+- `--context`: count the 96 trinucleotide context classes instead (needs
+  `--fold` and numpy; see step 12). `--mask` gives the BEDs the tree was
+  masked with, so masked flanks are unknown. `--output_context` (default
+  `hit_context.tsv`) gets the per-context rows. The events file and the
+  `--null_draws` file still report the six classes.
 
 Outputs:
 
@@ -2881,13 +2999,17 @@ Outputs:
 - `--output_summary` (default `hit_summary.tsv`): one row per gene and effect
   set, plus a pooled `ALL`, with event counts, `effective_events`,
   `diff_<class>` and `p_<class>`, and `omnibus` and `omnibus_p`. Step 12 says
-  how to read them.
+  how to read them. With `--context` it adds `shape_p_<class>` and
+  `shape_omnibus_p`.
 
 `--selftest` checks codon effects on both strands (including ancestral codon
 state and two changes in one codon), checks the cut-subtree bookkeeping
 against brute force, and simulates star-of-polytomy trees for null
 calibration and power. In a larger run of the same simulation, 300 null trees
-gave per-class p < 0.05 at 4.5% and omnibus at 4.0%.
+gave per-class p < 0.05 at 4.5% and omnibus at 4.0%. With numpy it also checks
+`--context`: the summed contexts equal the 6-class statistic for the same
+events; the shape test stays near 5% with no effect and with a whole-class
+proportional shift; and it finds a shift in one context.
 
 ### `control_genes.py`
 
@@ -2960,6 +3082,35 @@ near ones (`--near`, default 0.95) and old splits with no counterpart
 (`--lost`, default 0.5). `--output` writes the per-split rows as a TSV.
 `--selftest` checks the shared-sample reduction, partial matches and the
 report on a constructed pair of trees.
+
+### `trinucleotide.py`
+
+Used by `profile_tree.py` ([step 4](#4-re-profile-and-check-what-the-mask-bought))
+and `gene_hit_contrasts.py --context` ([step 12](#12-test-a-candidate-mechanism-genotype-first));
+not run on its own except as `trinucleotide.py --selftest`.
+
+It calls every SNV's context in one depth-first pass over the tree. The
+positions changed on the current root-to-node path are kept in a dictionary,
+and each node's changes are applied on the way down and undone on the way back
+up. So each flank is the base in the mutation's parent genome, not the
+reference's, at a cost of one step per mutation. The classes are the 96
+pyrimidine-centred ones, in the usual signature order: C>A, C>G, C>T, T>A,
+T>C, T>G, matching the folded classes' order, then 5' and 3' base. A purine
+mutation is reverse-complemented along with its trinucleotide.
+
+A mutation gets no context when a flank is N, masked or off the end of the
+sequence (ends are not wrapped, even for a circular genome), or when the
+adjacent position changed on the same branch. Double substitutions are a
+signature of their own and are counted separately rather than called twice.
+Folding to 96 has the same blind spot as `--fold`: a leading- or
+transcribed-strand process cancels between the replication arms. Oriented
+classes would need the `--orient` recoding that is parked for
+`spectrumSplits.py`.
+
+`--selftest` checks the class order and folding against `folded_index()`,
+flanks that change on an ancestral branch, reversions, sibling isolation,
+doublets, masks and a wrong reference. It also checks 30 random trees against
+a brute-force walk up the tree, and the opportunity counts.
 
 ## Gene lists
 

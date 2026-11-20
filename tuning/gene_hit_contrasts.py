@@ -90,11 +90,44 @@ invisible here.  Promoter changes are not tested.  And the ALL row pools
 genes whose mechanisms differ: a gene that raises CT|GA and one that raises
 CA|GT cancel there.  ALL is a screen.  The evidence is in the per-gene rows.
 
+Trinucleotide context (--context).  The same events, comparators, draws and
+controls, counted in the 96 pyrimidine-centred context classes of
+trinucleotide.py instead of 6 classes, to ask where inside a class a shift
+falls.  It needs --fold (the 96 classes are folded) and numpy.  Every
+summary column of a --fold run is still written, computed by summing the
+contexts of each class, plus:
+
+  shape_p_<class>  does the class's shift fall on its 16 contexts in
+                   proportion to how common each context is in the tree?
+                   The statistic is the squared distance between each
+                   context's shift and its proportional share of the class
+                   shift, scaled by the context's tree-wide proportion, and
+                   the p is against the same permutation draws.  A small p
+                   says the shift is concentrated in particular contexts;
+                   which ones is in --output_context.  "Proportional" uses the
+                   tree-wide context mix, so a comparator whose own mix
+                   differs a little from the tree's adds a second-order term.
+  shape_omnibus_p  the same, summed over the six classes.
+
+--output_context has one row per test and context: the context's share of
+its class tree-wide, its shift, the shift a proportional spread would give,
+the excess over that, and a two-sided permutation p for the shift itself.
+Contexts that cannot be called -- a masked or unknown flank, or an adjacent
+change on the same branch -- are left out of every count, so the class
+totals differ slightly from a --fold run's, and the draws differ, so do not
+expect its p values to match one digit for digit.
+
 Usage:
     gene_hit_contrasts.py --input_tree tree.pb.gz \\
         --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
         --genes tb_repair_genes.txt --fold --max_branch_length 250 \\
         --output_events hit_events.tsv --output_summary hit_summary.tsv
+
+    gene_hit_contrasts.py --input_tree tree.pb.gz \\
+        --annotation NC_000962.3.gff3.gz --reference NC_000962.3.fna \\
+        --genes dnaE2.txt --fold --context --mask masked.bed \\
+        --max_branch_length 250 --output_context hit_context.tsv \\
+        --output_events hit_events_ctx.tsv --output_summary hit_summary_ctx.tsv
 
     gene_hit_contrasts.py --selftest
 """
@@ -181,6 +214,15 @@ def parse_args():
     p.add_argument("--null_draws_genes", type=str, default=None,
                    help="Comma-separated genes (or ALL) whose permutation "
                         "draws --null_draws writes")
+    p.add_argument("--context", action="store_true",
+                   help="Count the 96 trinucleotide context classes (needs "
+                        "--fold and numpy); see the module docstring")
+    p.add_argument("--mask", type=str, default=None,
+                   help="With --context: comma-separated BED files the tree "
+                        "was masked with; a mutation with a masked flank has "
+                        "an unknown context and is not counted")
+    p.add_argument("--output_context", type=str, default="hit_context.tsv",
+                   help="With --context: per-test, per-context shifts")
     p.add_argument("--selftest", action="store_true",
                    help="Check subtree bookkeeping, codon effects and the "
                         "permutation null on synthetic trees, then exit")
@@ -300,7 +342,7 @@ def find_hit_events(tree, index, ref):
             if hits:
                 t = tree.types[i][k]
                 for name, f in hits:
-                    by_key[(i, name)].append((pos, t, f))
+                    by_key[(i, name)].append((pos, t, f, k))
 
     events = []
     ref_mismatch = 0
@@ -308,7 +350,7 @@ def find_hit_events(tree, index, ref):
         parent = tree.parent[node]
         codons = defaultdict(dict)
         labels = []
-        for pos, t, f in muts:
+        for pos, t, f, _k in muts:
             mt = MUT_TYPES[t]
             labels.append(f"{mt[0]}{pos}{mt[1]}")
             if base_at(tree, parent, pos, ref) != mt[0]:
@@ -331,7 +373,8 @@ def find_hit_events(tree, index, ref):
         events.append({
             "node": node, "gene": gene, "effect": worst,
             "aa_changes": ",".join(changes), "mutations": ",".join(labels),
-            "hit_types": [t for _p, t, _f in muts],
+            "hit_types": [t for _p, t, _f, _k in muts],
+            "hit_k": [k for _p, _t, _f, k in muts],
         })
     return events, ref_mismatch
 
@@ -364,7 +407,9 @@ def cut_adjustments(tree, V, T, hits, ncat):
     Walks up from each hit and stops at the first hit above it, which is
     where the nested subtree stops being anyone else's business: everything
     above that hit already loses the whole outer subtree.  Returns
-    adj[node] = [vec, tips] and nested[hit] = enclosing hit.
+    adj[node] = [hits to subtract, tips] and nested[hit] = enclosing hit.
+    The vectors are summed only for the nodes child_value() is asked about,
+    which with 96 context classes is most of the cost saved.
     """
     adj = {}
     nested = {}
@@ -373,10 +418,8 @@ def cut_adjustments(tree, V, T, hits, ncat):
         while x >= 0:
             a = adj.get(x)
             if a is None:
-                a = adj[x] = [[0] * ncat, 0]
-            vh = V[h]
-            for k in range(ncat):
-                a[0][k] += vh[k]
+                a = adj[x] = [[], 0]
+            a[0].append(h)
             a[1] += T[h]
             if x in hits:
                 nested[h] = x
@@ -391,8 +434,10 @@ def child_value(c, V, T, own, adj, top, ncat, remove=None):
     t = T[c]
     a = adj.get(c)
     if a is not None:
-        for k in range(ncat):
-            v[k] -= a[0][k]
+        for h in a[0]:
+            vh = V[h]
+            for k in range(ncat):
+                v[k] -= vh[k]
         t -= a[1]
     if top == "exclude":
         for k in range(ncat):
@@ -409,7 +454,7 @@ def child_value(c, V, T, own, adj, top, ncat, remove=None):
 
 class Prepared(object):
     """One event's eligible children, with everything a draw needs."""
-    __slots__ = ("wd", "w", "cum", "total")
+    __slots__ = ("wd", "w", "cum", "total", "wd2", "w2")
 
 
 def prepare_event(tree, h, hits, V, T, own, adj, top, ncat,
@@ -460,9 +505,29 @@ def prepare_event(tree, h, hits, V, T, own, adj, top, ncat,
 
     prep = Prepared()
     prep.wd, prep.w, prep.cum = [], [], []
+    ### With 96 context classes, also the within-class version: each class's
+    ### 16 context shares, weighted by that class's counts.  See
+    ### ContextAccumulator for why the shape test needs it.
+    blocks = ncat // 16 if ncat == 96 else 0
+    prep.wd2, prep.w2 = [], []
     acc = 0
     for v, wt in elig:
         rest = [tot_v[k] - v[k] for k in range(ncat)]
+        if blocks:
+            wd2, w2 = [], []
+            for b in range(blocks):
+                lo, hi = 16 * b, 16 * b + 16
+                m1, m2 = sum(v[lo:hi]), sum(rest[lo:hi])
+                if m1 > 0 and m2 > 0:
+                    w = m1 * m2 / (m1 + m2)
+                    wd2.extend(w * (v[k] / m1 - rest[k] / m2)
+                               for k in range(lo, hi))
+                    w2.append(w)
+                else:
+                    wd2.extend([0.0] * 16)
+                    w2.append(0.0)
+            prep.wd2.append(wd2)
+            prep.w2.append(w2)
         n1, n2 = sum(v), sum(rest)
         if n1 > 0 and n2 > 0:
             w = n1 * n2 / (n1 + n2)
@@ -519,14 +584,15 @@ def permutation_test(preps, ncat, pbar, permutations, rng):
     return obs_d, p_class, o, p_omni, perm_d
 
 
-def run_test(tree, test_events, V, T, own, ncat, fold_map, args,
-             pbar, rng):
+def run_test(tree, test_events, V, T, own, ncat, args, pbar, rng,
+             accumulator=None):
     """Events for one test (they define the cut set), then the permutation."""
     hits = set(e["node"] for e in test_events)
     adj, nested = cut_adjustments(tree, V, T, hits, ncat)
     cap = args.max_branch_length
     rows = []
     preps = []
+    w0 = []
     ### Several genes can be hit on one branch; within one test a branch is
     ### one event, or the ALL row would count it twice.
     seen = set()
@@ -537,8 +603,8 @@ def run_test(tree, test_events, V, T, own, ncat, fold_map, args,
         seen.add(h)
         hit_vec = [0] * ncat
         if cap is None or tree.raw_len[h] <= cap:
-            for t in e["hit_types"]:
-                hit_vec[fold_map[t] if fold_map else t] += 1
+            for c in e["hit_cats"]:
+                hit_vec[c] += 1
         row, prep = prepare_event(tree, h, hits, V, T, own, adj,
                                   args.top_branch, ncat, hit_vec,
                                   args.min_focal, args.min_comparator)
@@ -551,22 +617,147 @@ def run_test(tree, test_events, V, T, own, ncat, fold_map, args,
                     if h in nested else ""})
         rows.append(row)
         if prep is not None:
-            preps.append(prep)
+            w0.append(prep.w[0])
+            ### With 96 classes, holding every event's draws until the end
+            ### costs gigabytes on a large list; the accumulator consumes
+            ### each event as it is built.
+            if accumulator is not None:
+                accumulator.add(prep)
+            else:
+                preps.append(prep)
     result = None
-    if preps:
-        result = permutation_test(preps, ncat, pbar, args.permutations, rng)
-    return rows, len(preps), result, effective_events(preps)
+    if w0:
+        result = accumulator.finish(pbar) if accumulator is not None else \
+            permutation_test(preps, ncat, pbar, args.permutations, rng)
+    return rows, len(w0), result, effective_events(w0)
 
 
-def effective_events(preps):
+def effective_events(ws):
     """(sum w)^2 / sum w^2 over the real hit children's weights.
 
     The weights grow with subtree size, so one deep branch can carry most of
     a test.  This says how many equally weighted events the test is worth.
     """
-    ws = [p.w[0] for p in preps]
     s2 = sum(w * w for w in ws)
     return sum(ws) ** 2 / s2 if s2 > 0 else 0.0
+
+
+class ContextAccumulator(object):
+    """The permutation test of permutation_test(), for 96 context classes.
+
+    Vectorised with numpy and fed one event at a time.  Each event's draws
+    for all permutations are taken at once, and its contribution added to a
+    permutations x classes array, so memory does not grow with the number
+    of events.  The statistic is the same weighted mean shift: weights depend
+    only on mutation totals, so summing a class's 16 contexts gives exactly
+    the 6-class statistic for the same draws.
+    """
+
+    def __init__(self, ncat, permutations, rng):
+        import numpy as np
+        self.np = np
+        self.ncat = ncat
+        self.P = permutations
+        self.rng = rng
+        self.acc = np.zeros((permutations, ncat))
+        self.W = np.zeros(permutations)
+        self.obs = np.zeros(ncat)
+        self.W0 = 0.0
+        ncls = ncat // 16
+        self.acc2 = np.zeros((permutations, ncat))
+        self.Wc = np.zeros((permutations, ncls))
+        self.obs2 = np.zeros(ncat)
+        self.Wc0 = np.zeros(ncls)
+
+    def add(self, prep):
+        np = self.np
+        wd = np.asarray(prep.wd, dtype=float)
+        w = np.asarray(prep.w, dtype=float)
+        wd2 = np.asarray(prep.wd2, dtype=float)
+        w2 = np.asarray(prep.w2, dtype=float)
+        if w[0] > 0:
+            self.obs += wd[0]
+            self.W0 += w[0]
+        self.obs2 += wd2[0]
+        self.Wc0 += w2[0]
+        if self.P:
+            cum = np.asarray(prep.cum, dtype=float)
+            ### side="right" is bisect_right, as in permutation_test().
+            idx = np.searchsorted(cum, self.rng.random(self.P) * prep.total,
+                                  side="right")
+            self.acc += wd[idx]
+            self.W += w[idx]
+            self.acc2 += wd2[idx]
+            self.Wc += w2[idx]
+
+    def finish(self, pbar):
+        np = self.np
+        P, ncat = self.P, self.ncat
+        ncls = ncat // 16
+        obs = self.obs / self.W0 if self.W0 > 0 else np.zeros(ncat)
+        D = np.where(self.W[:, None] > 0,
+                     self.acc / np.where(self.W > 0, self.W, 1.0)[:, None], 0.0)
+        pb = np.asarray(pbar, dtype=float)
+        pb6 = pb.reshape(ncls, 16).sum(axis=1)
+        obs6 = obs.reshape(ncls, 16).sum(axis=1)
+        D6 = D.reshape(P, ncls, 16).sum(axis=2)
+        nan = float("nan")
+        if not P:
+            return (obs6.tolist(), [nan] * ncls, nan, nan, [],
+                    {"d": obs.tolist(), "p": [nan] * ncat,
+                     "shape_p": [nan] * ncls, "shape_omnibus_p": nan})
+
+        def pval(o, null):
+            return (np.sum(null >= o - 1e-15, axis=0) + 1) / (P + 1)
+
+        mean6 = D6.mean(axis=0)
+        p6 = pval(np.abs(obs6 - mean6), np.abs(D6 - mean6))
+        ok6 = pb6 > 0
+        om_obs = np.sum((obs6 - mean6)[ok6] ** 2 / pb6[ok6])
+        om_null = np.sum((D6 - mean6)[:, ok6] ** 2 / pb6[ok6], axis=1)
+        p_om = pval(om_obs, om_null)
+
+        mean = D.mean(axis=0)
+        p96 = pval(np.abs(obs - mean), np.abs(D - mean))
+
+        ### Shape.  Within each class, the weighted mean shift in each
+        ### context's SHARE of the class, hit child minus siblings, with
+        ### weights from the class's own counts.  Scaled as a chi-squared --
+        ### total weight times the sum of squared share shifts over the
+        ### tree-wide shares -- it has the same null distribution however
+        ### many mutations of the class the hit children carry.  A statistic
+        ### built from the overall shifts would not: when a class genuinely
+        ### rises, its contexts' overall shifts get noisier than any
+        ### no-shift permutation, and a shift spread in proportion across
+        ### contexts reads as concentrated.  The self-test checks this.
+        q = np.where(np.repeat(pb6, 16) > 0, pb / np.repeat(
+            np.where(pb6 > 0, pb6, 1.0), 16), 0.0)
+        okc = q > 0
+
+        def shares(acc2, Wc):
+            Wr = np.repeat(Wc, 16, axis=-1)
+            return np.where(Wr > 0, acc2 / np.where(Wr > 0, Wr, 1.0), 0.0)
+
+        T2_obs = shares(self.obs2, self.Wc0)
+        T2 = shares(self.acc2, self.Wc)
+        m2 = T2.mean(axis=0)
+        p_within = pval(np.abs(T2_obs - m2), np.abs(T2 - m2))
+
+        def shape(t2, Wc):
+            e2 = np.where(okc, (t2 - m2) ** 2 / np.where(okc, q, 1.0), 0.0)
+            return Wc * e2.reshape(e2.shape[:-1] + (ncls, 16)).sum(axis=-1)
+
+        s_obs = shape(T2_obs, self.Wc0)
+        s_null = shape(T2, self.Wc)
+        shape_p = pval(s_obs, s_null)
+        shape_om_p = pval(s_obs.sum(), s_null.sum(axis=1))
+        return (obs6.tolist(), p6.tolist(), float(om_obs), float(p_om),
+                D6.tolist(),
+                {"d": obs.tolist(), "p": p96.tolist(),
+                 "within": T2_obs.tolist(), "within_p": p_within.tolist(),
+                 "shape_p": shape_p.tolist(),
+                 "shape_omnibus_p": float(shape_om_p),
+                 "q": q.tolist()})
 
 
 # --------------------------------------------------------------------------
@@ -602,6 +793,29 @@ def main():
         ncat, cats = 6, fold_labels
     else:
         ncat, cats, fold_map = 12, MUT_TYPES, None
+    if args.context:
+        if not args.fold:
+            print("error: --context counts the 96 folded context classes; "
+                  "pass --fold as well, so the summary's classes say so",
+                  file=sys.stderr)
+            return 2
+        try:
+            import numpy
+        except ImportError:
+            print("error: --context needs numpy", file=sys.stderr)
+            return 1
+        import trinucleotide as tn
+        ncat = tn.N_CONTEXTS
+    elif args.mask:
+        print("note: --mask only matters with --context; ignoring it",
+              file=sys.stderr)
+    ### Vectors have ncat entries; the summary reports len(cats) classes.
+    nsum = len(cats)
+
+    def summary_vec(v):
+        if not args.context:
+            return v
+        return [sum(v[16 * k:16 * k + 16]) for k in range(nsum)]
 
     seqs = load_fasta(args.reference)
     if args.seqid:
@@ -644,7 +858,35 @@ def main():
 
     cap = args.max_branch_length if args.max_branch_length is not None \
         else float("inf")
-    own = own_spectra(tree, tree.types, ncat, fold_map, cap)
+    contexts = None
+    if args.context:
+        masked = tn.read_mask(args.mask.split(",") if args.mask else [],
+                              len(ref))
+        contexts, cstats = tn.call_contexts(tree.parent, tree.children,
+                                            tree.positions, tree.types, ref,
+                                            masked)
+        n_snv = sum(cstats[k] for k in ("called", "unknown", "doublet"))
+        print(f"contexts: {cstats['called']} of {n_snv} SNVs called, "
+              f"{cstats['unknown']} unknown flank, {cstats['doublet']} "
+              f"doublet", file=sys.stderr)
+        if cstats["ref_mismatch"] > 0.01 * max(n_snv, 1):
+            print(f"  WARNING: {cstats['ref_mismatch']} SNVs disagree with the "
+                  f"reconstructed parent base; the FASTA is probably not the "
+                  f"tree's root genome, and every context is suspect",
+                  file=sys.stderr)
+        zero = [0] * ncat
+        own = []
+        for i, carr in enumerate(contexts):
+            if not carr or tree.raw_len[i] > cap:
+                own.append(zero)
+                continue
+            vec = [0] * ncat
+            for c in carr:
+                if c >= 0:
+                    vec[c] += 1
+            own.append(vec)
+    else:
+        own = own_spectra(tree, tree.types, ncat, fold_map, cap)
     V, T = subtree_sums(tree, own, ncat)
     root_tot = sum(V[0])
     pbar = [V[0][k] / root_tot if root_tot else 0.0 for k in range(ncat)]
@@ -662,6 +904,13 @@ def main():
         by_effect[e["effect"]] += 1
     print("  by effect: " + ", ".join(f"{k} {by_effect[k]}" for k in SEVERITY
                                        if by_effect[k]), file=sys.stderr)
+    for e in events:
+        if contexts is not None:
+            carr = contexts[e["node"]]
+            e["hit_cats"] = [carr[k] for k in e["hit_k"] if carr[k] >= 0]
+        else:
+            e["hit_cats"] = [fold_map[t] if fold_map else t
+                             for t in e["hit_types"]]
 
     rng = random.Random(args.seed)
     ev_cols = (["effect_set", "gene", "node_id", "parent_id", "effect",
@@ -675,6 +924,13 @@ def main():
                  "informative_terminal", "effective_events"]
                 + [f"diff_{c}" for c in cats] + [f"p_{c}" for c in cats]
                 + ["omnibus", "omnibus_p"])
+    if args.context:
+        sum_cols += [f"shape_p_{c}" for c in cats] + ["shape_omnibus_p"]
+        np_rng = numpy.random.default_rng(args.seed)
+        ctx_out = open(args.output_context, "w")
+        ctx_out.write("effect_set\tgene\tclass\tcontext\tclass_share\t"
+                      "diff\tproportional_diff\texcess\tp\t"
+                      "within_class_diff\twithin_class_p\n")
 
     null_genes = set(args.null_draws_genes.split(",")) \
         if args.null_draws_genes else set()
@@ -694,28 +950,46 @@ def main():
             for gene in genes + ["ALL"]:
                 test_events = in_set if gene == "ALL" else \
                     [e for e in in_set if e["gene"] == gene]
+                accumulator = ContextAccumulator(
+                    ncat, args.permutations, np_rng) if args.context else None
                 rows, n_inf, result, n_eff = run_test(
-                    tree, test_events, V, T, own, ncat, fold_map,
-                    args, pbar, rng)
+                    tree, test_events, V, T, own, ncat, args, pbar, rng,
+                    accumulator)
                 if gene != "ALL":
                     for r in rows:
-                        fv, cv = r["focal_vec"], r["comparator_vec"]
+                        fv = summary_vec(r["focal_vec"])
+                        cv = summary_vec(r["comparator_vec"])
                         nf, nc = sum(fv), sum(cv)
                         out = [es] + [r[c] for c in ev_cols[1:17]]
                         out += [fv[k] / nf if nf else float("nan")
-                                for k in range(ncat)]
+                                for k in range(nsum)]
                         out += [cv[k] / nc if nc else float("nan")
-                                for k in range(ncat)]
+                                for k in range(nsum)]
                         ev_out.write("\t".join(fmt(x) for x in out) + "\n")
                 n_inf_term = sum(1 for r in rows
                                  if r["informative"] and r["terminal"])
                 out = [es, gene, len(rows), n_inf, n_inf_term,
                        round(n_eff, 1)]
                 if result is None:
-                    out += [float("nan")] * (2 * ncat + 2)
+                    out += [float("nan")] * (2 * nsum + 2)
+                    if args.context:
+                        out += [float("nan")] * (nsum + 1)
                 else:
-                    d, pc, om, pom, perm_d = result
+                    d, pc, om, pom, perm_d = result[:5]
                     out += d + pc + [om, pom]
+                    if args.context:
+                        cx = result[5]
+                        out += cx["shape_p"] + [cx["shape_omnibus_p"]]
+                        for c in range(ncat):
+                            k = c // 16
+                            prop = d[k] * cx["q"][c]
+                            ctx_out.write("\t".join(
+                                [es, gene, cats[k], tn.CONTEXT_LABELS[c]]
+                                + [fmt(x) for x in (
+                                    cx["q"][c], cx["d"][c], prop,
+                                    cx["d"][c] - prop, cx["p"][c],
+                                    cx["within"][c], cx["within_p"][c])])
+                                + "\n")
                     if null_out and gene in null_genes:
                         for i, pd in enumerate(perm_d, 1):
                             null_out.write("\t".join(
@@ -729,6 +1003,9 @@ def main():
     if null_out:
         null_out.close()
         print(f"wrote {args.null_draws}", file=sys.stderr)
+    if args.context:
+        ctx_out.close()
+        print(f"wrote {args.output_context}", file=sys.stderr)
     print(f"wrote {args.output_events} and {args.output_summary}",
           file=sys.stderr)
     return 0
@@ -910,11 +1187,12 @@ def selftest():
         own = own_spectra(tree, tree.types, 12, None, float("inf"))
         V, T = subtree_sums(tree, own, 12)
         evs = [{"node": idx[x], "gene": "g", "effect": "missense",
-                "aa_changes": "", "mutations": "", "hit_types": []}
+                "aa_changes": "", "mutations": "", "hit_types": [],
+                "hit_cats": []}
                for x in hit_ids]
         pbar = [1 / 12.0] * 12
         _rows, n_inf, res, _n_eff = run_test(tree, evs, V, T, own, 12,
-                                     None, targs, pbar, rng)
+                                     targs, pbar, rng)
         pvals.append((res[1][0], res[3]))
     frac_class = sum(1 for p, _ in pvals if p < 0.05) / len(pvals)
     frac_omni = sum(1 for _, p in pvals if p < 0.05) / len(pvals)
@@ -930,10 +1208,11 @@ def selftest():
         own = own_spectra(tree, tree.types, 12, None, float("inf"))
         V, T = subtree_sums(tree, own, 12)
         evs = [{"node": idx[x], "gene": "g", "effect": "missense",
-                "aa_changes": "", "mutations": "", "hit_types": []}
+                "aa_changes": "", "mutations": "", "hit_types": [],
+                "hit_cats": []}
                for x in hit_ids]
         _rows, n_inf, res, _n_eff = run_test(tree, evs, V, T, own, 12,
-                                     None, targs, [1 / 12.0] * 12, rng)
+                                     targs, [1 / 12.0] * 12, rng)
         assert res[0][0] > 0, res[0]
         hits_p.append(res[1][0])
     power = sum(1 for p in hits_p if p < 0.05) / len(hits_p)
@@ -941,8 +1220,102 @@ def selftest():
     print(f"ok: a 4x shift in one class on 25 hit subtrees is detected in "
           f"{power:.0%} of 10 simulated trees, in the right direction")
 
+    try:
+        import numpy
+    except ImportError:
+        print("skipped: --context checks need numpy")
+        print("all self-tests passed")
+        return 0
+    _selftest_context(numpy, targs)
     print("all self-tests passed")
     return 0
+
+
+def _context_tree(rng, base, shifted):
+    """A _simulate topology with 96-class vectors drawn per branch.
+
+    Branches inside a hit subtree draw contexts from `shifted`, all others
+    from `base`.
+    """
+    root, hit_ids = _simulate(rng, 25, 0.0, 12)
+    tree = extract(root)
+    idx = {nid: i for i, nid in enumerate(tree.node_ids)}
+    hit_set = set(idx[x] for x in hit_ids)
+    inside = [False] * len(tree.node_ids)
+    own = []
+    for i in range(len(tree.node_ids)):
+        p = tree.parent[i]
+        inside[i] = i in hit_set or (p >= 0 and inside[p])
+        vec = [0] * 96
+        for c in rng.choices(range(96), weights=shifted if inside[i] else base,
+                             k=len(tree.types[i])):
+            vec[c] += 1
+        own.append(vec)
+    evs = [{"node": idx[x], "gene": "g", "effect": "missense",
+            "aa_changes": "", "mutations": "", "hit_types": [],
+            "hit_cats": []} for x in hit_ids]
+    return tree, own, evs
+
+
+def _selftest_context(np, targs):
+    rng = random.Random(11)
+    base = [1.0 + (c % 7) for c in range(96)]
+    tot = sum(base)
+    pbar = [b / tot for b in base]
+
+    def run(shifted, permutations):
+        tree, own, evs = _context_tree(rng, base, shifted)
+        V, T = subtree_sums(tree, own, 96)
+        acc = ContextAccumulator(96, permutations, np.random.default_rng(
+            rng.randrange(1 << 30)))
+        _r, _n, res, _e = run_test(tree, evs, V, T, own, 96, targs, pbar,
+                                   rng, acc)
+        return tree, own, evs, res
+
+    ### Summing contexts gives exactly the 6-class statistic for the same
+    ### events: the weights depend only on mutation totals.
+    shifted = list(base)
+    shifted[40] += 2.0
+    tree, own, evs, res = run(shifted, 50)
+    own6 = [[sum(v[16 * k:16 * k + 16]) for k in range(6)] for v in own]
+    V6, T6 = subtree_sums(tree, own6, 6)
+    targs0 = type(targs)()
+    targs0.__dict__.update(targs.__dict__)
+    targs0.permutations = 0
+    pbar6 = [sum(pbar[16 * k:16 * k + 16]) for k in range(6)]
+    _r, _n, res6, _e = run_test(tree, evs, V6, T6, own6, 6, targs0, pbar6, rng)
+    assert all(abs(a - b) < 1e-12 for a, b in zip(res[0], res6[0])), \
+        (res[0], res6[0])
+    assert abs(sum(res[5]["d"][32:48]) - res[0][2]) < 1e-12
+    print("ok: --context class shifts are exactly the 6-class shifts")
+
+    ### Shape test, on C>T (contexts 32..47, class 2).  No effect; the whole
+    ### class raised in proportion to its contexts, which should move the
+    ### class but not the shape; and one context raised.
+    def ps(shifted, n):
+        out = []
+        for _ in range(n):
+            res = run(shifted, 200)[3]
+            out.append((res[5]["shape_p"][2], res[1][2]))
+        return out
+
+    prop_shift = list(base)
+    for c in range(32, 48):
+        prop_shift[c] *= 3.0
+    one = list(base)
+    one[40] += 60.0
+    null, prop, conc = ps(base, 30), ps(prop_shift, 30), ps(one, 10)
+
+    def frac(rows, j):
+        return sum(1 for r in rows if r[j] < 0.05) / len(rows)
+
+    assert frac(null, 0) <= 0.2, null
+    assert frac(prop, 0) <= 0.2 and frac(prop, 1) >= 0.8, prop
+    assert frac(conc, 0) >= 0.8, conc
+    print(f"ok: C>T shape p < 0.05 in {frac(null, 0):.0%} of null trees and "
+          f"{frac(prop, 0):.0%} of trees with a proportional C>T shift (whose "
+          f"class test fires in {frac(prop, 1):.0%}); a one-context shift is "
+          f"found in {frac(conc, 0):.0%}")
 
 
 if __name__ == "__main__":

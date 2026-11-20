@@ -21,6 +21,10 @@ Reports:
   * with --reference or --terminus: strand asymmetry by replication arm, by
     gene strand (with --annotation), and its spread across annotated clades,
     ending in a FOLD TEST with a verdict on --fold
+  * with --reference: the 96-class trinucleotide context spectrum, with
+    flanks taken from each mutation's parent genome, normalised by how often
+    each trinucleotide occurs, and the count floors a context test needs
+    (see trinucleotide.py; --mask makes masked flanks unknown)
 
 Nothing is modified; the tree is read only.
 
@@ -28,12 +32,16 @@ Usage:
     profile_tree.py --input_tree tree.pb.gz
     profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
     profile_tree.py --input_tree tree.pb.gz --reference ref.fa --annotation genes.gff3
+    profile_tree.py --input_tree tree.pb.gz --reference ref.fa \
+        --mask selection_loci.bed,alignment_loci.bed --context_table context.tsv
 """
 
 import argparse
 import gzip
 import math
+import os
 import sys
+from array import array
 from collections import Counter, defaultdict
 
 # Must match the ordering used in spectrumSplits.py find_splits().
@@ -92,6 +100,16 @@ def parse_args():
     parser.add_argument("--strand_min_clade", type=int, default=None,
                         help="Override --strand_max_se with a fixed minimum clade "
                         "size, in mutations")
+    parser.add_argument("--mask", type=str, default=None,
+                        help="Comma-separated BED files of masked regions.  For the "
+                        "CONTEXT SPECTRUM: a mutation whose flank is masked has an "
+                        "unknown context, and masked trinucleotides are left out "
+                        "of the opportunity counts.  Pass the BEDs the tree was "
+                        "masked with")
+    parser.add_argument("--context_table", type=str, default=None,
+                        help="Write the 96-class context spectrum to this TSV")
+    parser.add_argument("--no_context", action="store_true",
+                        help="Skip the CONTEXT SPECTRUM section even with --reference")
     return parser.parse_args()
 
 
@@ -337,6 +355,120 @@ def homogeneity_chi2(pairs):
     return chi
 
 
+def report_context(tn, parent, children, positions, types, ref, args, out):
+    """The CONTEXT SPECTRUM section, and --context_table."""
+    masked = tn.read_mask(args.mask.split(",") if args.mask else [], len(ref))
+    print("Calling trinucleotide contexts ...", file=sys.stderr)
+    contexts, stats = tn.call_contexts(parent, children, positions, types,
+                                       ref, masked)
+    counts = [0] * tn.N_CONTEXTS
+    per_site = [Counter() for _ in range(tn.N_CONTEXTS)]
+    for pos_arr, ctx_arr in zip(positions, contexts):
+        for p, c in zip(pos_arr, ctx_arr):
+            if c >= 0:
+                counts[c] += 1
+                per_site[c][p] += 1
+    opp = tn.opportunity(ref, masked)
+    total = sum(counts)
+    n_all = stats["called"] + stats["unknown"] + stats["doublet"]
+
+    print("=" * 72, file=out)
+    print("CONTEXT SPECTRUM  (96 pyrimidine-centred trinucleotide classes)", file=out)
+    print("=" * 72, file=out)
+    print("  Flanks come from each mutation's parent genome, reconstructed down", file=out)
+    print("  the tree from the reference, which must be the root's genome.", file=out)
+    print(f"  mask: {args.mask or 'none given'}", file=out)
+
+    def pct(x):
+        return f"{100.0 * x / n_all:.2f}%" if n_all else "NA"
+    print(f"  SNVs:                                {n_all}", file=out)
+    print(f"  called:                              {stats['called']}  ({pct(stats['called'])})", file=out)
+    print(f"  unknown flank (N, masked, sequence end): {stats['unknown']}  ({pct(stats['unknown'])})", file=out)
+    print(f"  adjacent change on the same branch (doublet, not called): "
+          f"{stats['doublet']}  ({pct(stats['doublet'])})", file=out)
+    print(f"  called with a flank that differs from the reference: "
+          f"{stats['flank_changed']}  ({pct(stats['flank_changed'])})", file=out)
+    print("    (contexts that reference flanks would have miscalled)", file=out)
+    print(f"  own reference base disagrees with the reconstructed parent base: "
+          f"{stats['ref_mismatch']}  ({pct(stats['ref_mismatch'])})", file=out)
+    if n_all and stats["ref_mismatch"] > 0.01 * n_all:
+        print("  WARNING: over 1% disagree.  The FASTA is probably not the tree's", file=out)
+        print("  root genome (a rerooted tree needs the rerooted reference), and", file=out)
+        print("  every context below is suspect.", file=out)
+    print(file=out)
+    if not total:
+        print("  no contexts called", file=out)
+        print(file=out)
+        return
+
+    ### Within each class, the rate in a context relative to the class's
+    ### average rate per available trinucleotide: 1 is average, 2 twice as hot.
+    cls_count = [sum(counts[16 * k:16 * k + 16]) for k in range(6)]
+    cls_opp = [sum(opp[tn.trinuc_of_context(16 * k + j)] for j in range(16))
+               for k in range(6)]
+    rows = []
+    for c in range(tn.N_CONTEXTS):
+        k = tn.class_of(c)
+        o = opp[tn.trinuc_of_context(c)]
+        rel = (counts[c] / o) / (cls_count[k] / cls_opp[k]) \
+            if o and cls_count[k] and cls_opp[k] else float("nan")
+        top = per_site[c].most_common(1)
+        top_share = top[0][1] / counts[c] if top and counts[c] else 0.0
+        rows.append((tn.CLASS_LABELS[k], tn.CONTEXT_LABELS[c], counts[c],
+                     counts[c] / total,
+                     counts[c] / cls_count[k] if cls_count[k] else float("nan"),
+                     o, rel, top[0][0] if top else "", top_share))
+
+    print("  class\tcontext\tcount\tof_all\tof_class\topportunity\trel_rate\ttop_site_share", file=out)
+    for r in rows:
+        print(f"  {r[0]}\t{r[1]}\t{r[2]}\t{r[3]:.4f}\t{r[4]:.4f}\t{r[5]}\t"
+              f"{r[6]:.3f}\t{r[8]:.3f}", file=out)
+    print(file=out)
+    print("  rel_rate: count per available trinucleotide, relative to the class", file=out)
+    print("  average (1 = average, 2 = twice as mutable).  top_site_share: the", file=out)
+    print("  fraction of the context's count from its single most-mutated site.", file=out)
+    hot = [r for r in rows if r[8] >= 0.2 and r[2] >= 20]
+    if hot:
+        print("  Contexts where one site carries at least 20% of the count -- a", file=out)
+        print("  hotspot standing in for a context; mask or discount it first:", file=out)
+        for r in sorted(hot, key=lambda r: -r[8]):
+            print(f"    {r[1]}\tsite {r[7]}\t{r[8]:.1%} of {r[2]}", file=out)
+    print(file=out)
+
+    print("  Expected-cell-count floors for a context test:", file=out)
+    p_min = min(c / total for c in counts if c) if any(counts) else 0
+    zero = sum(1 for c in counts if not c)
+    if zero:
+        print(f"    {zero} contexts have no mutations at all", file=out)
+    if p_min:
+        print(f"    96 cells at once: rarest context p={p_min:.5f} -> the smaller", file=out)
+        print(f"    side needs >= {math.ceil(5 / p_min)} mutations", file=out)
+    print("    16 contexts within one class (the conditional test of whether a", file=out)
+    print("    class's context mix shifted), in mutations of that class and in", file=out)
+    print("    total mutations at this tree's class shares:", file=out)
+    for k in range(6):
+        sub = counts[16 * k:16 * k + 16]
+        nz = [c for c in sub if c]
+        if not nz or not cls_count[k]:
+            continue
+        s_min = min(nz) / cls_count[k]
+        need = math.ceil(5 / s_min)
+        print(f"      {tn.CLASS_LABELS[k]}: rarest context share {s_min:.4f} -> "
+              f">= {need} {tn.CLASS_LABELS[k]} mutations "
+              f"(~{math.ceil(need * total / cls_count[k])} total)", file=out)
+    print(file=out)
+
+    if args.context_table:
+        with open(args.context_table, "w") as fh:
+            fh.write("class\tcontext\tcount\tof_all\tof_class\topportunity\t"
+                     "rel_rate\ttop_site\ttop_site_share\n")
+            for r in rows:
+                fh.write("\t".join(str(x) if not isinstance(x, float)
+                                   else f"{x:.6g}" for x in r) + "\n")
+        print(f"  wrote {args.context_table}", file=out)
+        print(file=out)
+
+
 def main():
     args = parse_args()
     out = sys.stdout
@@ -356,11 +488,23 @@ def main():
 
     # ---- strand-asymmetry setup -------------------------------------------
     do_strand = args.reference is not None or args.terminus is not None
+    do_context = args.reference is not None and not args.no_context
     origin, terminus, skew_note = args.origin, args.terminus, ""
     gene_strands = None
+    ref_seq = None
+    if do_context:
+        ### Same order as permutation_null.MUT_TYPES, which trinucleotide.py
+        ### reads the type indices with.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import trinucleotide
+        assert trinucleotide.MUT_TYPES == MUT_TYPES
+    ctx_positions = [None] * n_nodes if do_context else None
+    ctx_types = [None] * n_nodes if do_context else None
     if do_strand:
         if args.reference:
             seq = read_fasta(args.reference)
+            if do_context:
+                ref_seq = seq
             skew_min, skew_max = gc_skew_extremes(seq)
             if origin is None:
                 origin = skew_min
@@ -396,6 +540,11 @@ def main():
         if not children[i]:
             n_leaves += 1
         spec = None
+        if do_context:
+            cpos = array("i")
+            ctyp = array("b")
+            ctx_positions[i] = cpos
+            ctx_types[i] = ctyp
         if do_strand:
             clade_of[i] = next((a for a in node.annotations if a), "") \
                 or (clade_of[parent[i]] if parent[i] >= 0 else "")
@@ -412,6 +561,9 @@ def main():
             own_count[i] += 1
             global_spectrum[idx] += 1
             site_counts[pos] += 1
+            if do_context:
+                cpos.append(pos)
+                ctyp.append(idx)
             if do_strand:
                 leading = forward_is_leading(pos, origin, terminus)
                 arm_spectrum["leading" if leading else "lagging"][idx] += 1
@@ -590,6 +742,11 @@ def main():
     print("  and are the main reason --min_chi must exceed any nominal", file=out)
     print("  significance cutoff.  qc/mask_site_splits.py targets these.", file=out)
     print(file=out)
+
+    if do_context:
+        report_context(trinucleotide, parent, children, ctx_positions,
+                       ctx_types, ref_seq, args, out)
+        del ctx_positions, ctx_types
 
     if do_strand:
         print("=" * 72, file=out)
