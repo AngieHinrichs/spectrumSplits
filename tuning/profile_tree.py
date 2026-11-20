@@ -24,9 +24,10 @@ Reports:
   * with --reference: the 96-class trinucleotide context spectrum, with
     flanks taken from each mutation's parent genome, normalised by how often
     each trinucleotide occurs, and the count floors a context test needs
-    (see trinucleotide.py; --mask makes masked flanks unknown).  With
-    --stranded_context, the 192 forward-strand classes instead, for a tree
-    that step 5's FOLD TEST says not to fold
+    (see trinucleotide.py; --mask makes masked flanks unknown).  As
+    for the other scripts, without --fold the 192 forward-strand classes,
+    with it the 96 folded ones; set it by the FOLD TEST's verdict, and the
+    report says if the two disagree
 
 Nothing is modified; the tree is read only.
 
@@ -110,10 +111,11 @@ def parse_args():
                         "masked with")
     parser.add_argument("--context_table", type=str, default=None,
                         help="Write the context spectrum to this TSV")
-    parser.add_argument("--stranded_context", action="store_true",
-                        help="Report the 192 forward-strand context classes "
-                        "instead of the 96 folded ones, for a tree that will "
-                        "be searched without --fold")
+    parser.add_argument("--fold", action="store_true",
+                        help="CONTEXT SPECTRUM in the 96 folded classes, for a "
+                        "tree searched with --fold; without it, the 192 "
+                        "forward-strand classes.  Changes nothing else in the "
+                        "report, which shows both spectra and the FOLD TEST")
     parser.add_argument("--no_context", action="store_true",
                         help="Skip the CONTEXT SPECTRUM section even with --reference")
     return parser.parse_args()
@@ -364,7 +366,7 @@ def homogeneity_chi2(pairs):
 def report_context(tn, parent, children, positions, types, ref, args, out):
     """The CONTEXT SPECTRUM section, and --context_table."""
     masked = tn.read_mask(args.mask.split(",") if args.mask else [], len(ref))
-    sch = tn.scheme(not args.stranded_context)
+    sch = tn.scheme(args.fold)
     print("Calling trinucleotide contexts ...", file=sys.stderr)
     contexts, stats = sch.call(parent, children, positions, types, ref,
                                masked)
@@ -899,7 +901,9 @@ def main():
         if len(fold_clades) < 2:
             print("  Verdict: too few clades with annotations to test; decide from", file=out)
             print("  the tables above.", file=out)
+            verdict_fold = None
         elif flagged:
+            verdict_fold = False
             print("  Verdict: consider NOT folding.  F varies across clades for:", file=out)
             for lab, d, ext in flagged:
                 print(f"    {lab}: chi2/df {d:.2f}, most extreme {ext[0]} "
@@ -910,11 +914,23 @@ def main():
             print("  for a double-stranded genome: check that clade's reference and", file=out)
             print("  alignment for an artifact before relying on it.", file=out)
         else:
+            verdict_fold = True
             print(f"  Verdict: fold.  No pair's F varies across clades: largest", file=out)
             print(f"  chi2/df {worst:.2f} (limit {args.fold_max_dispersion}), largest single-clade "
                   f"|z| {worst_z:.1f} (limit {args.fold_max_z}).", file=out)
             print("  Recurrent sites inflate both, so chi2/df up to ~2 and |z| up to", file=out)
             print("  ~4 are within noise.", file=out)
+        if do_context and verdict_fold is not None \
+                and verdict_fold != args.fold:
+            print(file=out)
+            print(f"  NOTE: this report's CONTEXT SPECTRUM was run "
+                  f"{'with' if args.fold else 'without'} --fold, in the "
+                  f"{96 if args.fold else 192} classes, but the verdict "
+                  f"says {'fold' if verdict_fold else 'consider not folding'}.",
+                  file=out)
+            print("  If you follow the verdict, rerun with"
+                  f"{'' if verdict_fold else 'out'} --fold so the contexts "
+                  "match the search.", file=out)
         print(file=out)
         print("  Reading this:", file=out)
         print("  * A pair whose ratio flips sign between the LEADING and LAGGING arms", file=out)

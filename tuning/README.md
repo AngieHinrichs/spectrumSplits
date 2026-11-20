@@ -58,7 +58,7 @@ needs matplotlib rather than `bte`.
 
 | Script | Step | What it answers |
 | --- | --- | --- |
-| [`profile_tree.py`](#profile_treepy) | 1, 4 | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
+| [`profile_tree.py`](#profile_treepy) | 1, 4, 5 | What is in this tree, and what do its numbers imply for `--min_mutations`, `--max_branch_length` and whether to fold? |
 | [`prune_clade_check.py`](#prune_clade_checkpy) | 2 | What did `qc/prune_mutation_sample_ratio.py` remove, by clade, and was it a divergent genome or a clade on a long stem? |
 | [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
 | [`check_gene_names.py`](#check_gene_namespy) | 3, 8 | Does every name in a `--regions` or `--highlight` list resolve to exactly one gene in this annotation, and if not, what is it called there? |
@@ -75,7 +75,7 @@ needs matplotlib rather than `bte`.
 | [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
-| [`trinucleotide.py`](#trinucleotidepy) | 4, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
+| [`trinucleotide.py`](#trinucleotidepy) | 5, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -609,7 +609,8 @@ Bases removed is not the number that matters, though; the next step has it.
 
 ```
 profile_tree.py --input_tree tree.pruned.masked.pb.gz \
-    --reference NC_012345.1.fna --annotation NC_012345.1.gff3.gz > profile_masked.txt
+    --reference NC_012345.1.fna --annotation NC_012345.1.gff3.gz \
+    --no_context > profile_masked.txt
 
 annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
     --from_profile profile_masked.txt --output surviving_sites.tsv \
@@ -827,49 +828,6 @@ gene families are the usual source.
 Node IDs changed when the tree was masked, so compare clades between the two
 profiles by sample membership, not by ID.
 
-**The context spectrum.** With `--reference`, the profile also reports the 96
-trinucleotide context classes. It is not needed to tune the search, but read
-it before using `gene_hit_contrasts.py --context` (step 12). Give it the BEDs
-the tree was masked with, so a context through a masked base counts as
-unknown rather than as the reference base:
-
-```
-profile_tree.py --input_tree tree.pruned.masked.pb.gz \
-    --reference NC_012345.1.fna --annotation NC_012345.1.gff3.gz \
-    --mask selection_loci.bed,alignment_loci.bed \
-    --context_table context.tsv > profile_masked.txt
-```
-
-The flanking bases come from each mutation's parent genome, reconstructed
-down the tree, so **the FASTA must be the root's genome**. On a rerooted tree
-that is the rerooted reference, not the published assembly (see "Know how
-your tree was rooted"). The report counts the SNVs whose own reference base
-disagrees with the reconstructed parent base, and warns above 1%.
-
-Check four things. Disagreements should be near zero. The unknown and
-doublet counts say what the context analysis cannot see. No context should
-be dominated by one site: the report lists any where a single site carries
-20% or more, which would be a hotspot standing in for a context. And the
-floors say how many mutations a context test needs.
-
-*Worked example.* On the masked walkthrough tree, using the rerooted
-reference, 2,829,239 of 2,843,878 SNVs (99.5%) get a context, and **none**
-disagree with the parent base. 310 have an unknown flank, and 14,329 (0.5%)
-sit next to another change on the same branch and are left out as doublets.
-1,442 contexts (0.05%) would have been miscalled using the reference's
-flanks; reconstructing the parent genome costs nothing extra, but on a tree
-this shallow it barely matters. No context has a site carrying even 5% of its
-count. The context floors explain why the search itself stays at 6 classes:
-all 96 at once need about 18,000 mutations on the smaller side, and the
-rarest within-class test (`TG|AC`'s 16 contexts) needs about 850 `TG|AC`
-mutations, about 11,000 in total.
-
-The 96 classes fold the two strands together, as `--fold` does. If step 5
-decides not to fold, rerun this with `--stranded_context` for the 192
-forward-strand classes (the 12 types x 16 flank pairs), which keep apart
-what an unfolded search keeps apart. On the walkthrough tree all 192 at once
-need about 39,000 mutations.
-
 ### 5. Decide whether to fold
 
 Read this off `profile_masked.txt` from step 4. Its GLOBAL SPECTRUM section
@@ -974,15 +932,72 @@ G>A turned into forward C>T gave chi2/df 26 and z 13 for that clade. The test
 reports the clade, so if it fires, look there for a reference or alignment
 problem before you unfold.
 
-If you do unfold, the context analyses follow. The 96 context classes fold
-the strands together, so they can't see the forward-strand signal that made
-you unfold. Use the 192 forward-strand classes instead: `profile_tree.py
---stranded_context` in step 4, and leave out `--fold` for
-`split_contexts.py` in step 11 and `gene_hit_contrasts.py --context` in
-step 12. On a single-stranded genome this matters most: C>U and G>A, say, are
-different processes with different contexts.
+Make the decision here, on the masked tree, not earlier. On the raw MTBC tree,
+and on the pruned tree before masking, the same test says "consider NOT
+folding": TC|AG's F has chi2/df 3.87, with lineage 2.2.1 at z −7.5.
+Pruning doesn't change that; masking does, and after masking the verdict is
+fold. So what fired was in the masked regions, most likely alignment
+artifacts, which is what the test's warning tells you to look for.
+
+The decision then holds for every script that takes `--fold`:
+`spectrumSplits.py`, `permutation_null.py`, `branch_class_spectra.py`,
+`gene_hit_contrasts.py`, `split_contexts.py`, and `profile_tree.py`'s
+context spectrum below. Unfolding carries through to the contexts too. The 96 context classes
+fold the strands together, so they can't see the forward-strand signal that
+made you unfold. Without `--fold`, the context scripts use the 192
+forward-strand classes (12 types x 16 flank pairs) instead. On a
+single-stranded genome this matters most: C>U and G>A, say, are different
+processes with different contexts.
 
 Settle this now: it changes both the floor in step 6 and the null in step 7.
+
+#### Then profile the contexts
+
+With the decision made, profile the trinucleotide contexts. They are not
+needed to tune the search, but `split_contexts.py` (step 11) and
+`gene_hit_contrasts.py --context` (step 12) use them, so read this first.
+Pass `--fold` as you decided, here and in every later step: with it the
+profile reports the 96 folded context classes, without it the 192
+forward-strand ones. Step 4's profile skipped this section because the
+decision was not made yet. Give it the BEDs the tree was masked with, so a
+context through a masked base counts as unknown rather than as the reference
+base:
+
+```
+profile_tree.py --input_tree tree.pruned.masked.pb.gz --fold \
+    --reference NC_012345.1.fna --annotation NC_012345.1.gff3.gz \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --context_table context.tsv > profile_context.txt
+```
+
+The report repeats the FOLD TEST, and if its verdict disagrees with
+`--fold`, a note under the verdict says so.
+
+The flanking bases come from each mutation's parent genome, reconstructed
+down the tree, so **the FASTA must be the root's genome**. On a rerooted tree
+that is the rerooted reference, not the published assembly (see "Know how
+your tree was rooted"). The report counts the SNVs whose own reference base
+disagrees with the reconstructed parent base, and warns above 1%.
+
+Check four things. Disagreements should be near zero. The unknown and
+doublet counts say what the context analysis cannot see. No context should
+be dominated by one site: the report lists any where a single site carries
+20% or more, which would be a hotspot standing in for a context. And the
+floors say how many mutations a context test needs.
+
+*Worked example.* On the masked walkthrough tree, using the rerooted
+reference, 2,829,239 of 2,843,878 SNVs (99.5%) get a context, and **none**
+disagree with the parent base. 310 have an unknown flank, and 14,329 (0.5%)
+sit next to another change on the same branch and are left out as doublets.
+1,442 contexts (0.05%) would have been miscalled using the reference's
+flanks; reconstructing the parent genome costs nothing extra, but on a tree
+this shallow it barely matters. No context has a site carrying even 5% of its
+count. The context floors explain why the search itself stays at 6 classes:
+all 96 at once need about 18,000 mutations on the smaller side, and the
+rarest within-class test (`TG|AC`'s 16 contexts) needs about 850 `TG|AC`
+mutations, about 11,000 in total. Unfolded, all 192 classes at once would
+need about 39,000.
+
 
 ### 6. Pick `--min_mutations` and `--max_branch_length`
 
@@ -2244,7 +2259,7 @@ total does. `--context` repeats the test in the context classes, with the
 same events, comparators, draws and controls: the 96 folded ones with
 `--fold`, the 192 forward-strand ones without. It needs numpy.
 Give `--mask` the BEDs the tree was masked with, as for `profile_tree.py`, and
-the reference must be the root's genome (step 4). Run it on the genes worth a
+the reference must be the root's genome (step 5). Run it on the genes worth a
 closer look, not the whole list:
 
 ```
@@ -2539,14 +2554,15 @@ In walkthrough order.
 
 ### `profile_tree.py`
 
-Used in [step 1](#1-profile-the-raw-tree) and again in
-[step 4](#4-re-profile-and-check-what-the-mask-bought).
+Used in [step 1](#1-profile-the-raw-tree), again in
+[step 4](#4-re-profile-and-check-what-the-mask-bought), and for the context
+spectrum at the end of [step 5](#5-decide-whether-to-fold).
 
 ```
 profile_tree.py --input_tree tree.pb.gz
 profile_tree.py --input_tree tree.pb.gz --node_table nodes.tsv
 profile_tree.py --input_tree tree.pb.gz --reference ref.fna --annotation genes.gff3.gz
-profile_tree.py --input_tree tree.pb.gz --reference ref.fna \
+profile_tree.py --input_tree tree.pb.gz --reference ref.fna --fold \
     --mask masked.bed --context_table context.tsv
 ```
 
@@ -2560,7 +2576,7 @@ Reports:
 | Subtree mutation counts, and eligible candidate nodes at each `--min_mutations` | If only a handful of nodes clear your threshold, the analysis will be coarse whatever `--min_chi` is |
 | Mutations:tips ratio, with the `prune_mutation_sample_ratio.py` auto-threshold | Shows what that QC script would prune before you run it |
 | Site recurrence (mutations per site, top sites' share) | The independence violation that forces `--min_chi` above any nominal cutoff; `qc/mask_site_splits.py` targets it |
-| Context spectrum (with `--reference`) | The 96 trinucleotide context classes (192 forward-strand ones with `--stranded_context`), with flanks from each mutation's parent genome: how many could be called, a check that the FASTA is the root's genome, count, share, opportunity and relative rate per context, any context dominated by one site, and the count floors a context test needs. [Step 4](#4-re-profile-and-check-what-the-mask-bought) reads it |
+| Context spectrum (with `--reference`) | The trinucleotide context classes, 96 folded with `--fold` and 192 forward-strand without, with flanks from each mutation's parent genome: how many could be called, a check that the FASTA is the root's genome, count, share, opportunity and relative rate per context, any context dominated by one site, and the count floors a context test needs. [Step 5](#5-decide-whether-to-fold) reads it, once the fold decision is made, and a note follows the FOLD TEST if `--fold` disagrees with its verdict |
 | Strand asymmetry (with `--reference`, or `--terminus`) | Complementary-pair log2 ratios on the leading and lagging arms, in + and − strand genes (with `--annotation`), and per annotated clade, with a heterogeneity chi-squared for each pair. It ends with a FOLD TEST and a verdict. This is what step 5 reads |
 
 The strand asymmetry section needs the origin and terminus of replication.
@@ -2582,10 +2598,11 @@ files: a mutation with a masked flank gets an unknown context, and masked
 trinucleotides are left out of the opportunity counts. Pass the BEDs the tree
 was masked with. `relative rate` divides each context's count by how often its
 trinucleotide occurs, relative to its class's average (1 is average).
-`--context_table` writes the 96 rows as a TSV, and `--no_context` skips the
-section. `--stranded_context` reports the 192 forward-strand classes instead,
-for a tree that step 5 decides not to fold. Their opportunity counts are over
-the 64 forward-strand trinucleotides.
+`--fold` picks the class set, as in the other scripts: the 96 folded classes
+with it, the 192 forward-strand ones without, whose opportunity counts are
+over the 64 forward-strand trinucleotides. It changes nothing else in the
+report. `--context_table` writes the rows as a TSV, and `--no_context` skips
+the section, as step 4 does before the fold decision.
 
 `--node_table` writes one row per node (branch and subtree counts, tips,
 mutations:tips, per-branch 12-type spectrum) if you want to plot distributions.
@@ -3270,7 +3287,7 @@ report on a constructed pair of trees.
 
 ### `trinucleotide.py`
 
-Used by `profile_tree.py` ([step 4](#4-re-profile-and-check-what-the-mask-bought)),
+Used by `profile_tree.py` ([step 5](#5-decide-whether-to-fold)),
 `split_contexts.py` ([step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism))
 and `gene_hit_contrasts.py --context` ([step 12](#12-test-a-candidate-mechanism-genotype-first));
 not run on its own except as `trinucleotide.py --selftest`.
