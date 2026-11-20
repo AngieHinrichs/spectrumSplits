@@ -47,6 +47,38 @@ adjacent same-branch pair, are left out of every table, including G(between),
 so between + within = G(contexts) exactly.  --mask should be the masks the tree was
 built with.
 
+Two runs, one invocation.  Everything above is done twice: on all branches,
+and on internal branches only, which keeps out per-genome error (as in step
+9's branch_class_spectra.py).  Contexts are called once; each run has its own
+shuffles and controls, from the same --seed.
+
+ctrl_q.  ctrl_p is one test per split, so it is corrected for the splits
+tested like the shuffle's p: ctrl_q is its Benjamini-Hochberg value within
+the run.  Splits share controls, so their ctrl_p are positively dependent,
+under which BH still holds.  ctrl_p can't fall below 1/(controls in the
+split's size window + 1), and a split with few controls in its window may be
+unable to reach --control_alpha whatever its excess.  Each run names those,
+and says which fix applies: more --controls, or, where every clade of that
+size on the tree has already been drawn, a wider --control_window.
+
+The summary.  A split whose context shift is worth reading passes both nulls
+-- q below --max_q and ctrl_q at or below --control_alpha -- on BOTH runs.
+The report ends with those splits, sorted by all-branch excess (--summary_top
+N keeps the N with the lowest all-branch ctrl_p, if you want fewer), each
+with its clades (from --composition, split_composition.py's output), excess,
+ctrl_p, ctrl_q and q on both runs, the --summary_contexts contexts carrying most of its all-branch
+G(within) with their shares of class, and each context's top-site share.  A
+listed context where one site carries --one_site or more of the split's count
+is flagged: a hotspot standing in for a context.
+
+Outputs, named from --prefix (default split_contexts):
+  PREFIX.tsv, PREFIX_internal.tsv   one row per split, per run
+  PREFIX_96.tsv, PREFIX_internal_96.tsv
+                                    one row per split and context, per run
+                                    (_192 without --fold)
+  PREFIX_table.tsv                  the summary table
+The report goes to stdout.
+
 What it cannot tell you: whether a search scoring contexts would find splits
 this one did not.  That needs the search to score contexts.
 
@@ -54,13 +86,14 @@ Usage:
     split_contexts.py --input_tree tree.pruned.masked.pb.gz \\
         --spectra spectra.tsv --fold --max_branch_length 250 \\
         --reference root_genome.fa --mask selection_loci.bed,alignment_loci.bed \\
-        --output split_contexts.tsv --output_contexts split_contexts_96.tsv \\
+        --composition split_composition.tsv --summary_top 12 \\
         > split_contexts.txt
 
     split_contexts.py --selftest
 """
 
 import argparse
+import csv
 import gzip
 import math
 import os
@@ -102,33 +135,45 @@ def parse_args(argv=None):
                         "(search, needs --splits_log)")
     p.add_argument("--splits_log", default=None,
                    help="The search's stderr, for --against search")
-    p.add_argument("--branches", choices=["all", "internal"], default="all",
-                   help="internal: count only internal branches, to keep "
-                        "per-genome error out (as in step 9)")
     p.add_argument("--permutations", type=int, default=1000,
                    help="Branch shuffles per split (default 1000)")
-    p.add_argument("--controls", type=int, default=10,
+    p.add_argument("--controls", type=int, default=30,
                    help="Random non-split clades drawn per split, within "
                         "--control_window of its size, as a reference for "
-                        "how much any clade differs (default 10; 0 skips)")
+                        "how much any clade differs (default 30; 0 skips)")
     p.add_argument("--control_window", type=float, default=2.0,
                    help="Fold range of size a control may differ from a "
                         "split by (default 2)")
     p.add_argument("--control_permutations", type=int, default=200,
                    help="Branch shuffles per control clade (default 200)")
     p.add_argument("--control_alpha", type=float, default=0.05,
-                   help="ctrl_p at or below which a split's contexts are "
-                        "listed in detail (default 0.05)")
+                   help="ctrl_q (BH-corrected ctrl_p) a split must be at or "
+                        "below to pass the random-clade null, for the "
+                        "detailed listing and the summary (default 0.05)")
+    p.add_argument("--max_q", type=float, default=0.05,
+                   help="Branch-shuffle q a split must be below to pass "
+                        "(default 0.05)")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--top", type=int, default=3,
-                   help="Contexts to list per split (default 3)")
+                   help="Contexts to list per split in each run's detailed "
+                        "listing (default 3)")
+    p.add_argument("--composition", default=None,
+                   help="split_composition.py --output, for each summarised "
+                        "split's clades")
+    p.add_argument("--summary_top", type=int, default=0,
+                   help="Summarise only the N splits passing both runs with "
+                        "the lowest all-branch ctrl_p (default 0: all)")
+    p.add_argument("--summary_contexts", type=int, default=2,
+                   help="Contexts per split in the summary (default 2)")
+    p.add_argument("--one_site", type=float, default=0.2,
+                   help="Top-site share at which a context is flagged as one "
+                        "site (default 0.2)")
     p.add_argument("--min_class", type=int, default=80,
                    help="A class with fewer called mutations than this in "
                         "either row is marked 'few' in the report "
                         "(default 80, five per context)")
-    p.add_argument("--output", default=None, help="Per-split TSV")
-    p.add_argument("--output_contexts", default=None,
-                   help="Per-split, per-context TSV")
+    p.add_argument("--prefix", default="split_contexts",
+                   help="Prefix of the output TSVs (default split_contexts)")
     p.add_argument("--selftest", action="store_true",
                    help="Run the self-tests and exit")
     return p.parse_args(argv)
@@ -373,18 +418,21 @@ def fmt_p(p):
     return f"{p:.2g}" if p >= 0.001 else f"{p:.1e}"
 
 
-def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
+def run(np, tree, contexts, stats, group, roots, comp, totals, args, out,
+        internal_only=False):
+    """One run: every split on all branches, or on internal branches only.
+    Starts its own random stream from --seed, so each run reproduces alone."""
     cap = args.max_branch_length
     sch = tn.scheme(args.fold)
     ncls = sch.ncls
-    X, snvs = branch_matrix(np, tree, contexts, group, cap,
-                            args.branches == "internal", sch.n)
+    X, snvs = branch_matrix(np, tree, contexts, group, cap, internal_only,
+                            sch.n)
     members = {}
     for i in range(len(tree.node_ids)):
         if group[i] >= 0:
             members.setdefault(group[i], []).append(i)
     mismatched = []
-    for r in roots:
+    for r in (roots if not internal_only else ()):
         nid = tree.node_ids[r]
         if nid in totals and abs(totals[nid] - snvs[r]) > 0.5:
             mismatched.append((nid, snvs[r], totals[nid]))
@@ -438,7 +486,7 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
         sa, sb = within_shares(np, A), within_shares(np, B)
         row["share_s"], row["share_c"] = sa, sb
         row["sites"] = top_sites(tree, contexts, members[r], cap,
-                                 args.branches == "internal", sch.n)
+                                 internal_only, sch.n)
         tops = []
         for ci in np.argsort(-contrib)[:args.top]:
             if contrib[ci] <= 0:
@@ -453,7 +501,8 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
         row["few"] = [bool(rA[j] < args.min_class or rB[j] < args.min_class)
                       for j in range(ncls)]
         rows.append(row)
-        print(f"  [{k + 1}/{len(ordered)}] {row['node']} vs "
+        print(f"  {'internal' if internal_only else 'all'} "
+              f"[{k + 1}/{len(ordered)}] {row['node']} vs "
               f"{row['comparator']}: G(within) {row['g_within']:.1f}, "
               f"p {fmt_p(row['p'])}", file=sys.stderr)
 
@@ -461,8 +510,34 @@ def run(np, tree, contexts, stats, group, roots, comp, totals, args, out):
     for r, q in zip(rows, qs):
         r["q"] = q
     ctrl = run_controls(np, tree, X, group, roots, members, rows, args, rng)
-    report(rows, stats, args, out, ctrl)
+    if ctrl is None:
+        for r in rows:
+            r.setdefault("control_p", None)
+            r.setdefault("control_n", None)
+            r.setdefault("control_median", None)
+    add_control_q(rows, args)
+    report(rows, stats, args, out, ctrl, internal_only)
     return rows
+
+
+def add_control_q(rows, args):
+    """ctrl_q, the BH value of ctrl_p within the run, and for each split that
+    passes the shuffle, whether its control count lets it reach
+    --control_alpha at all: with ctrl_p at its floor, 1/(controls + 1),
+    and every other split's as observed."""
+    ps = [r.get("control_p") for r in rows]
+    for r, q in zip(rows, bh(ps)):
+        r["control_q"] = q
+    for k, r in enumerate(rows):
+        r["control_floor"] = None
+        r["unreachable"] = False
+        if r.get("control_n") is None:
+            continue
+        floor = 1.0 / (r["control_n"] + 1)
+        r["control_floor"] = floor
+        best = list(ps)
+        best[k] = floor
+        r["unreachable"] = bh(best)[k] > args.control_alpha
 
 
 def clade_sizes(np, tree, X, group):
@@ -511,18 +586,20 @@ def run_controls(np, tree, X, group, roots, members, rows, args, rng):
     sizes = [int(sub[i]) for i in cand]
     import bisect
     drawn = {}
+    tried = set()
     w = args.control_window
     for k, r in enumerate(tested):
         n = r["split_mutations"]
         lo = bisect.bisect_left(sizes, n / w)
         hi = bisect.bisect_right(sizes, n * w)
-        pool = [cand[j] for j in range(lo, hi) if cand[j] not in drawn]
+        pool = [cand[j] for j in range(lo, hi) if cand[j] not in tried]
         if not pool:
             continue
         pick = rng.choice(len(pool), size=min(args.controls, len(pool)),
                           replace=False)
         for j in pick:
             v = pool[int(j)]
+            tried.add(v)
             clade = set(clade_members(tree, group, v))
             ms = [i for i in clade if X[i].any()]
             mc = [i for i in members[group[v]] if i not in clade
@@ -541,9 +618,16 @@ def run_controls(np, tree, X, group, roots, members, rows, args, rng):
     ctl = list(drawn.values())
     for r in rows:
         r["control_n"] = r["control_median"] = r["control_p"] = None
+        r["control_pool_left"] = None
         if r["excess"] is None:
             continue
         n = r["split_mutations"]
+        lo = bisect.bisect_left(sizes, n / w)
+        hi = bisect.bisect_right(sizes, n * w)
+        ### Clades of this size on the tree not yet drawn: none left means
+        ### more --controls cannot add any.
+        r["control_pool_left"] = sum(1 for j in range(lo, hi)
+                                     if cand[j] not in tried)
         win = [c["excess"] for c in ctl if n / w <= c["size"] <= n * w]
         if win:
             r["control_n"] = len(win)
@@ -553,11 +637,20 @@ def run_controls(np, tree, X, group, roots, members, rows, args, rng):
     return ctl
 
 
-def report(rows, stats, args, out, ctrl=None):
+def passes(r, args):
+    """Both nulls: the branch shuffle (q) and the random clades (ctrl_q)."""
+    return r.get("q") is not None and r["q"] < args.max_q \
+        and r.get("control_q") is not None \
+        and r["control_q"] <= args.control_alpha
+
+
+def report(rows, stats, args, out, ctrl=None, internal_only=False):
     sch = tn.scheme(args.fold)
     L, ncls = sch.class_labels, sch.ncls
     print("=" * 72, file=out)
-    print("TRINUCLEOTIDE CONTEXT WITHIN CLASSES, PER SPLIT", file=out)
+    print("TRINUCLEOTIDE CONTEXT WITHIN CLASSES, PER SPLIT: "
+          + ("INTERNAL BRANCHES ONLY" if internal_only else "ALL BRANCHES"),
+          file=out)
     print("=" * 72, file=out)
     print(f"  context classes: {sch.name}", file=out)
     tot = sum(stats.values()) or 1
@@ -573,7 +666,8 @@ def report(rows, stats, args, out, ctrl=None):
                   "tree's root genome, and every context is suspect.",
                   file=out)
     print(f"  comparator: {'clade parent' if args.against == 'clade' else 'search subtree'}"
-          f"; branches: {args.branches}; {args.permutations} branch shuffles "
+          f"; branches: {'internal only' if internal_only else 'all'}; "
+          f"{args.permutations} branch shuffles "
           f"per split", file=out)
     print("  G(within) is the context shift inside classes; within% is its "
           "share of the", file=out)
@@ -584,11 +678,10 @@ def report(rows, stats, args, out, ctrl=None):
     print("  largest G(within); '(few)' marks a class with fewer than "
           f"{args.min_class} mutations in a row.", file=out)
     tested = [r for r in rows if r["p"] is not None]
-    hits = [r for r in tested if r["q"] is not None and r["q"] < 0.05]
-    beyond = [r for r in hits if r.get("control_p") is not None
-              and r["control_p"] <= args.control_alpha]
-    print(f"\n  {len(tested)} splits tested; {len(hits)} with q < 0.05.",
-          file=out)
+    hits = [r for r in tested if r["q"] is not None and r["q"] < args.max_q]
+    beyond = [r for r in hits if passes(r, args)]
+    print(f"\n  {len(tested)} splits tested; {len(hits)} with q < "
+          f"{args.max_q:g}.", file=out)
     if ctrl:
         cp = sum(1 for c in ctrl if c["p"] <= 0.05)
         ex = sorted(c["excess"] for c in ctrl)
@@ -603,13 +696,38 @@ def report(rows, stats, args, out, ctrl=None):
         print("  If controls are often significant, context varies between "
               "clades everywhere,", file=out)
         print("  and only ctrl_p says a split differs more than any clade "
-              "would.", file=out)
-        print(f"  {len(beyond)} splits have q < 0.05 and ctrl_p <= "
-              f"{args.control_alpha:g}.", file=out)
+              "would.  ctrl_q is", file=out)
+        print("  ctrl_p corrected (Benjamini-Hochberg) for the splits tested.",
+              file=out)
+        n_raw = sum(1 for r in hits if r.get("control_p") is not None
+                    and r["control_p"] <= args.control_alpha)
+        print(f"  {len(beyond)} splits have q < {args.max_q:g} and ctrl_q <= "
+              f"{args.control_alpha:g} ({n_raw} with uncorrected ctrl_p <= "
+              f"{args.control_alpha:g}).", file=out)
+        stuck = [r for r in hits if r.get("unreachable")]
+        if stuck:
+            print(f"  {len(stuck)} splits with q < {args.max_q:g} have too few "
+                  f"controls in their size window to reach ctrl_q <= "
+                  f"{args.control_alpha:g}", file=out)
+            print("  however strong their shift; ctrl_p can't fall below "
+                  "1/(controls + 1).", file=out)
+            more = [r for r in stuck if r.get("control_pool_left")]
+            used = [r for r in stuck if not r.get("control_pool_left")]
+
+            def lst(rs):
+                return ", ".join(f"{r['node']} ({r['control_n']}, floor "
+                                 f"{r['control_floor']:.2g})" for r in rs)
+            if used:
+                print(f"    every clade of their size on the tree is already "
+                      f"drawn (only a wider --control_window can add more): "
+                      f"{lst(used)}", file=out)
+            if more:
+                print(f"    more clades of their size exist (raise "
+                      f"--controls): {lst(more)}", file=out)
 
     head = (f"  {'node':11s} {'vs':11s} {'split_n':>8s} {'comp_n':>8s} "
             f"{'G_betw':>8s} {'G_within':>8s} {'within%':>7s} {'excess':>6s} "
-            f"{'p':>7s} {'q':>7s} {'ctrl_p':>6s}  top class")
+            f"{'p':>7s} {'q':>7s} {'ctrl_p':>6s} {'ctrl_q':>6s}  top class")
     print("\n" + head, file=out)
     for r in sorted(rows, key=lambda r: (r["p"] is None, r["p"] or 1,
                                          -r["g_within"])):
@@ -622,13 +740,14 @@ def report(rows, stats, args, out, ctrl=None):
               f"{r['g_between']:8.1f} {r['g_within']:8.1f} "
               f"{100 * r['within_share']:6.1f}% {exc:>6s} "
               f"{fmt_p(r['p']):>7s} {fmt_p(r['q']):>7s} "
-              f"{fmt_p(r.get('control_p')):>6s}  {topc}", file=out)
+              f"{fmt_p(r.get('control_p')):>6s} "
+              f"{fmt_p(r.get('control_q')):>6s}  {topc}", file=out)
 
     if ctrl:
-        show, what = beyond, (f"for splits with q < 0.05 and ctrl_p <= "
-                              f"{args.control_alpha:g}")
+        show, what = beyond, (f"for splits with q < {args.max_q:g} and "
+                              f"ctrl_q <= {args.control_alpha:g}")
     else:
-        show, what = hits, "for splits with q < 0.05"
+        show, what = hits, f"for splits with q < {args.max_q:g}"
     if not show:
         show = sorted(tested, key=lambda r: (r["p"], -(r["excess"] or 0)))[:5]
         what = "for the five lowest p (none pass)"
@@ -641,10 +760,11 @@ def report(rows, stats, args, out, ctrl=None):
         cls = ", ".join(f"{L[j]} {fmt_p(r['p_cls'][j])}"
                         f"{'*' if r['few'][j] else ''}" for j in range(ncls))
         print(f"\n  {r['node']} (q {fmt_p(r['q'])}, ctrl_p "
-              f"{fmt_p(r.get('control_p'))}); per-class p: {cls}", file=out)
+              f"{fmt_p(r.get('control_p'))}, ctrl_q "
+              f"{fmt_p(r.get('control_q'))}); per-class p: {cls}", file=out)
         for t in r["tops"]:
             arrow = "+" if t["s"] > t["c"] else "-"
-            flag = "  <- one site" if t["site"] >= 0.2 else ""
+            flag = "  <- one site" if t["site"] >= args.one_site else ""
             print(f"    {sch.labels[t['ctx']]:9s} {arrow} "
                   f"G {t['g']:7.1f}  share {t['s']:.3f} vs {t['c']:.3f}  "
                   f"site {t['site']:.2f} at {t['pos']}{flag}", file=out)
@@ -653,12 +773,140 @@ def report(rows, stats, args, out, ctrl=None):
               file=out)
 
 
+def read_composition(path):
+    with open(path) as fh:
+        return {r["node"]: r for r in csv.DictReader(fh, delimiter="\t")}
+
+
+def clade_label(r):
+    """split_composition.py's top clades as 'name count, ...', plus flags."""
+    parts = []
+    for item in r.get("composition", "").split(","):
+        if ":" in item:
+            name, n = item.rsplit(":", 1)
+            parts.append(f"{name} {n}")
+    label = ", ".join(parts)
+    flags = r.get("flags", "")
+    return f"{label} ({flags})" if flags else label
+
+
+def summarize(all_rows, int_rows, args, sch, comp=None):
+    """The splits passing both nulls on both runs, as summary rows.
+
+    Returns (rows, n_both, only_all, only_internal, one_site): rows sorted by
+    all-branch excess, after --summary_top, if set, keeps the lowest
+    all-branch ctrl_p;
+    one_site lists (node, context, share, site) for summarised contexts whose
+    top site carries --one_site or more.
+    """
+    by_int = {r["node"]: r for r in int_rows}
+    ok_all = {r["node"] for r in all_rows if passes(r, args)}
+    ok_int = {r["node"] for r in int_rows if passes(r, args)}
+    both = ok_all & ok_int
+    chosen = sorted((r for r in all_rows if r["node"] in both),
+                    key=lambda r: r["control_p"])
+    if args.summary_top:
+        chosen = chosen[:args.summary_top]
+    chosen.sort(key=lambda r: -r["excess"])
+    out, one_site = [], []
+    for a in chosen:
+        i = by_int[a["node"]]
+        order = sorted(range(sch.n), key=lambda c: -a["contrib"][c])
+        listed = [c for c in order[:args.summary_contexts]
+                  if a["contrib"][c] > 0]
+        sites = [a["sites"][c] for c in listed]
+        one_site += [(a["node"], sch.labels[c], sh, pos)
+                     for c, (sh, pos) in zip(listed, sites)
+                     if sh >= args.one_site]
+        node = a["node"]
+        out.append({
+            "split": node,
+            "comparator": a["comparator"],
+            "clade": clade_label(comp[node]) if comp and node in comp else "",
+            "excess_all": f"{a['excess']:.2f}",
+            "excess_internal": f"{i['excess']:.2f}",
+            "ctrl_p_all": f"{a['control_p']:.2g}",
+            "ctrl_p_internal": f"{i['control_p']:.2g}",
+            "ctrl_q_all": f"{a['control_q']:.2g}",
+            "ctrl_q_internal": f"{i['control_q']:.2g}",
+            "q_all": f"{a['q']:.2g}",
+            "q_internal": f"{i['q']:.2g}",
+            "contexts": "; ".join(
+                f"{sch.labels[c]} {a['share_s'][c]:.3f} vs "
+                f"{a['share_c'][c]:.3f}" for c in listed),
+            "top_site_shares": "; ".join(f"{sh:.3f}" for sh, _p in sites),
+            "max_site_share": f"{max(sh for sh, _p in sites):.3f}"
+            if sites else "",
+        })
+    return (out, len(both), sorted(ok_all - ok_int), sorted(ok_int - ok_all),
+            one_site)
+
+
+SUMMARY_COLUMNS = ["split", "comparator", "clade", "excess_all",
+                   "excess_internal", "ctrl_p_all", "ctrl_p_internal",
+                   "ctrl_q_all", "ctrl_q_internal", "q_all", "q_internal", "contexts", "top_site_shares",
+                   "max_site_share"]
+
+
+def report_summary(summary, args, out):
+    rows, n_both, only_all, only_int, one_site = summary
+    print("=" * 72, file=out)
+    print("SUMMARY: SPLITS THAT PASS BOTH NULLS ON BOTH RUNS", file=out)
+    print("=" * 72, file=out)
+    print(f"  {n_both} splits have q < {args.max_q:g} and ctrl_q <= "
+          f"{args.control_alpha:g} on all branches AND on internal branches "
+          f"only;", file=out)
+    print(f"  {len(rows)} listed"
+          f"{f' (the {args.summary_top} with the lowest all-branch ctrl_p)' if args.summary_top else ''}"
+          f", by all-branch excess.", file=out)
+    if only_all:
+        print(f"  pass on all branches only: {', '.join(only_all)}", file=out)
+    if only_int:
+        print(f"  pass on internal branches only: {', '.join(only_int)}",
+              file=out)
+    print("  contexts: the class shares, split vs comparator, of the contexts "
+          "carrying", file=out)
+    print("  most of the all-branch G(within); sites: each one's top-site "
+          "share.", file=out)
+    print(file=out)
+    if rows:
+        cols = ["split", "excess_all", "excess_internal", "ctrl_p_all",
+                "ctrl_p_internal", "clade", "contexts", "top_site_shares"]
+        head = ["split", "excess all/int", "ctrl_q all/int", "clade"]
+        print("  " + "\t".join(head), file=out)
+        for r in rows:
+            print(f"  {r['split']}\t{r['excess_all']} / "
+                  f"{r['excess_internal']}\t{r['ctrl_q_all']} / "
+                  f"{r['ctrl_q_internal']}\t{r['clade'] or '-'}", file=out)
+            print(f"      {r['contexts']}  (sites {r['top_site_shares']})",
+                  file=out)
+        print(file=out)
+    if one_site:
+        print(f"  Contexts above where one site carries >= {args.one_site:g} "
+              f"of the split's count:", file=out)
+        for n, c, x, pos in one_site:
+            print(f"    {n} {c}: {x:.2f} at {pos}", file=out)
+    elif rows:
+        big = max(float(r["max_site_share"]) for r in rows
+                  if r["max_site_share"])
+        print(f"  No context above has one site at >= {args.one_site:g}; the "
+              f"largest top-site share is {big:.3f}.", file=out)
+    print(file=out)
+
+
+def write_summary(rows, path):
+    with open(path, "w") as fh:
+        fh.write("\t".join(SUMMARY_COLUMNS) + "\n")
+        for r in rows:
+            fh.write("\t".join(str(r[c]) for c in SUMMARY_COLUMNS) + "\n")
+
+
 def write_tsv(rows, path, sch):
     L = sch.class_labels
     cols = ["node", "comparator", "split_mutations", "comparator_mutations",
             "split_branches", "comparator_branches", "g_between", "g_within",
             "within_share", "null_mean", "excess", "p", "q",
-            "control_n", "control_median", "control_p"]
+            "control_n", "control_median", "control_p", "control_q"]
     cols += [f"g_within_{c}" for c in L] + [f"p_{c}" for c in L]
     cols += ["top_contexts"]
 
@@ -671,7 +919,7 @@ def write_tsv(rows, path, sch):
     with open(path, "w") as fh:
         fh.write("\t".join(cols) + "\n")
         for r in rows:
-            vals = [r.get(c) for c in cols[:16]]
+            vals = [r.get(c) for c in cols[:17]]
             vals += [float(x) for x in r["g_within_cls"]] + list(r["p_cls"])
             vals.append(",".join(
                 f"{sch.labels[t['ctx']]}{'+' if t['s'] > t['c'] else '-'}"
@@ -794,13 +1042,16 @@ def selftest():
     args = Args()
     args.against = "clade"
     args.max_branch_length = None
-    args.branches = "all"
     args.permutations = 200
     args.seed = 1
     args.top = 2
     args.min_class = 1
     args.controls = 0
     args.control_alpha = 0.05
+    args.max_q = 0.05
+    args.one_site = 0.2
+    args.summary_top = 0
+    args.summary_contexts = 2
     args.fold = True
     comp = comparators(tree, group, roots, args)
     idx = {nid: i for i, nid in enumerate(tree.node_ids)}
@@ -874,14 +1125,81 @@ def selftest():
     print("ok: control clades stop at nested splits, as a split's residual "
           "does")
 
-    ### --branches internal drops the leaves, leaving nothing to test.
-    args.branches = "internal"
+    ### The internal-only run drops the leaves, leaving nothing to test.
     rows = run(np, tree, contexts, stats, group, roots, comp, {}, args,
-               io.StringIO())
+               io.StringIO(), internal_only=True)
     assert rows[0]["split_mutations"] == 0
-    print("ok: --branches internal counts no terminal branch")
+    print("ok: the internal-only run counts no terminal branch")
+
+    _selftest_summary(np)
     print("all self-tests passed")
     return 0
+
+
+def _selftest_summary(np):
+    sch = tn.scheme(True)
+
+    class A(object):
+        pass
+    args = A()
+    args.max_q, args.control_alpha, args.one_site = 0.05, 0.05, 0.2
+    args.summary_top, args.summary_contexts = 0, 2
+
+    def row(node, excess, q, ctrl, contrib=None, sites=None):
+        c = np.zeros(sch.n)
+        for k, v in (contrib or {}).items():
+            c[k] = v
+        st = [(0.0, None)] * sch.n
+        for k, v in (sites or {}).items():
+            st[k] = v
+        sh = np.full(sch.n, 0.1)
+        return {"node": node, "comparator": "r", "excess": excess, "q": q,
+                "control_p": ctrl, "control_q": ctrl, "contrib": c,
+                "share_s": sh,
+                "share_c": sh / 2, "sites": st}
+    all_rows = [
+        row("a", 5.0, 0.001, 0.003, {40: 9.0, 41: 3.0, 42: 0.0},
+            {40: (0.01, 100), 41: (0.25, 17)}),
+        row("b", 7.0, 0.001, 0.020, {1: 1.0}, {1: (0.0, 5)}),
+        row("c", 3.0, 0.001, 0.040, {1: 1.0}, {1: (0.0, 5)}),
+        row("d", 9.0, 0.001, 0.003),               # fails internal
+        row("e", 2.0, 0.200, 0.003),               # fails q
+        row("f", 2.0, 0.001, 0.300),               # fails ctrl_p
+    ]
+    int_rows = [row("a", 2.5, 0.001, 0.005), row("b", 3.0, 0.010, 0.040),
+                row("c", 1.5, 0.020, 0.050), row("d", 1.0, 0.500, 0.600),
+                row("e", 1.0, 0.001, 0.003), row("f", 1.0, 0.001, 0.003)]
+    comp = {"a": {"composition": "L1:6,L2:4", "flags": "mixed"}}
+    rows, nboth, only_all, only_int, one = summarize(all_rows, int_rows, args,
+                                                     sch, comp)
+    assert [r["split"] for r in rows] == ["b", "a", "c"], rows
+    assert nboth == 3 and only_all == ["d"] and only_int == ["e", "f"]
+    a = rows[1]
+    assert a["contexts"] == (f"{sch.labels[40]} 0.100 vs 0.050; "
+                             f"{sch.labels[41]} 0.100 vs 0.050"), a
+    assert a["clade"] == "L1 6, L2 4 (mixed)" and rows[0]["clade"] == ""
+    assert a["top_site_shares"] == "0.010; 0.250" and \
+        a["max_site_share"] == "0.250"
+    assert one == [("a", sch.labels[41], 0.25, 17)], one
+    args.summary_top = 2
+    rows = summarize(all_rows, int_rows, args, sch)[0]
+    assert [r["split"] for r in rows] == ["b", "a"], rows
+    ### ctrl_q and the reachability check.  Five splits; the first has
+    ### only 9 controls, so its floor 0.1 can never pass at 0.05.
+    rs = [{"control_p": p, "control_n": n} for p, n in
+          ((0.1, 9), (0.002, 400), (0.004, 400), (0.5, 400), (None, None))]
+    add_control_q(rs, args)
+    want_q = [0.4 / 3, 0.008, 0.008, 0.5, None]   # 0.1 is 3rd of 4
+    assert all((a["control_q"] is None and b is None)
+               or abs(a["control_q"] - b) < 1e-12
+               for a, b in zip(rs, want_q)), [r["control_q"] for r in rs]
+    assert [r["unreachable"] for r in rs] == [True, False, False, False,
+                                              False], rs
+    print("ok: ctrl_q is BH over the run's ctrl_p, and a split whose control "
+          "count can't reach --control_alpha is flagged")
+    print("ok: the summary keeps splits passing both nulls on both runs, "
+          "sorts by excess, lists contexts by G with their site shares, and "
+          "flags one site; --summary_top keeps the lowest ctrl_p")
 
 
 def _obs_null(np, Xs, Xc, rng):
@@ -937,15 +1255,26 @@ def main(argv=None):
     contexts, stats = sch.call(tree.parent, tree.children, tree.positions,
                                tree.types, ref, masked)
     comp = comparators(tree, group, roots, args)
-    rows = run(np, tree, contexts, stats, group, roots, comp, totals, args,
-               sys.stdout)
-    if args.output:
-        write_tsv(rows, args.output, sch)
-        print(f"Per-split table written to {args.output}", file=sys.stderr)
-    if args.output_contexts:
-        write_contexts(rows, args.output_contexts, sch)
-        print(f"Per-context table written to {args.output_contexts}",
-              file=sys.stderr)
+    comp_tab = read_composition(args.composition) if args.composition \
+        else None
+    out = sys.stdout
+    runs = {}
+    for internal_only in (False, True):
+        runs[internal_only] = run(np, tree, contexts, stats, group, roots,
+                                  comp, totals, args, out, internal_only)
+        print(file=out)
+    summary = summarize(runs[False], runs[True], args, sch, comp_tab)
+    report_summary(summary, args, out)
+    pre = args.prefix
+    paths = []
+    for internal_only, tag in ((False, ""), (True, "_internal")):
+        paths.append(f"{pre}{tag}.tsv")
+        write_tsv(runs[internal_only], paths[-1], sch)
+        paths.append(f"{pre}{tag}_{sch.n}.tsv")
+        write_contexts(runs[internal_only], paths[-1], sch)
+    paths.append(f"{pre}_table.tsv")
+    write_summary(summary[0], paths[-1])
+    print(f"Wrote {', '.join(paths)}", file=sys.stderr)
     return 0
 
 

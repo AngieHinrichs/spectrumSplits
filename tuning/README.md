@@ -44,7 +44,6 @@ needs matplotlib rather than `bte`.
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
   - [`split_contexts.py`](#split_contextspy)
-  - [`summarize_split_contexts.py`](#summarize_split_contextspy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`control_genes.py`](#control_genespy)
   - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
@@ -70,8 +69,7 @@ needs matplotlib rather than `bte`.
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
-| [`split_contexts.py`](#split_contextspy) | 11 | Does a split also differ in trinucleotide context inside its classes, and by more than any clade of its size would? |
-| [`summarize_split_contexts.py`](#summarize_split_contextspy) | 11 | Which splits pass both of `split_contexts.py`'s nulls on all branches and on internal branches, and in which contexts? |
+| [`split_contexts.py`](#split_contextspy) | 11 | Does a split also differ in trinucleotide context inside its classes, by more than any clade of its size would, on all branches and on internal branches alone? |
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
 | [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
@@ -1917,16 +1915,23 @@ the search used, and the root's genome as `--reference` (on the MTBC tree,
 the rerooted `modified_NC_000962.3.fa`). With `--fold` it counts the 96
 folded context classes. Without it, for an unfolded search, it counts the 192
 forward-strand ones, and the classes below are the 12 types instead of 6.
+`--composition` takes `split_composition.tsv` from above, for each split's
+clades in the summary:
 
 ```
 split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
     --fold --max_branch_length 250 --reference modified_NC_000962.3.fa \
     --mask selection_loci.bed,alignment_loci.bed \
-    --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
-    > split_contexts.txt
-split_contexts.py ... --branches internal --output split_contexts_internal.tsv \
-    > split_contexts_internal.txt
+    --composition split_composition.tsv > split_contexts.txt
 ```
+
+It tests every split twice: on all branches, and on internal branches only,
+which keeps out per-genome error as in
+[step 9](#9-check-the-splits-against-sequencing-quality). The report has a
+section for each run, then a summary of the splits that pass on both. The
+TSVs are `split_contexts.tsv` and `split_contexts_internal.tsv` (one row per
+split), `split_contexts_96.tsv` and `split_contexts_internal_96.tsv` (one row
+per split and context), and `split_contexts_table.tsv` (the summary).
 
 Each split's residual row is set against its clade parent's as a 2 x 96 table
 (2 x 192 unfolded).
@@ -1943,64 +1948,68 @@ Two nulls are needed, and they answer different questions:
   the split differs from its comparator. `excess` is G(within) over the
   shuffles' mean, about 1 under the null, so splits of different sizes can be
   compared.
-- **Random clades (`ctrl_p`).** Non-split clades within 2-fold of each
-  split's size are tested the same way, each against the rest of its residual
-  group. `ctrl_p` is the share of them whose excess reaches the split's. This
-  asks whether the split differs more than any clade would.
+- **Random clades (`ctrl_p`, `ctrl_q`).** Non-split clades within 2-fold of
+  each split's size are tested the same way, each against the rest of its
+  residual group. `ctrl_p` is the share of them whose excess reaches the
+  split's. This asks whether the split differs more than any clade would.
+  `ctrl_q` is `ctrl_p` corrected for the number of splits tested
+  (Benjamini–Hochberg), as q corrects p, and is what a split must pass.
 
 The second matters. If context differs between sublineages all over the
 tree, a split can pass the shuffle for the same reason any clade would.
 
-*Worked example*, all branches, 1,000 shuffles per split and 604 controls, in
-40 seconds and 1 GB:
+*Worked example*, 1,000 shuffles per split and 30 controls per split (about
+900 per run), in 75 seconds and 1 GB. The all-branch section reads:
 
 ```
   66 splits tested; 44 with q < 0.05.
-  604 random non-split clades, size-matched to the splits: 175 (29%) with p <= 0.05;
-  median excess 1.10, against 1.50 for the splits.
-  19 splits have q < 0.05 and ctrl_p <= 0.05.
+  911 random non-split clades, size-matched to the splits: 239 (26%) with p <= 0.05;
+  median excess 1.09, against 1.50 for the splits.
+  8 splits have q < 0.05 and ctrl_q <= 0.05 (18 with uncorrected ctrl_p <= 0.05).
+  11 splits with q < 0.05 have too few controls in their size window to reach ctrl_q <= 0.05
 ```
 
-So 29% of clades chosen at random pass the shuffle. On internal branches alone
-the share falls to 11%, so terminal branches add much of it. On this tree the
-q values overstate the case on their own; read `ctrl_p`. Sixteen splits have
-q < 0.05 and `ctrl_p` at or below 0.05 on both runs. These are the twelve with
-the lowest `ctrl_p` on all branches, 0.024 or below, by excess:
+So 26% of clades chosen at random pass the shuffle. In the internal-branch
+section the share falls to 11%, so terminal branches add much of it. On this
+tree the q values overstate the case on their own; read `ctrl_q`. Without
+the correction, 18 splits have `ctrl_p` at or below 0.05, where chance alone
+would give about 3.
+
+**Splits that can't be judged.** `ctrl_p` can't fall below 1/(controls + 1),
+so a split with few controls in its size window can't reach `ctrl_q` ≤ 0.05
+however strong its shift. Each run names those splits and says which fix
+applies. Here all 11 are the largest splits, with 31 to 122 controls each,
+and every clade of their size on the tree has already been drawn: raising
+`--controls` from 30 to 100 adds none. Only a wider `--control_window` would,
+at the cost of looser size matching. They include `node_57208`, whose
+all-branch excess of 5.0 is the third largest of any split. So for the
+largest splits this test is silent, not negative.
+
+The summary takes the splits that pass both nulls on both runs. There are
+eight, sorted by excess. This table is `split_contexts_table.tsv`, with the
+clades shortened:
 
 | Split | Clade | Excess, all / internal | Contexts, split vs clade parent, share of class |
 | --- | --- | --- | --- |
 | `node_7246` | lineage 1.1.3.1 | 7.7 / 3.6 | A[T>G]G 0.210 vs 0.024; A[C>G]G 0.120 vs 0.049 |
 | `node_6` | La1.2, La2, La1.3 | 5.9 / 3.3 | G[T>C]C 0.237 vs 0.135; C[T>G]G 0.079 vs 0.166 |
-| `node_57208` | lineage 4.3, mixed | 5.0 / 2.4 | A[C>G]G 0.058 vs 0.037; G[C>G]G 0.106 vs 0.081 |
 | `node_14331` | lineage 2.2.1 | 4.3 / 2.8 | C[T>C]C 0.087 vs 0.043; A[T>C]C 0.112 vs 0.076 |
 | `node_76364` | lineage 4.8 | 3.3 / 1.6 | T[C>A]G 0.133 vs 0.070; T[C>A]A 0.065 vs 0.028 |
-| `node_13032` | lineage 1.2.2.2 | 3.0 / 1.9 | C[C>A]G 0.129 vs 0.196; C[C>T]G 0.131 vs 0.155 |
 | `node_3775` | lineage 6 and 9 | 3.0 / 1.9 | G[C>T]C 0.069 vs 0.112; C[C>T]A 0.089 vs 0.062 |
 | `node_21970` | lineage 2.2.1 | 2.7 / 1.8 | G[T>G]G 0.189 vs 0.129; G[C>T]A 0.074 vs 0.059 |
 | `node_71721` | lineage 4.6.1 | 2.7 / 1.5 | G[T>G]G 0.166 vs 0.103; G[T>G]C 0.185 vs 0.138 |
 | `node_3548` | La3 | 2.3 / 1.6 | G[T>C]G 0.137 vs 0.176; G[C>A]C 0.125 vs 0.078 |
-| `node_54608` | lineage 4.2.2 | 2.2 / 1.6 | C[T>G]T 0.114 vs 0.077; C[C>T]C 0.066 vs 0.055 |
-| `node_72678` | lineage 4.7 | 2.0 / 1.4 | T[C>A]G 0.095 vs 0.070; C[C>T]G 0.155 vs 0.141 |
 
-To derive this table from the two runs, with `split_composition.tsv` from
-above for the clades:
+The summary also names the splits that pass on only one run: here five
+(`node_13032`, `node_4965`, `node_52706`, `node_54608` and `node_57207`)
+pass on internal branches only. `--control_alpha 0.1` adds one split to the
+table, `node_54608`. `--summary_top N` trims the table to the N with the
+lowest all-branch `ctrl_p`, if a tree gives more than you want to read.
 
-```
-summarize_split_contexts.py --all split_contexts.tsv \
-    --internal split_contexts_internal.tsv \
-    --contexts split_contexts_96.tsv --composition split_composition.tsv \
-    --top 12 > split_contexts_table.tsv
-```
-
-Without `--top` it lists all sixteen. It also names, on stderr, the splits
-that pass on only one run: here `node_14336`, `node_36254` and `node_51867`
-on all branches only, and five splits on internal branches only. And it
-checks each listed context for one site carrying 20% or more of the split's
-count: here none does.
-
-None of these contexts comes from a single site. The most frequent site
-carries at most 3.9% of the split's count in each, `node_21970`'s G[T>G]G;
-the script's `top_site_shares` column has them all. Three are leads in their
+None of these contexts comes from a single site. The summary checks each
+listed context for one site carrying 20% or more of the split's count
+(`--one_site`), and here the largest is 3.9%, `node_21970`'s G[T>G]G; the
+`top_site_shares` column has them all. Three are leads in their
 own right:
 
 - **`node_7246`.** A[T>G]G is a fifth of the clade's T>G, against 2% in the
@@ -3093,15 +3102,15 @@ the residual, the lineage naming and the flag on a constructed tree.
 ### `split_contexts.py`
 
 Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism).
-Tests every split for a trinucleotide-context shift inside its classes. Needs
-`bte` and numpy.
+Tests every split for a trinucleotide-context shift inside its classes, on
+all branches and on internal branches only, and summarises the splits that
+pass on both. Needs `bte` and numpy.
 
 ```
 split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
     --fold --max_branch_length 250 --reference root_genome.fa \
     --mask selection_loci.bed,alignment_loci.bed \
-    --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
-    > split_contexts.txt
+    --composition split_composition.tsv > split_contexts.txt
 ```
 
 Inputs:
@@ -3113,6 +3122,8 @@ Inputs:
 - `--reference` must be the root's genome. More than 1% of mutations
   disagreeing with it is reported as a warning.
 - `--mask` takes BED files. A context with a masked flank is not called.
+- `--composition` (optional) is `split_composition.py --output`, for the
+  summarised splits' clades.
 
 Options:
 
@@ -3122,36 +3133,54 @@ Options:
   enclosing split's residual. `search` compares against the subtree the
   search found the split in, read from `--splits_log`, as `split_drivers.py`
   does.
-- `--branches internal` counts only internal branches, as in
-  [step 9](#9-check-the-splits-against-sequencing-quality).
 - `--permutations` (default 1,000) sets the branch shuffles per split.
-- `--controls` (default 10, 0 to skip) sets the random non-split clades drawn
+- `--controls` (default 30, 0 to skip) sets the random non-split clades drawn
   per split. They are drawn within `--control_window` (default 2) fold of the
   split's size, each with `--control_permutations` (default 200) shuffles.
-- `--control_alpha` (default 0.05) is the `ctrl_p` up to which a split's top
-  contexts are listed in detail.
-- `--top` (default 3) sets how many contexts are listed per split.
+  A split whose window holds few clades gets a coarse `ctrl_p`, and the
+  report says whether more `--controls` or a wider `--control_window` would
+  help.
+- `--max_q` (default 0.05) and `--control_alpha` (default 0.05): a split
+  passes both nulls with q below the first and `ctrl_q`, the
+  Benjamini–Hochberg-corrected `ctrl_p`, at or below the second.
+- `--top` (default 3) sets how many contexts each run's detailed listing
+  gives per split.
+- `--summary_top` (default 0, all) trims the summary to the N splits passing
+  both runs with the lowest all-branch `ctrl_p`, and `--summary_contexts` (default 2) sets
+  the contexts per split in the summary.
+- `--one_site` (default 0.2) is the top-site share at which a context is
+  flagged as one site.
 - `--min_class` (default 80) is the count below which a class is marked
   `few`.
+- `--seed` (default 1). Each run starts its own random stream from it, so a
+  run's numbers don't depend on the other.
+- `--prefix` (default `split_contexts`) names the TSVs.
 
-The report gives the calling statistics, the share of controls that pass the
-shuffle, and one row per split sorted by `p`. It then lists the top contexts,
-by contribution to G(within), for each split that passes both nulls. Each
-context comes with the most frequent site's share of it.
+The report has one section per run. Each gives the calling statistics, the
+share of controls that pass the shuffle, and one row per split sorted by
+`p`. It then lists the top contexts, by contribution to G(within), for each
+split that passes both nulls, each with the most frequent site's share of
+it. A last section summarises the splits that pass both nulls on both runs,
+names those that pass on only one, and gives the one-site check.
 
-`--output` writes one row per split with these columns:
+The TSVs, with the default prefix:
 
-- `g_between`, `g_within`, `within_share`, `null_mean`, `excess`, `p` and
-  `q`;
-- `control_n`, `control_median` and `control_p`;
-- G(within) and p per class;
-- `top_contexts`.
+- `split_contexts.tsv` and `split_contexts_internal.tsv`, one row per split:
+  `g_between`, `g_within`, `within_share`, `null_mean`, `excess`, `p` and
+  `q`; `control_n`, `control_median`, `control_p` and `control_q`; G(within)
+  and p per class; and `top_contexts`.
+- `split_contexts_96.tsv` and `split_contexts_internal_96.tsv` (`_192`
+  without `--fold`), the 2 x 96 (or 2 x 192) table: counts, within-class
+  shares, each context's G contribution, and the split's most frequent site
+  in that context with its share of the count (`split_top_site`,
+  `split_top_site_share`).
+- `split_contexts_table.tsv`, the summary: `split`, `comparator`, `clade`
+  (top clades of the residual samples and flags, from `--composition`),
+  excess, `ctrl_p`, `ctrl_q` and q on each run, `contexts` (the contexts carrying most
+  of the all-branch G(within), with their shares of class, split vs
+  comparator), `top_site_shares` and `max_site_share`.
 
-`--output_contexts` writes the 2 x 96 (or 2 x 192) table: counts,
-within-class shares, each context's G contribution, and the split's most
-frequent site in that context with its share of the count
-(`split_top_site`, `split_top_site_share`). `--selftest` checks the
-following, then exits:
+`--selftest` checks the following, then exits:
 
 - that G(between) and G(within) add up to the 2 x 96 and 2 x 192 G exactly;
 - the shuffle's calibration, under the null and under a proportional class
@@ -3160,49 +3189,12 @@ following, then exits:
 - the pipeline on a constructed tree, in both class sets;
 - that a difference only in strand is invisible folded and a class
   difference unfolded;
-- that control clades stop at nested splits.
-
-### `summarize_split_contexts.py`
-
-Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism).
-Reads the two `split_contexts.py` runs and derives step 11's table. Needs
-only the standard library.
-
-```
-summarize_split_contexts.py --all split_contexts.tsv \
-    --internal split_contexts_internal.tsv \
-    --contexts split_contexts_96.tsv --composition split_composition.tsv \
-    --top 12 > split_contexts_table.tsv
-```
-
-A split is listed when it has q below `--max_q` (default 0.05) and `ctrl_p`
-at or below `--max_ctrl_p` (default 0.05) in both runs. `--top N` keeps the
-N with the lowest all-branch `ctrl_p`. Rows are sorted by all-branch excess.
-
-The columns are:
-
-- `split` and `comparator`;
-- `clade`, the top clades of the split's residual samples and its flags,
-  from `--composition` (`split_composition.py --output`);
-- `excess_all`, `excess_internal`, `ctrl_p_all`, `ctrl_p_internal`, `q_all`
-  and `q_internal`;
-- `contexts`, the `--per_split` (default 2) contexts carrying most of
-  G(within) on all branches. Each comes with its share of its class, split
-  vs comparator, from `--contexts` (the all-branch run's
-  `--output_contexts`). Without `--contexts`, it falls back to the
-  `top_contexts` column.
-- `top_site_shares`, for each of those contexts the share of the split's
-  count from its single most frequent site, and `max_site_share`, the largest.
-  They need `--contexts` from a `split_contexts.py` that writes
-  `split_top_site_share`.
-
-A listed context whose top site carries `--one_site` (default 0.2, as in
-`split_contexts.py`'s report) or more is named on stderr, with the site.
-
-Stderr gives the number passing both runs, names the splits that pass on
-only one, and gives the one-site check's result. `--output` writes to a file instead of stdout. `--selftest` checks
-the selection, the ordering, `--top` and the context lookup on constructed
-tables, and that site shares follow the listed contexts.
+- that control clades stop at nested splits, and that the internal-only run
+  counts no terminal branch;
+- `ctrl_q`, and the flag on a split whose control count can't reach
+  `--control_alpha`;
+- the summary's selection, ordering, contexts, site shares and
+  `--summary_top`.
 
 ### `gene_hit_contrasts.py`
 
