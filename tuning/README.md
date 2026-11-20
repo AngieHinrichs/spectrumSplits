@@ -43,6 +43,7 @@ needs matplotlib rather than `bte`.
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
+  - [`split_contexts.py`](#split_contextspy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`control_genes.py`](#control_genespy)
   - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
@@ -68,12 +69,13 @@ needs matplotlib rather than `bte`.
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
+| [`split_contexts.py`](#split_contextspy) | 11 | Does a split also differ in trinucleotide context inside its classes, and by more than any clade of its size would? |
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
 | [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
-| [`trinucleotide.py`](#trinucleotidepy) | 4, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py` and `gene_hit_contrasts.py --context`. |
+| [`trinucleotide.py`](#trinucleotidepy) | 4, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
 
 The steps depend on one another, so the order matters more than any single
 setting: masking changes the spectrum, the spectrum sets the floor under
@@ -1873,6 +1875,98 @@ grep -Fwf n.txt clades.txt | cut -f2 | sort | uniq -c | sort -nr
 That is also where something step 2 missed would show: a split whose top
 clades include a strain you would not call a natural population.
 
+#### Within the classes: trinucleotide context
+
+The search scores six classes. Two clades can share those six proportions and
+still differ inside a class, for example more C>T at CpG and less elsewhere.
+A split found on a class shift may or may not carry a context shift as well.
+`split_contexts.py` asks that of every split, after the fact, without
+changing the search. Use the tree, `--max_branch_length` and masks the search
+used, and the root's genome as `--reference` (on the MTBC tree, the rerooted
+`modified_NC_000962.3.fa`):
+
+```
+split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
+    --max_branch_length 250 --reference modified_NC_000962.3.fa \
+    --mask selection_loci.bed,alignment_loci.bed,lppN_mask.bed \
+    --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
+    > split_contexts.txt
+split_contexts.py ... --branches internal --output split_contexts_internal.tsv \
+    > split_contexts_internal.txt
+```
+
+Each split's residual row is set against its clade parent's as a 2 x 96 table.
+That table's G statistic is the sum of two parts. G(between) is the 2 x 6
+class table, which is what the search found. G(within) adds up, over the six
+classes, a 2 x 16 table of that class's contexts. It is zero whenever the
+context shares inside every class agree, whatever the class proportions, so
+it is the test.
+
+Two nulls are needed, and they answer different questions:
+
+- **Branch shuffle (`p`, `q`).** Whole branches are reassigned between the
+  split and its comparator, each keeping all its mutations. This asks whether
+  the split differs from its comparator. `excess` is G(within) over the
+  shuffles' mean, about 1 under the null, so splits of different sizes can be
+  compared.
+- **Random clades (`ctrl_p`).** Non-split clades within 2-fold of each
+  split's size are tested the same way, each against the rest of its residual
+  group. `ctrl_p` is the share of them whose excess reaches the split's. This
+  asks whether the split differs more than any clade would.
+
+The second matters. If context differs between sublineages all over the
+tree, a split can pass the shuffle for the same reason any clade would.
+
+*Worked example*, all branches, 1,000 shuffles per split and 604 controls, in
+40 seconds and 1 GB:
+
+```
+  66 splits tested; 44 with q < 0.05.
+  604 random non-split clades, size-matched to the splits: 175 (29%) with p <= 0.05;
+  median excess 1.10, against 1.50 for the splits.
+  19 splits have q < 0.05 and ctrl_p <= 0.05.
+```
+
+So 29% of clades chosen at random pass the shuffle. On internal branches alone
+the share falls to 11%, so terminal branches add much of it. On this tree the
+q values overstate the case on their own; read `ctrl_p`. Sixteen splits have
+q < 0.05 and `ctrl_p` at or below 0.05 on both runs. These are the twelve with
+the lowest `ctrl_p` on all branches, 0.024 or below, by excess:
+
+| Split | Clade | Excess, all / internal | Contexts, split vs clade parent, share of class |
+| --- | --- | --- | --- |
+| `node_7246` | lineage 1.1.3.1 | 7.7 / 3.6 | A[T>G]G 0.210 vs 0.024; A[C>G]G 0.120 vs 0.049 |
+| `node_6` | La1.2, La2, La1.3 | 5.9 / 3.3 | G[T>C]C 0.237 vs 0.135; C[T>G]G 0.079 vs 0.166 |
+| `node_57208` | lineage 4.3, mixed | 5.0 / 2.4 | A[C>G]G 0.058 vs 0.037; G[C>G]G 0.106 vs 0.081 |
+| `node_14331` | lineage 2.2.1 | 4.3 / 2.8 | C[T>C]C 0.087 vs 0.043; A[T>C]C 0.112 vs 0.076 |
+| `node_76364` | lineage 4.8 | 3.3 / 1.6 | T[C>A]G 0.133 vs 0.070; T[C>A]A 0.065 vs 0.028 |
+| `node_13032` | lineage 1.2.2.2 | 3.0 / 1.9 | C[C>A]G 0.129 vs 0.196; C[C>T]G 0.131 vs 0.155 |
+| `node_3775` | lineage 6 and 9 | 3.0 / 1.9 | G[C>T]C 0.069 vs 0.112; C[C>T]A 0.089 vs 0.062 |
+| `node_21970` | lineage 2.2.1 | 2.7 / 1.8 | G[T>G]G 0.189 vs 0.129; G[C>T]A 0.074 vs 0.059 |
+| `node_71721` | lineage 4.6.1 | 2.7 / 1.5 | G[T>G]G 0.166 vs 0.103; G[T>G]C 0.185 vs 0.138 |
+| `node_3548` | La3 | 2.3 / 1.6 | G[T>C]G 0.137 vs 0.176; G[C>A]C 0.125 vs 0.078 |
+| `node_54608` | lineage 4.2.2 | 2.2 / 1.6 | C[T>G]T 0.114 vs 0.077 |
+| `node_72678` | lineage 4.7 | 2.0 / 1.4 | T[C>A]G 0.095 vs 0.070 |
+
+None of these contexts comes from a single site: the most frequent site
+carries at most 5% of the split's count in each. Three are leads in their own
+right:
+
+- **`node_7246`.** A[T>G]G is a fifth of the clade's T>G, against 2% in the
+  rest of lineage 1.1.3, and it holds on internal branches. A ninefold shift
+  in one context across many sites suggests one process with a sharp
+  sequence preference. It could also be a shared artifact in that clade's
+  sequencing, so check the reads before reading biology into it.
+- **`node_76364` and `node_76366`.** C>A at TpC, in all three contexts,
+  T[C>A]G, A and C. It rises in `node_76364`'s own row and falls back in
+  `node_76366`, the lineage 4.8 split nested inside it. So it belongs to the
+  branches between the two nodes, not to lineage 4.8 as a whole.
+- **`node_14331`.** Beijing doubles C[T>C]C.
+
+What this cannot tell you is whether a search scoring all 96 contexts would
+find splits this one did not. That needs the search itself to score
+contexts.
+
 ### 12. Test a candidate mechanism genotype-first
 
 Step 8 showed why a repair-gene hit on a split's defining branch proves
@@ -2940,6 +3034,70 @@ root, and works without `--confidence`. `--output` writes the same per
 split as a TSV, with the top clades as `clade:count`. `--selftest` checks
 the residual, the lineage naming and the flag on a constructed tree.
 
+### `split_contexts.py`
+
+Used in [step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism).
+Tests every split for a trinucleotide-context shift inside its classes. Needs
+`bte` and numpy.
+
+```
+split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
+    --max_branch_length 250 --reference root_genome.fa \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
+    > split_contexts.txt
+```
+
+Inputs:
+
+- `--input_tree`, `--spectra` and `--max_branch_length` must be the search's.
+  Residual totals are rebuilt from the tree and checked against
+  `spectra.tsv`'s `Total_Mutations`.
+- `--reference` must be the root's genome. More than 1% of mutations
+  disagreeing with it is reported as a warning.
+- `--mask` takes BED files. A context with a masked flank is not called.
+
+Options:
+
+- `--against`. `clade` (the default) compares against the nearest
+  enclosing split's residual. `search` compares against the subtree the
+  search found the split in, read from `--splits_log`, as `split_drivers.py`
+  does.
+- `--branches internal` counts only internal branches, as in
+  [step 9](#9-check-the-splits-against-sequencing-quality).
+- `--permutations` (default 1,000) sets the branch shuffles per split.
+- `--controls` (default 10, 0 to skip) sets the random non-split clades drawn
+  per split. They are drawn within `--control_window` (default 2) fold of the
+  split's size, each with `--control_permutations` (default 200) shuffles.
+- `--control_alpha` (default 0.05) is the `ctrl_p` up to which a split's top
+  contexts are listed in detail.
+- `--top` (default 3) sets how many contexts are listed per split.
+- `--min_class` (default 80) is the count below which a class is marked
+  `few`.
+
+The report gives the calling statistics, the share of controls that pass the
+shuffle, and one row per split sorted by `p`. It then lists the top contexts,
+by contribution to G(within), for each split that passes both nulls. Each
+context comes with the most frequent site's share of it.
+
+`--output` writes one row per split with these columns:
+
+- `g_between`, `g_within`, `within_share`, `null_mean`, `excess`, `p` and
+  `q`;
+- `control_n`, `control_median` and `control_p`;
+- G(within) and p per class;
+- `top_contexts`.
+
+`--output_contexts` writes the 2 x 96 table: counts, within-class shares and
+each context's G contribution. `--selftest` checks the following, then exits:
+
+- that G(between) and G(within) add up to the 2 x 96 G exactly;
+- the shuffle's calibration, under the null and under a proportional class
+  shift;
+- its power for a one-context shift;
+- the pipeline on a constructed tree;
+- that control clades stop at nested splits.
+
 ### `gene_hit_contrasts.py`
 
 Used in [step 12](#12-test-a-candidate-mechanism-genotype-first). Finds every
@@ -3085,7 +3243,8 @@ report on a constructed pair of trees.
 
 ### `trinucleotide.py`
 
-Used by `profile_tree.py` ([step 4](#4-re-profile-and-check-what-the-mask-bought))
+Used by `profile_tree.py` ([step 4](#4-re-profile-and-check-what-the-mask-bought)),
+`split_contexts.py` ([step 11](#11-check-what-each-split-contains-before-claiming-a-mechanism))
 and `gene_hit_contrasts.py --context` ([step 12](#12-test-a-candidate-mechanism-genotype-first));
 not run on its own except as `trinucleotide.py --selftest`.
 
