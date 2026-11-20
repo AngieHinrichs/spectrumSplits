@@ -1888,7 +1888,7 @@ used, and the root's genome as `--reference` (on the MTBC tree, the rerooted
 ```
 split_contexts.py --input_tree tree.pruned.masked.pb.gz --spectra spectra.tsv \
     --max_branch_length 250 --reference modified_NC_000962.3.fa \
-    --mask selection_loci.bed,alignment_loci.bed,lppN_mask.bed \
+    --mask selection_loci.bed,alignment_loci.bed \
     --output split_contexts.tsv --output_contexts split_contexts_96.tsv \
     > split_contexts.txt
 split_contexts.py ... --branches internal --output split_contexts_internal.tsv \
