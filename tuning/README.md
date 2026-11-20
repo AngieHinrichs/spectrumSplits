@@ -3,12 +3,13 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and ten need less: `prune_clade_check.py`,
-`split_drivers.py` and `null_by_size.py` use `bte` only with `--input_tree`,
-and `check_gene_names.py`, `control_genes.py`, `branch_hits.py`,
+library and `bte`, and nine need less: `prune_clade_check.py` and
+`split_drivers.py` use `bte` only with `--input_tree`, and
+`check_gene_names.py`, `control_genes.py`, `branch_hits.py`,
 `summarize_gene_hits.py`, `split_confidence.py`, `split_composition.py` and
-`match_splits.py` read text files only. One needs something else: `plot_gene_hits.py` draws a figure, and
-needs matplotlib rather than `bte`.
+`match_splits.py` read text files only. Some need more: `split_contexts.py`
+and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
+`plot_split_contexts.py` draw figures and need matplotlib rather than `bte`.
 
 ## Contents
 
@@ -37,7 +38,6 @@ needs matplotlib rather than `bte`.
   - [`annotate_sites.py`](#annotate_sitespy)
   - [`check_gene_names.py`](#check_gene_namespy)
   - [`permutation_null.py`](#permutation_nullpy)
-  - [`null_by_size.py`](#null_by_sizepy)
   - [`split_drivers.py`](#split_driverspy)
   - [`branch_hits.py`](#branch_hitspy)
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
@@ -63,8 +63,7 @@ needs matplotlib rather than `bte`.
 | [`prune_clade_check.py`](#prune_clade_checkpy) | 2 | What did `qc/prune_mutation_sample_ratio.py` remove, by clade, and was it a divergent genome or a clade on a long stem? |
 | [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
 | [`check_gene_names.py`](#check_gene_namespy) | 3, 8 | Does every name in a `--regions` or `--highlight` list resolve to exactly one gene in this annotation, and if not, what is it called there? |
-| [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? |
-| [`null_by_size.py`](#null_by_sizepy) | 7 | How does that chance ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
+| [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? How does that ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
 | [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, and what mutations define the ones worth interpreting? |
 | [`branch_hits.py`](#branch_hitspy) | 8 | Are the highlighted-gene hits on the split branches more than chance, per branch, per gene on one branch, and per gene across branches? |
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
@@ -1048,29 +1047,44 @@ in mind.
 
 ```
 permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_mutations 10000 --max_branch_length 250 --mode types \
-    --replicates 100 --include_observed --seed 1 --nthreads 8 \
-    --output null_types.tsv
-
-permutation_null.py --input_tree tree.pruned.masked.pb.gz --fold \
-    --min_mutations 10000 --max_branch_length 250 --mode sites \
-    --max_splits 25 --min_chi 1 --replicates 100 --include_observed \
-    --seed 1 --nthreads 8 --output null_sites_cascade.tsv
+    --min_mutations 10000 --max_branch_length 250 \
+    --replicates 100 --seed 1 --nthreads 8 \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    > null_report.txt
 ```
 
-The `types` run scores one split per replicate, over the whole tree. The
-`sites` run follows the greedy cascade 25 splits deep, so the same run also
-measures the null for the deeper splits ("The threshold should scale with
-subtree size" below). Its first iteration is the whole-tree pass. Each
-replicate's permutation depends only on `--seed` and the replicate number,
-so those rows are exactly what a `--max_splits 1` run would give, and a
-separate one adds nothing. The printed summary reports each replicate's
-maximum. That is in practice its first split: on the MTBC tree no replicate
-had a deeper split that scored higher. So the summary is the whole-tree
-calibration. To see the whole-tree rows alone, run
-`awk -F'\t' '$2 == 1' null_sites_cascade.tsv`. In this run `--min_chi 1` only
-stops the search: a higher value would cut the null off at exactly the depth
-being measured.
+One run does all of step 7. It runs two nulls with the same `--seed`, so
+their replicates are paired and the only difference between them is the null
+model:
+
+- **`types`** scores one split per replicate, over the whole tree.
+- **`sites`** follows the greedy cascade 25 splits deep (`--max_splits`), so
+  it also measures the null for the deeper splits ("The threshold should
+  scale with subtree size" below). Its first iteration is the whole-tree
+  pass. Each replicate's permutation depends only on `--seed` and the
+  replicate number, so those rows are exactly what a whole-tree-only run
+  would give.
+
+The unpermuted tree is scored through the same code path, so the observed
+maximum and the null are directly comparable. The cascade stops only at
+`--min_chi 1`, the default: a higher value would cut the null off at exactly
+the depth being measured.
+
+The report, `null_report.txt` here, has four sections, and the rest of this
+step reads them in turn:
+
+1. **PERMUTATION NULL SUMMARY:** each null's replicate maxima side by side,
+   and the recommended `--min_chi`.
+2. **NULL CEILING BY SUBTREE SIZE:** how the chance maximum falls as
+   subtrees shrink.
+3. **OBSERVED SPLITS AGAINST A SIZE-MATCHED NULL:** which real splits the
+   recommended `--min_chi` would wrongly reject.
+4. **HOTSPOT CHECK:** whether one clade is setting the threshold.
+
+Each replicate's maximum is in practice its first split: on the MTBC tree no
+replicate had a deeper split that scored higher. So the summary is the
+whole-tree calibration. To see the whole-tree rows alone, run
+`awk -F'\t' '$2 == 1' null_sites_cascade.tsv`.
 
 The summary recommends `--min_chi` from the 95th percentile of the
 replicates' maxima (`--quantile`), not from the largest. The largest of n
@@ -1082,48 +1096,37 @@ used to; it takes about 100 replicates to resolve, and the summary warns
 with fewer. On the MTBC tree, 100 replicates took under two minutes for each
 run with 8 threads.
 
-Use `--output` for the per-split TSV; the summary goes to stdout, so
-redirecting stdout saves the summary and silently discards the table. Pass the
-same `--fold`, `--min_mutations` and `--max_branch_length` you settled above —
-a threshold calibrated under different settings does not transfer — and the
-same `--seed` in both, so the replicates are paired and the only difference
-between the runs is the null model. `--include_observed` matters: it scores the
-real tree through the identical code path, so the comparison is not against a
-number from a different pass.
+The per-split records go to `null_types.tsv` and `null_sites_cascade.tsv`
+(`--prefix`, default `null`); step 10 reads the cascade. The report goes to
+stdout. Pass the same `--fold`, `--min_mutations` and `--max_branch_length`
+you settled above: a threshold calibrated under different settings does not
+transfer.
 
 #### First, check the null for a hotspot
 
-```
-null_by_size.py --null null_sites_cascade.tsv --min_chi 53 \
-    --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    > null_by_size.txt
-```
-
-Take `--min_chi` from the "with 2x margin" line of the `sites` run's printed
-summary; on the MTBC tree that read `--min_chi 53`. Only the report's middle
-section uses it. The report is worth keeping: the rest of this step reads
-all three of its sections.
+Read the report's last section, the HOTSPOT CHECK, before trusting the
+threshold. `--annotation` and `--reference` only go into the
+`annotate_sites.py` command it prints for a flagged clade.
 
 The summary's thresholds are multiples of the single largest null maximum,
 so whatever sets that maximum sets the threshold. Under the `sites` null each
 site keeps its branches, so a site that mutated many times inside one clade
 puts all of those mutations into one class in every replicate. The class
 changes from replicate to replicate, so such a clade need not win often; it
-wins big when it draws a rare class. The HOTSPOT CHECK at the end of
-`null_by_size.py`'s report flags either pattern:
+wins big when it draws a rare class. The HOTSPOT CHECK flags either
+pattern:
 
 - a clade that is the maximum in more than half the replicates
   (`--hotspot_fraction`);
 - a clade that holds the two largest maxima (`--top_maxima`).
 
-With `--input_tree` it also counts a node and a child holding nearly all of
-it as one clade, which would otherwise split the clade's count between two
+It counts a node and a child holding nearly all of it as one clade
+(`--same_clade`), which would otherwise split the clade's count between two
 IDs. For each flagged clade it lists the most recurrent sites and prints an
 `annotate_sites.py` command for them. (The rest of the report is read in
 "The threshold should scale with subtree size" below. If the check flags a
-hotspot and you mask it, rerun both nulls and this command, and take
-`--min_chi` from the new summary.)
+hotspot and you mask it, rerun `permutation_null.py` and take `--min_chi`
+from the new summary.)
 
 *Worked example.* On the walkthrough tree as steps 2 and 3 first built it,
 with 20 replicates, the `sites` null's maximum was 45.4, and the summary recommended
@@ -1160,7 +1163,7 @@ mv tree.pruned.masked.lppN.pb.gz tree.pruned.masked.pb.gz
 ```
 
 Then rerun step 4's profile, so that later steps read the final tree, and
-both nulls above. On the MTBC tree the check then comes back clean, over
+`permutation_null.py`. On the MTBC tree the check then comes back clean, over
 100 replicates: the two largest maxima come from different clades, and no
 clade is the maximum in more than 5 of them.
 
@@ -1202,7 +1205,7 @@ as the largest, not against the recurrence table: stop masking when it is
 small next to the splits you would lose.
 
 **The threshold.** A 2x margin on the `sites` p95 gives `--min_chi 53`,
-the "with 2x margin" line of the printed summary. The observed maximum is
+the summary's "Recommended" line (`--margin`, default 2). The observed maximum is
 336x that. When the headroom is this large the exact choice does not matter;
 when it is not, prefer the larger margin. The reason for a quantile shows
 in how much a 20-replicate maximum moves. The `types` null, which the `lppN`
@@ -1222,13 +1225,13 @@ Check the cascade before trusting one threshold to govern every split.
 
 #### The threshold should scale with subtree size
 
-That caveat turns out to matter more than a caveat usually does. The printed
-summary can't answer it, because it reports only each replicate's maximum,
-which is its first split. The answer is in the cascade TSV, and the
-`null_by_size.py` report from the hotspot check above already has it.
+That caveat turns out to matter more than a caveat usually does. The summary
+can't answer it, because it reports only each replicate's maximum, which is
+its first split. The answer is in the cascade, and the report's middle two
+sections read it.
 
-Its first section groups the null splits by the size of the table each was
-scored on (`mutations_below + mutations_above`), giving the whole-tree pass a
+NULL CEILING BY SUBTREE SIZE groups the null splits by the size of the table
+each was scored on (`mutations_below + mutations_above`), giving the whole-tree pass a
 row of its own and putting the rest in factor-of-2 bins. The second compares
 each observed split with a ceiling: the 99th percentile (`--null_quantile`) of the null
 splits from subtrees within 1.5x of its size. That is the same ceiling
@@ -1237,10 +1240,11 @@ than the summary's 0.95 because each replicate puts several null splits in
 a window, so a window held dozens even with 20 replicates, and their maximum
 sat near the 99th percentile. On this tree the 20-replicate maxima and the
 100-replicate p99s agree within about 20%, so step 10's margins and tiers
-keep their meaning. With `--min_chi`, it flags the splits that threshold
-rejects even though they clear their size-matched null by `--margin`
-(default 2x), and any it accepts that don't clear their null at all. The
-third section is the hotspot check above.
+keep their meaning. The next section, OBSERVED SPLITS AGAINST A SIZE-MATCHED
+NULL, flags the splits the recommended `--min_chi` rejects even though they
+clear their size-matched null by `--margin` (default 2x), and any it accepts
+that don't clear their null at all. `--flag_min_chi` flags against another
+value instead.
 
 *Worked example*, same tree and parameters as above, 2,500 null splits:
 
@@ -1352,8 +1356,9 @@ with a 2x margin (53), it is too strict for most splits. Set at 30, it is
 lenient at the root, but the splits found there clear 30 by orders of
 magnitude, and step 10 checks each against its own size anyway. Whatever the value, a run
 whose last split sits a fraction above it has not saturated. It has hit the
-bar, and splits below it are going unexamined. `null_by_size.py --min_chi`
-in step 7 lists which ones.
+bar, and splits below it are going unexamined. Step 7's report lists which
+ones; `permutation_null.py --flag_min_chi` checks a value other than the one
+it recommends.
 
 #### Then interpret
 
@@ -2868,101 +2873,83 @@ Used in [step 7](#7-calibrate---min_chi).
 
 Destroys any association between mutation type and position in the tree, then
 runs the same search and the same statistic, and reports the chi-squared values
-it still finds. Set `--min_chi` comfortably above them.
+it still finds. Set `--min_chi` comfortably above them. One run does all of
+step 7: both nulls, the size-matched null and the hotspot check.
 
 ```
-# whole-tree calibration and the cascade null, in one run
-permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-    --replicates 100 --mode sites --include_observed \
-    --max_splits 25 --min_chi 1
+permutation_null.py --input_tree tree.pb.gz --fold --min_mutations 500 \
+    --max_branch_length 250 --replicates 100 --seed 1 --nthreads 8 \
+    --annotation genes.gff3.gz --reference ref.fna > null_report.txt
 ```
 
-Two null models:
+Two null models, both run by default (`--mode both`; `--mode sites` or
+`--mode types` runs one):
 
-- `--mode types` shuffles mutation-type labels across all mutations, keeping
+- `types` shuffles mutation-type labels across all mutations, keeping
   topology and per-branch counts fixed. The strict independence null: it also
   removes the type clumping that recurrent sites cause, so it gives the lower,
-  more permissive threshold.
-- `--mode sites` (default) gives each site a single type (its most common one)
-  and shuffles that assignment across sites. Which branches carry mutations at
-  which site is untouched, so a site mutating 500 times inside one clade still
-  dumps 500 counts of one randomized type into that clade. This keeps the
-  independence violation and gives the higher, more conservative threshold.
-  Prefer it, especially with convergent selection at resistance loci.
+  more permissive threshold. It scores the whole tree only.
+- `sites` gives each site a single type (its most common one) and shuffles
+  that assignment across sites. Which branches carry mutations at which site
+  is untouched, so a site mutating 500 times inside one clade still dumps 500
+  counts of one randomized type into that clade. This keeps the independence
+  violation and gives the higher, more conservative threshold. Calibrate
+  against it, especially with convergent selection at resistance loci. It
+  follows the greedy cascade `--max_splits` (default 25) deep, to measure
+  the null for smaller subtrees.
 
-Key options:
+The unpermuted tree is always scored too, through the same code path.
+
+The report has four sections:
+
+| Section | What to do with it |
+| --- | --- |
+| Permutation null summary | Each null's replicate maxima (min, median, `--quantile`, max), how far `sites` sits above `types`, and the recommended `--min_chi`: `--margin` (default 2) times the `--quantile` (default 0.95) of the `sites` maxima. Bare, 1.5x and 2x lines are printed too. With fewer than about 5 / (1 − quantile) replicates it warns that the quantile is not resolved. The observed maximum's ratio to the null: under about 2x, the strongest real split is close to what chance produces |
+| Null ceiling by subtree size | How far the chance maximum falls below the whole-tree figure as subtrees shrink. A `--min_chi` set from the root is that much too strict for deep splits. Below the table: the lowest `--min_chi` that clears the whole-tree null, with its margin over each bin's ceiling in the last column |
+| Observed splits against a size-matched null | Each observed cascade split's margin over the `--null_quantile` (default 0.99) of the nulls from subtrees within `--null_window` (default 1.5x) of its size, as in `split_confidence.py`. It flags splits the recommended `--min_chi` (or `--flag_min_chi`) rejects despite a margin of at least `--margin`, and accepted splits with a margin under 1. `--min_nulls` (default 10) marks a ceiling drawn from too few null splits |
+| Hotspot check | The largest whole-tree `sites` maxima and the clade behind each. It flags a clade that is the maximum in more than `--hotspot_fraction` (default half) of the replicates, or that holds the `--top_maxima` (default 2) largest maxima. A node and a child whose `mutations_below` agree within `--same_clade` (default 0.95) count as one clade. A flagged clade's `--hotspot_sites` (default 10) most recurrent sites are listed, with an `annotate_sites.py` command for those holding `--hotspot_min` (default 20) or more of its mutations; `--annotation` and `--reference` go into that command. Annotate them, and mask them if they look like an artifact |
+
+Other options:
 
 - `--min_mutations` / `--max_branch_length` should match what you intend for the
   real run; they change which nodes are eligible and so change the null.
-- `--max_splits` defaults to `1`: one pass over the whole tree per replicate,
-  which is exactly the quantity the first real split has to beat. Raise it to
-  follow the greedy cascade into subtrees, where chi-squared is necessarily
-  smaller and not comparable to the first pass. A raised run includes the
-  `--max_splits 1` run: each replicate's permutation depends only on `--seed`
-  and the replicate number, so its iteration-1 rows are identical, and so is
-  in practice the printed summary, which reports each replicate's maximum. Keep
-  `--min_chi 1` with a raised `--max_splits`, so the threshold doesn't cut the
-  cascade short.
 - `--fold` scores the strand-folded 6-type spectrum (6 categories, 5 degrees of
   freedom) instead of 12. This must match how you intend to run
   `spectrumSplits.py`, which takes the same `--fold` flag: the statistic changes
   scale and the null changes shape, so a threshold calibrated one way is
-  meaningless the other. See `spectrumSplits/README.md` for when folding is
-  appropriate.
-- `--replicates` (default 100) and `--quantile` (default 0.95): the printed
-  summary recommends `--min_chi` from that quantile of the replicates'
-  maxima, not the largest, so the recommendation does not climb as
-  replicates are added. With fewer than about 5 / (1 − quantile) replicates
-  it warns that the quantile is not resolved.
-- `--include_observed` scores the unpermuted tree through the same code path, so
-  the real maximum and the null maximum are directly comparable. If the ratio is
-  under about 2x, the strongest real split is close to what chance produces.
+  meaningless the other. See [step 5](#5-decide-whether-to-fold).
+- `--min_chi` (default 1) is where the null searches stop, not the threshold
+  being calibrated. Keep it at 1, so the cascade runs its full depth.
+- `--seed` (default 1): replicate r uses seed + r in both nulls, so they are
+  paired, and a deeper `--max_splits` run's iteration-1 rows are identical to
+  a shallower one's.
 - `--nthreads` runs replicates concurrently where `fork` is available, and falls
-  back to serial otherwise; running several instances with different `--seed`
-  also works.
+  back to serial otherwise.
+- `--prefix` (default `null`) names the per-split TSVs: `null_types.tsv` and
+  `null_sites_cascade.tsv` (`null_sites.tsv` with `--max_splits 1`), one row
+  per split scored per replicate. Step 10's `split_confidence.py --null`
+  reads the cascade.
 - `--selftest` checks the chi-squared implementation against a naive reference
-  and against `scipy.stats.chi2_contingency`, and exits. Run it once in the
-  environment where `spectrumSplits.py` runs, not on a laptop: where scipy is
-  not importable the scipy comparison is SKIPPED with a note, so a pass there
+  and against `scipy.stats.chi2_contingency`, the summary, and the size bins,
+  ceilings, flags and both hotspot rules on a constructed cascade, including a
+  clade under two IDs and the same clade read from an extracted tree. Run it
+  once in the environment where `spectrumSplits.py` runs: where scipy is not
+  importable the scipy comparison is SKIPPED with a note, so a pass there
   confirms only the naive reference. Confirmed on the MTBC server, where both
   agree on 200 random tables to 1.8e-12.
+
+The observed cascade accepts every split at `--min_chi 1`, and so carves
+subtrees differently from a production run at a higher threshold. Treat its
+deep rows as approximate. For the production run's own splits,
+`split_confidence.py` models the carving exactly. Its `ceiling` and window
+are used here too, so the two scripts give the same margin for the same
+size.
 
 The statistic is reimplemented in pure Python rather than called through scipy,
 so all candidate nodes can be scored in one vectorless pass without scipy's
 per-call overhead. It matches `chi2_contingency` exactly for tables larger than
 2 x 2 (no continuity correction); columns whose total is zero are skipped, where
 scipy would raise.
-
-### `null_by_size.py`
-
-Used in [step 7](#7-calibrate---min_chi).
-
-```
-null_by_size.py --null null_sites_cascade.tsv > null_by_size.txt
-null_by_size.py --null null_sites_cascade.tsv --min_chi 53 --margin 2 \
-    --input_tree tree.pruned.masked.pb.gz \
-    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    > null_by_size.txt
-```
-
-Reads a cascade null from `permutation_null.py --max_splits 25 --min_chi 1`
-and reports:
-
-| Section | What to do with it |
-| --- | --- |
-| Null ceiling by subtree size | How far the chance maximum falls below the whole-tree figure as subtrees shrink. A `--min_chi` set from the root is that much too strict for deep splits. Below the table: the lowest `--min_chi` that clears the whole-tree null, with its margin over each bin's ceiling in the last column |
-| Observed splits against a size-matched null | Each observed split's margin over the `--null_quantile` (default 0.99) of the nulls from subtrees within `--null_window` (default 1.5x) of its size, as in `split_confidence.py`. With `--min_chi`, it flags splits that threshold rejects despite a margin of at least `--margin`, and accepted splits with a margin under 1 |
-| Hotspot check | The largest whole-tree null maxima and the clade behind each. It flags a clade that is the maximum in more than `--hotspot_fraction` (default half) of the replicates, or that holds the `--top_maxima` (default 2) largest maxima. With `--input_tree`, a node and a child whose `mutations_below` agree within `--same_clade` (default 0.95) count as one clade, and a flagged clade's `--hotspot_sites` (default 10) most recurrent sites are listed, with an `annotate_sites.py` command for those holding `--hotspot_min` (default 20) or more of its mutations. Annotate them, and mask them if they look like an artifact |
-
-The observed rows come from the cascade run's own `--min_chi 1` search, which
-accepts every split and so carves subtrees differently from a production run
-at a higher threshold. Treat its deep rows as approximate. For the production
-run's own splits, `split_confidence.py` models the carving exactly. `ceiling`
-and the window come from `split_confidence.py`, so the two scripts give the
-same margin for the same size. `--min_nulls` (default 10) marks a ceiling drawn
-from too few null splits to trust. `--selftest` checks the binning, the
-ceilings, the flags and both hotspot rules on a constructed cascade,
-including a clade under two IDs.
 
 ### `split_drivers.py`
 

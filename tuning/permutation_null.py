@@ -44,25 +44,65 @@ for tables larger than 2 x 2).  Columns whose total is zero are skipped, where
 scipy would raise; this only arises when a mutation type is entirely absent.
 Pass --fold to score the strand-folded 6-type spectrum instead.
 
-Usage:
-    # the site-level null over the full greedy cascade.  Its iteration-1
-    # rows are the whole-tree calibration, and in practice so is the printed
-    # summary (each replicate's maximum); the deeper rows give the null for
-    # smaller subtrees.  --min_chi 1 keeps the threshold from cutting the
-    # cascade short.
-    permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-        --replicates 100 --mode sites --include_observed \
-        --max_splits 25 --min_chi 1 --seed 1 --output null_sites_cascade.tsv
+One invocation, the whole of step 7.  By default (--mode both) it runs both
+nulls with the same --seed, so their replicates are paired: `types` over the
+whole tree, and `sites` following the greedy cascade --max_splits (default
+25) deep with --min_chi 1, so it also measures the null for smaller
+subtrees.  The unpermuted tree is scored through the same code path as a
+reference.  The report then has four sections:
 
-    # the type-level null, for comparison: same --seed, whole tree only
-    permutation_null.py --input_tree tree.pb.gz --min_mutations 500 \
-        --replicates 100 --mode types --include_observed \
-        --seed 1 --output null_types.tsv
+  1. PERMUTATION NULL SUMMARY.  Each null's replicate maxima side by side,
+     how far `sites` sits above `types` (what residual recurrent-site
+     clumping costs), and the recommended --min_chi: --margin (default 2)
+     times the --quantile of the `sites` maxima.  Always calibrate against
+     `sites`.
+
+  2. NULL CEILING BY SUBTREE SIZE.  The cascade's null splits in
+     factor-of-2 bins of the size of the table each was scored on, with the
+     median, --null_quantile (default 0.99) and maximum chi-squared per bin,
+     the lowest --min_chi that clears the whole-tree null, and that
+     threshold's margin over each bin.  Chi-squared scales with the counts in
+     the table, so a threshold calibrated on the whole tree is too strict for
+     deeper splits; this shows by how much.
+
+  3. OBSERVED SPLITS AGAINST A SIZE-MATCHED NULL.  Each observed cascade
+     split against the --null_quantile of null splits within --null_window
+     fold of its size (split_confidence.py's ceiling).  Splits the
+     recommended --min_chi (or --flag_min_chi) rejects though they clear
+     their null by --margin, and splits it accepts that don't clear it, are
+     flagged.  The observed cascade accepts every split at --min_chi 1, so
+     deep rows approximate what a production run would test; for the
+     production run's own splits use split_confidence.py (step 10).
+
+  4. HOTSPOT CHECK.  Under the sites null each site keeps its branches, so
+     a heavily recurrent site inside one clade dumps clumped counts there in
+     every replicate, and wins big when it draws a rare type.  A clade that
+     is the whole-tree maximum in more than --hotspot_fraction of the
+     replicates, or holds the --top_maxima largest maxima, is flagged, with
+     its most recurrent sites and an annotate_sites.py command for them.  A
+     node and a child holding nearly all of it (--same_clade) count as one
+     clade.  If a hotspot is real, mask it and rerun: it is setting the
+     threshold.
+
+Outputs, named from --prefix (default null): PREFIX_types.tsv and
+PREFIX_sites_cascade.tsv (PREFIX_sites.tsv with --max_splits 1), every split
+scored, per replicate; step 10's split_confidence.py --null reads the
+cascade.  The report goes to stdout.
+
+Usage:
+    permutation_null.py --input_tree tree.pb.gz --fold --min_mutations 500 \
+        --max_branch_length 250 --replicates 100 --seed 1 --nthreads 8 \
+        --annotation genes.gff3.gz --reference ref.fa > null_report.txt
+
+    permutation_null.py --selftest
 """
 
 import argparse
+import collections
 import math
+import os
 import random
+import statistics
 import sys
 from array import array
 from collections import Counter, defaultdict
@@ -94,44 +134,86 @@ def folded_index():
     return mapping, labels
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Calibrate spectrumSplits.py --min_chi against a permutation null."
-    )
+        description="Calibrate spectrumSplits.py --min_chi against permutation "
+                    "nulls, by subtree size, and check them for a hotspot.")
     parser.add_argument("--input_tree", type=str, default=None,
                         help="Input tree file (protobuf format)")
-    parser.add_argument("--output", type=str, default="permutation_null.tsv",
-                        help="Output TSV of every split scored, per replicate")
+    parser.add_argument("--prefix", type=str, default="null",
+                        help="Prefix of the per-split TSVs (default null: "
+                             "null_types.tsv, null_sites_cascade.tsv)")
+    parser.add_argument("--mode", type=str, default="both",
+                        choices=["both", "sites", "types"],
+                        help="Null model(s) to run (default both; see the "
+                             "module docstring)")
     parser.add_argument("--replicates", type=int, default=100,
                         help="Number of permutation replicates (default 100)")
     parser.add_argument("--quantile", type=float, default=0.95,
                         help="Quantile of the replicate maxima the recommended "
                              "--min_chi rests on (default 0.95)")
-    parser.add_argument("--mode", type=str, default="sites", choices=["sites", "types"],
-                        help="Null model (see module docstring)")
+    parser.add_argument("--margin", type=float, default=2.0,
+                        help="The recommended --min_chi is this times the "
+                             "--quantile; also the margin over its "
+                             "size-matched null for a split below it to be "
+                             "flagged as rejected (default 2)")
     parser.add_argument("--min_mutations", type=int, default=500,
                         help="Match the --min_mutations you intend to use for the real run")
     parser.add_argument("--max_branch_length", type=int, default=100000,
                         help="Match the --max_branch_length you intend to use")
     parser.add_argument("--min_chi", type=float, default=1.0,
-                        help="Permissive threshold used during the null search; only "
-                             "matters when --max_splits > 1")
-    parser.add_argument("--max_splits", type=int, default=1,
-                        help="Splits to accept per replicate. 1 (default) scores a single "
-                             "pass over the whole tree, which is the quantity the first "
-                             "real split must beat. Higher values follow the greedy "
-                             "cascade into subtrees, where chi-squared is necessarily smaller.")
+                        help="Threshold the null searches stop at (default 1, "
+                             "so the cascade runs its full depth; a higher "
+                             "value cuts the null off at the depth being "
+                             "measured)")
+    parser.add_argument("--max_splits", type=int, default=25,
+                        help="Splits the sites null follows per replicate "
+                             "(default 25).  1 scores only the whole-tree "
+                             "pass; the types null always scores only that")
     parser.add_argument("--fold", action="store_true",
                         help="Score the strand-folded 6-type spectrum instead of 12 types")
-    parser.add_argument("--include_observed", action="store_true",
-                        help="Also score the unpermuted tree through the same code path")
     parser.add_argument("--seed", type=int, default=1,
-                        help="Base random seed; replicate r uses seed + r")
+                        help="Base random seed; replicate r uses seed + r in "
+                             "both nulls")
     parser.add_argument("--nthreads", type=int, default=1,
                         help="Run replicates concurrently (requires fork; falls back to serial)")
+    g = parser.add_argument_group("size-matched null and hotspot check "
+                                  "(from the sites cascade)")
+    g.add_argument("--flag_min_chi", type=float, default=None,
+                   help="The --min_chi to flag observed splits against "
+                        "(default: the recommended one)")
+    g.add_argument("--null_window", type=float, default=1.5,
+                   help="Fold range of subtree size accepted as size-matched, "
+                        "as in split_confidence.py (default 1.5)")
+    g.add_argument("--null_quantile", type=float, default=0.99,
+                   help="Quantile of the size-matched null taken as the "
+                        "ceiling, as in split_confidence.py (default 0.99)")
+    g.add_argument("--min_nulls", type=int, default=10,
+                   help="Mark a ceiling drawn from fewer null splits than "
+                        "this (default 10)")
+    g.add_argument("--hotspot_fraction", type=float, default=0.5,
+                   help="Flag a clade that is the whole-tree null maximum in "
+                        "more than this fraction of replicates (default 0.5)")
+    g.add_argument("--top_maxima", type=int, default=2,
+                   help="Flag a clade that holds this many of the largest "
+                        "whole-tree null maxima (default 2)")
+    g.add_argument("--same_clade", type=float, default=0.95,
+                   help="A nested node whose mutations_below is at least this "
+                        "fraction of its ancestor's counts as the same clade "
+                        "(default 0.95)")
+    g.add_argument("--hotspot_sites", type=int, default=10,
+                   help="Recurrent sites to list per flagged clade (default 10)")
+    g.add_argument("--hotspot_min", type=int, default=20,
+                   help="Sites with at least this many mutations in a flagged "
+                        "clade go into the printed annotate_sites.py command "
+                        "(default 20)")
+    g.add_argument("--annotation", default=None,
+                   help="Used only in the printed annotate_sites.py command")
+    g.add_argument("--reference", default=None,
+                   help="Used only in the printed annotate_sites.py command")
     parser.add_argument("--selftest", action="store_true",
-                        help="Check the chi-squared implementation and exit")
-    return parser.parse_args()
+                        help="Run the self-tests and exit")
+    return parser.parse_args(argv)
 
 
 # --------------------------------------------------------------------------
@@ -199,31 +281,38 @@ def selftest():
     ### replicate, and warns when there are too few replicates to resolve it.
     import io
     import types as _types
-    a = _types.SimpleNamespace(quantile=0.95, mode="sites", min_mutations=10,
-                               max_branch_length=250, max_splits=1)
+    a = _types.SimpleNamespace(quantile=0.95, margin=2.0, min_mutations=10,
+                               max_branch_length=250, max_splits=25,
+                               min_chi=1.0)
     maxima = sorted([10.0 + i / 10 for i in range(99)] + [100.0])
+    types_max = sorted(v * 0.9 for v in maxima)
     buf = io.StringIO()
-    summarize(maxima, 1000.0, a, 6, buf)
+    rec = summarize({"types": types_max, "sites": maxima}, 1000.0, a, 6, buf)
     text = buf.getvalue()
     q = quantile(maxima, 0.95)
-    if (f"--min_chi {math.ceil(2 * q)}" not in text or "--min_chi 200" in text
-            or "Raise --replicates" in text or f"{1000 / q:.1f}x" not in text):
+    if (rec != math.ceil(2 * q)
+            or f"Recommended (--margin 2): --min_chi {rec}" not in text
+            or "--min_chi 200" in text or "Raise --replicates" in text
+            or f"{1000 / q:.1f}x" not in text
+            or "sites p95 is 1.11x types p95" not in text):
         print("FAIL: summary threshold\n" + text, file=sys.stderr)
         return 1
     buf = io.StringIO()
-    summarize(maxima[:20], None, a, 6, buf)
+    summarize({"sites": maxima[:20]}, None, a, 6, buf)
     if "Raise --replicates" not in buf.getvalue():
         print("FAIL: no warning for 20 replicates\n" + buf.getvalue(),
               file=sys.stderr)
         return 1
-    print("ok: the recommended --min_chi rests on the quantile, and 20 "
-          "replicates draw a warning")
+    print("ok: the recommended --min_chi rests on the sites quantile, sites "
+          "is set against types, and 20 replicates draw a warning")
+    _selftest_size()
 
     try:
         from scipy.stats import chi2_contingency
     except ImportError:
         print("note: scipy not importable here; skipped the scipy comparison. "
               "Re-run --selftest in your spectrumSplits environment to confirm.")
+        print("all self-tests passed")
         return 0
     worst = 0.0
     for trial in range(200):
@@ -238,6 +327,7 @@ def selftest():
         worst = max(worst, abs(mine - ref))
     print(f"ok: matches scipy.stats.chi2_contingency on 200 random tables "
           f"(max abs diff {worst:.3e})")
+    print("all self-tests passed")
     return 0
 
 
@@ -465,22 +555,23 @@ def run_search(tree, own, ncat, min_chi, min_mutations, max_splits, log, label):
 # replicate driver
 # --------------------------------------------------------------------------
 
-def one_replicate(tree, args, ncat, fold_map, modal, replicate):
-    """Score one replicate; replicate 0 means the unpermuted tree."""
+def one_replicate(tree, args, ncat, fold_map, modal, replicate, mode,
+                  max_splits):
+    """Score one replicate of one null; replicate 0 is the unpermuted tree."""
     if replicate == 0:
         types = tree.types
         label = "observed"
     else:
         rng = random.Random(args.seed + replicate)
-        if args.mode == "types":
+        if mode == "types":
             types = permute_types(tree, rng)
         else:
             types = permute_sites(tree, rng, modal)
         label = f"perm{replicate}"
     own = own_spectra(tree, types, ncat, fold_map, args.max_branch_length)
-    print(f"Scoring {label} ...", file=sys.stderr)
+    print(f"Scoring {mode} {label} ...", file=sys.stderr)
     return run_search(tree, own, ncat, args.min_chi, args.min_mutations,
-                      args.max_splits, sys.stderr, label)
+                      max_splits, sys.stderr, label)
 
 
 def quantile(sorted_values, p):
@@ -495,71 +586,548 @@ def quantile(sorted_values, p):
     return sorted_values[lo] + (h - lo) * (sorted_values[hi] - sorted_values[lo])
 
 
-def summarize(null_maxima, obs, args, ncat, out):
-    """The printed summary: the replicate maxima, the recommended --min_chi
-    from their --quantile, and the observed maximum against it."""
+def summarize(maxima, obs, args, ncat, out):
+    """The PERMUTATION NULL SUMMARY: each null's replicate maxima, sites
+    against types, the recommended --min_chi from the --quantile of the
+    sites maxima (types if that is all there is), and the observed maximum
+    against it.  maxima maps mode -> sorted replicate maxima.  Returns the
+    recommended --min_chi, or None."""
     q = args.quantile
-    qlabel = f"p{100 * q:g}"
+    ql = f"p{100 * q:g}"
     print("=" * 72, file=out)
     print("PERMUTATION NULL SUMMARY", file=out)
     print("=" * 72, file=out)
-    print(f"  mode:               {args.mode}", file=out)
-    print(f"  categories:         {ncat}", file=out)
-    print(f"  min_mutations:      {args.min_mutations}", file=out)
-    print(f"  max_branch_length:  {args.max_branch_length}", file=out)
-    print(f"  max_splits:         {args.max_splits}", file=out)
-    print(f"  replicates scored:  {len(null_maxima)}", file=out)
+    print(f"  categories {ncat}, --min_mutations {args.min_mutations}, "
+          f"--max_branch_length {args.max_branch_length}", file=out)
+    print(f"  types: whole tree only; sites: the cascade, --max_splits "
+          f"{args.max_splits}, --min_chi {args.min_chi:g}", file=out)
     print(file=out)
-
-    if not null_maxima:
+    print("  Maximum chi-squared per null replicate (each replicate's maximum "
+          "is", file=out)
+    print("  in practice its whole-tree split):", file=out)
+    print(f"    null	replicates	min	median	{ql}	max", file=out)
+    for mode in ("types", "sites"):
+        m = maxima.get(mode)
+        if m is None:
+            continue
+        if not m:
+            print(f"    {mode}	0	-	-	-	-", file=out)
+            continue
+        print(f"    {mode}	{len(m)}	{m[0]:.1f}	{quantile(m, 0.5):.1f}	"
+              f"{quantile(m, q):.1f}	{m[-1]:.1f}", file=out)
+    basis = "sites" if maxima.get("sites") else "types"
+    m = maxima.get(basis) or []
+    if maxima.get("sites") and maxima.get("types"):
+        s_q = quantile(maxima["sites"], q)
+        t_q = quantile(maxima["types"], q)
+        above = sum(1 for v in maxima["sites"] if v > maxima["types"][-1])
+        print(f"  sites {ql} is {s_q / t_q:.2f}x types {ql}; "
+              f"{above} of {len(maxima['sites'])} sites replicates "
+              f"{'exceeds' if above == 1 else 'exceed'} the largest types "
+              f"one.", file=out)
+        print("  sites keeps the clumping recurrent sites cause, so it comes "
+              "out at or above", file=out)
+        print("  types; the gap is what residual recurrent-site clumping "
+              "costs.  Calibrate", file=out)
+        print("  against sites.", file=out)
+    print(file=out)
+    if not m:
         print("  No null replicate produced a scoreable split.  Either "
               "--min_mutations", file=out)
-        print("  excludes every candidate, or --min_chi is above the null range.", file=out)
-    else:
-        print("  Maximum chi-squared per null replicate:", file=out)
-        print(f"    min    {null_maxima[0]:.1f}", file=out)
-        print(f"    median {quantile(null_maxima, 0.5):.1f}", file=out)
-        print(f"    {qlabel:<6} {quantile(null_maxima, q):.1f}", file=out)
-        print(f"    max    {null_maxima[-1]:.1f}", file=out)
+        print("  excludes every candidate, or --min_chi is above the null "
+              "range.", file=out)
         print(file=out)
-        floor = quantile(null_maxima, q)
-        print(f"  In {100 * (1 - q):g}% of replicates the null search reached "
-              f"chi-squared {floor:.1f}", file=out)
-        print("  or more with no real clade-specific spectrum present.  "
-              "--min_chi must", file=out)
-        print("  exceed that:", file=out)
-        print(f"    bare floor         --min_chi {math.ceil(floor)}", file=out)
-        print(f"    with 1.5x margin   --min_chi {math.ceil(1.5 * floor)}", file=out)
-        print(f"    with 2x margin     --min_chi {math.ceil(2.0 * floor)}", file=out)
-        need = math.ceil(5 / (1 - q)) if q < 1 else 0
-        if len(null_maxima) < need:
-            print(f"  With {len(null_maxima)} replicates the {qlabel} rests on "
-                  f"the top one or two; about {need}", file=out)
-            print("  resolve it.  Raise --replicates.", file=out)
-        print(file=out)
-        print("  Only the replicate maxima matter here; a replicate's later", file=out)
-        print("  splits are scored on smaller subtrees and are not comparable.", file=out)
-
+        return None
+    floor = quantile(m, q)
+    rec = math.ceil(args.margin * floor)
+    print(f"  In {100 * (1 - q):g}% of {basis} replicates the null search "
+          f"reached chi-squared {floor:.1f}", file=out)
+    print("  or more with no real clade-specific spectrum present.  "
+          "--min_chi must exceed it:", file=out)
+    print(f"    bare floor         --min_chi {math.ceil(floor)}", file=out)
+    print(f"    with 1.5x margin   --min_chi {math.ceil(1.5 * floor)}",
+          file=out)
+    print(f"    with 2x margin     --min_chi {math.ceil(2.0 * floor)}",
+          file=out)
+    print(f"  Recommended (--margin {args.margin:g}): --min_chi {rec}",
+          file=out)
+    need = math.ceil(5 / (1 - q)) if q < 1 else 0
+    if len(m) < need:
+        print(f"  With {len(m)} replicates the {ql} rests on the top one or "
+              f"two; about {need}", file=out)
+        print("  resolve it.  Raise --replicates.", file=out)
     if obs is not None:
         print(file=out)
-        print(f"  Observed (unpermuted) maximum chi-squared: {obs:.1f}", file=out)
-        if null_maxima:
-            floor = quantile(null_maxima, q)
-            ratio = obs / floor if floor > 0 else float("inf")
-            print(f"  Ratio to the null {qlabel}: {ratio:.1f}x "
-                  f"(to the largest replicate: "
-                  f"{obs / null_maxima[-1] if null_maxima[-1] > 0 else float('inf'):.1f}x)",
+        print(f"  Observed (unpermuted) maximum chi-squared: {obs:.1f}",
+              file=out)
+        ratio = obs / floor if floor > 0 else float("inf")
+        print(f"  Ratio to the {basis} {ql}: {ratio:.1f}x (to its largest "
+              f"replicate: "
+              f"{obs / m[-1] if m[-1] > 0 else float('inf'):.1f}x)", file=out)
+        if ratio < 2:
+            print("  That is a thin margin: the strongest real split is close "
+                  "to", file=out)
+            print("  what chance alone produces.  Treat any split here as",
                   file=out)
-            if ratio < 2:
-                print("  That is a thin margin: the strongest real split is close to", file=out)
-                print("  what chance alone produces.  Treat any split here as", file=out)
-                print("  provisional and check it against the bootstrap.", file=out)
+            print("  provisional and check it against the bootstrap.",
+                  file=out)
+    print(file=out)
+    return rec
 
+
+
+# --------------------------------------------------------------------------
+# size-matched null and hotspot check (sections 2-4)
+# --------------------------------------------------------------------------
+
+class TreeView(object):
+    """The node interface the hotspot check walks (id, parent, children,
+    mutations, get_node, root), over a FlatTree, so it needs no second read
+    of the tree.  Mutations are rebuilt from the parsed SNVs, which is all
+    the check counts."""
+
+    class Node(object):
+        __slots__ = ("t", "i")
+
+        def __init__(self, t, i):
+            self.t, self.i = t, i
+
+        @property
+        def id(self):
+            return self.t.flat.node_ids[self.i]
+
+        @property
+        def parent(self):
+            p = self.t.flat.parent[self.i]
+            return TreeView.Node(self.t, p) if p >= 0 else None
+
+        @property
+        def children(self):
+            return [TreeView.Node(self.t, c) for c in self.t.flat.children[self.i]]
+
+        @property
+        def mutations(self):
+            f = self.t.flat
+            return [f"{MUT_TYPES[ty][0]}{p}{MUT_TYPES[ty][1]}"
+                    for p, ty in zip(f.positions[self.i], f.types[self.i])]
+
+    def __init__(self, flat):
+        self.flat = flat
+        self.index = {nid: i for i, nid in enumerate(flat.node_ids)}
+        self.root = TreeView.Node(self, 0)
+
+    def get_node(self, nid):
+        return TreeView.Node(self, self.index[nid])
+
+
+def rows_from_records(records):
+    """run_search records as the rows the size report reads."""
+    return [{"replicate": r["label"], "iteration": r["iteration"],
+             "root": r["split_root_id"], "node": r["node_id"],
+             "chi2": r["chi2"], "below": r["mutations_below"],
+             "size": r["mutations_below"] + r["mutations_above"]}
+            for r in records]
+
+
+def parse_cascade(lines):
+    """All rows as dicts, observed and null alike."""
+    rows = []
+    for i, line in enumerate(lines):
+        f = line.rstrip("\n").split("\t")
+        if i == 0 or len(f) < 7:
+            continue
+        rows.append({
+            "replicate": f[0], "iteration": int(f[1]), "root": f[2],
+            "node": f[3], "chi2": float(f[4]), "below": int(f[5]),
+            "size": int(f[5]) + int(f[6]),
+        })
+    return rows
+
+
+def size_bins(null_rows):
+    """Group null rows into factor-of-2 bins, counted down from the largest."""
+    if not null_rows:
+        return []
+    top = max(r["size"] for r in null_rows)
+    bins = collections.defaultdict(list)
+    for r in null_rows:
+        k = int(math.floor(math.log2(top / r["size"]))) if r["size"] > 0 else 99
+        bins[k].append(r)
+    return [bins[k] for k in sorted(bins)]
+
+
+def lowest_min_chi(whole):
+    """The smallest integer --min_chi above every whole-tree null maximum."""
+    return math.floor(max(r["chi2"] for r in whole)) + 1 if whole else None
+
+
+def fmt_size(n):
+    if n >= 1e6:
+        return f"{n / 1e6:.2f}M"
+    if n >= 1e3:
+        return f"{n / 1e3:.0f}k"
+    return str(n)
+
+
+def same_clades(tree, first, same):
+    """node -> the clade it counts as: itself, or the nearest ancestor among
+    the whole-tree maxima, if its mutations_below is at least `same` times
+    that ancestor's (a node and a child holding nearly all of it)."""
+    below = {r["node"]: r["below"] for r in first}
+    clade = {}
+    for node in sorted(below, key=lambda n: -below[n]):
+        clade[node] = node
+        if tree is None:
+            continue
+        p = tree.get_node(node).parent
+        while p is not None:
+            if p.id in below:
+                if below[node] >= same * below[p.id]:
+                    clade[node] = clade[p.id]
+                break
+            p = p.parent
+    return clade
+
+
+def hotspot(null_rows, fraction, top_maxima, clade=None):
+    """The whole-tree maxima, ranked, and the clades flagged, with why."""
+    first = [r for r in null_rows if r["iteration"] == 1]
+    clade = clade or {}
+
+    def key(r):
+        return clade.get(r["node"], r["node"])
+
+    counts = collections.Counter(key(r) for r in first)
+    n = len({r["replicate"] for r in first})
+    ranked = sorted(first, key=lambda r: -r["chi2"])
+    flagged = {}
+    for c, k in counts.most_common():
+        if n and k / n > fraction:
+            flagged[c] = [f"it is the maximum in {k} of {n} replicates"]
+    if top_maxima > 1 and len(ranked) >= top_maxima:
+        lead = key(ranked[0])
+        if all(key(r) == lead for r in ranked[:top_maxima]):
+            rest = [r["chi2"] for r in ranked if key(r) != lead]
+            why = (f"it holds the {top_maxima} largest maxima ("
+                   + ", ".join(f"{r['chi2']:.1f}" for r in ranked[:top_maxima])
+                   + ")" + (f"; no other clade's exceeds {max(rest):.1f}"
+                            if rest else ""))
+            flagged.setdefault(lead, []).append(why)
+    return {"counts": counts, "n": n, "ranked": ranked, "flagged": flagged,
+            "key": key}
+
+
+def subtree(tree, root=None):
+    """Every node at and below root (the whole tree if None)."""
+    stack = [tree.get_node(root) if root else tree.root]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(node.children)
+
+
+def site_counts(nodes):
+    counts = collections.Counter()
+    for node in nodes:
+        for m in node.mutations:
+            if len(m) > 2 and m[0] in "ACGT" and m[-1] in "ACGT":
+                counts[int(m[1:-1])] += 1
+    return counts
+
+
+def clade_sites(tree, node, top, whole):
+    """(clade's mutations, [(position, in clade, tree-wide)]) for its most
+    recurrent sites.  The clade includes the node's own branch, as
+    mutations_below does."""
+    inside = site_counts(subtree(tree, node))
+    return sum(inside.values()), [(pos, k, whole[pos])
+                                  for pos, k in inside.most_common(top)]
+
+
+def size_report(rows, args, out, tree=None, flag_chi=None):
+    """Sections 2-4 from the sites cascade rows; flag_chi is the --min_chi the
+    observed splits are flagged against."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from split_confidence import ceiling
+    null_rows = [r for r in rows if r["replicate"] != "observed"]
+    observed = [r for r in rows if r["replicate"] == "observed"]
+    nulls = [(r["size"], r["chi2"]) for r in null_rows]
+    n_reps = len({r["replicate"] for r in null_rows})
+
+    print("=" * 72, file=out)
+    print("NULL CEILING BY SUBTREE SIZE", file=out)
+    print("=" * 72, file=out)
+    print(f"  {len(null_rows)} null splits from {n_reps} replicates, in factor-of-2 "
+          "bins of the", file=out)
+    print("  size of the table each was scored on (mutations_below + "
+          "mutations_above).", file=out)
+    print("  The whole-tree pass (iteration 1) is listed first; its maxima "
+          "are the", file=out)
+    print("  summary's sites row.", file=out)
+    ql = f"p{100 * args.null_quantile:g}"
+    whole = [r for r in null_rows if r["iteration"] == 1]
+    deeper = [r for r in null_rows if r["iteration"] > 1]
+    lowest = lowest_min_chi(whole)
+    mcol = f"\tmargin at {lowest}" if lowest else ""
+    print(f"    size range\tnull splits\tmedian chi2\t{ql} chi2\tmax chi2\t"
+          f"max at{mcol}", file=out)
+    groups = ([("whole tree", whole)] if whole else []) + [(None, b) for b in size_bins(deeper)]
+    for label, b in groups:
+        lo = min(r["size"] for r in b)
+        hi = max(r["size"] for r in b)
+        top = max(b, key=lambda r: r["chi2"])
+        rng = fmt_size(lo) if fmt_size(lo) == fmt_size(hi) else f"{fmt_size(lo)}-{fmt_size(hi)}"
+        if label:
+            rng = f"{rng} ({label})"
+        q = quantile(sorted(r["chi2"] for r in b), args.null_quantile)
+        m = f"\t{lowest / q:.1f}x" if lowest and q > 0 else ""
+        print(f"    {rng}\t{len(b)}\t"
+              f"{statistics.median(r['chi2'] for r in b):.1f}\t{q:.1f}\t"
+              f"{top['chi2']:.1f}\t{top['replicate']} {top['node']}{m}", file=out)
+    if lowest:
+        top = max(r["chi2"] for r in whole)
+        print(f"  Lowest --min_chi that clears the whole-tree null: {lowest} "
+              f"(its largest", file=out)
+        print(f"  replicate, {top:.1f}, rounded up), so no null replicate's "
+              "first split passes.", file=out)
+        print(f"  The last column is that threshold's margin over each bin's "
+              f"{ql}: where it", file=out)
+        print(f"  is {args.margin:g}x or more, a split just at the threshold "
+              "clears its size-matched", file=out)
+        print("  null by --margin.  Lower in the table means smaller subtrees; "
+              "near the root", file=out)
+        print("  the margin is thin, but real splits there score far above "
+              "the threshold,", file=out)
+        print("  and each split's own margin is checked against its size "
+              "anyway.", file=out)
+    print(file=out)
+
+    if observed:
+        print("=" * 72, file=out)
+        print("OBSERVED SPLITS AGAINST A SIZE-MATCHED NULL", file=out)
+        print("=" * 72, file=out)
+        print(f"  ceiling = {ql} of null chi2 from subtrees within "
+              f"{args.null_window}x of the split's", file=out)
+        print("  size (split_confidence.py's rule); margin = chi2 / ceiling.", file=out)
+        if flag_chi is not None:
+            print(f"  flag: 'rejected' if chi2 <= --min_chi {flag_chi:g} but "
+                  f"margin >= {args.margin:g};", file=out)
+            print("        'within null' if chi2 > --min_chi but margin < 1.", file=out)
+        print(f"  ('few' marks a ceiling from fewer than {args.min_nulls} null splits.)",
+              file=out)
+        print("    iter\tsplit_root\tnode\tsize\tchi2\tceiling\tnulls\tmargin\tflag",
+              file=out)
+        n_rejected = n_within = n_fail = 0
+        for r in observed:
+            ceil, n = ceiling(nulls, r["size"], args.null_window,
+                              args.null_quantile)
+            flags = []
+            if ceil is None:
+                margin_s, ceil_s = "-", "-"
+                margin = None
+            else:
+                margin = r["chi2"] / ceil
+                margin_s, ceil_s = f"{margin:.1f}", f"{ceil:.1f}"
+                if margin < 1:
+                    n_fail += 1
+            if n < args.min_nulls:
+                flags.append("few")
+            if flag_chi is not None and margin is not None:
+                if r["chi2"] <= flag_chi and margin >= args.margin:
+                    flags.append("rejected")
+                    n_rejected += 1
+                elif r["chi2"] > flag_chi and margin < 1:
+                    flags.append("within null")
+                    n_within += 1
+            print(f"    {r['iteration']}\t{r['root']}\t{r['node']}\t{r['size']}\t"
+                  f"{r['chi2']:.1f}\t{ceil_s}\t{n}\t{margin_s}\t{','.join(flags)}",
+                  file=out)
+        print(f"  {n_fail} of {len(observed)} observed splits fall below their "
+              "size-matched ceiling.", file=out)
+        if flag_chi is not None:
+            print(f"  At --min_chi {flag_chi:g}: {n_rejected} rejected splits clear "
+                  f"their null by >= {args.margin:g}x;", file=out)
+            print(f"  {n_within} accepted splits do not clear their null.", file=out)
+        print(file=out)
+
+    print("=" * 72, file=out)
+    print("HOTSPOT CHECK", file=out)
+    print("=" * 72, file=out)
+    first = [r for r in null_rows if r["iteration"] == 1]
+    clade = same_clades(tree, first, args.same_clade)
+    h = hotspot(null_rows, args.hotspot_fraction, args.top_maxima, clade)
+    key, n = h["key"], h["n"]
+    merged = tree is not None and any(c != node for node, c in clade.items())
+    print(f"  The largest whole-tree null maxima (iteration 1), of {n} "
+          "replicates:", file=out)
+    print("    chi2\treplicate\tnode\tmutations_below\tclade", file=out)
+    for r in h["ranked"][:5]:
+        print(f"    {r['chi2']:.1f}\t{r['replicate']}\t{r['node']}\t"
+              f"{r['below']}\t{key(r)}", file=out)
+    print("  Replicates in which each clade is the maximum:", file=out)
+    print("    clade\treplicates", file=out)
+    for c, k in h["counts"].most_common(5):
+        print(f"    {c}\t{k}", file=out)
+    if merged:
+        print(f"  (Nested nodes whose mutations_below agree within "
+              f"{1 - args.same_clade:.0%} count as one clade.)", file=out)
+    print(f"  Flags: a clade that is the maximum in more than "
+          f"{args.hotspot_fraction:.0%} of replicates", file=out)
+    print(f"  (--hotspot_fraction), or that holds the {args.top_maxima} "
+          "largest maxima (--top_maxima).", file=out)
+    if not h["flagged"]:
+        print("  Verdict: no hotspot.", file=out)
+    whole = site_counts(subtree(tree)) if tree is not None and h["flagged"] \
+        else None
+    for c, why in h["flagged"].items():
+        print(f"  Verdict: HOTSPOT at {c}: " + "; ".join(why) + ".", file=out)
+        print("  A recurrent site inside that clade is likely setting the "
+              "threshold.", file=out)
+        if tree is None:
+            continue
+        total, sites = clade_sites(tree, c, args.hotspot_sites, whole)
+        print(f"  {c}'s most recurrent sites ({total} mutations in the "
+              "clade):", file=out)
+        print("    position\tin clade\ttree-wide\tshare of the clade", file=out)
+        for pos, k, w in sites:
+            print(f"    {pos}\t{k}\t{w}\t{100 * k / total:.2f}%", file=out)
+        hot = [str(pos) for pos, k, w in sites if k >= args.hotspot_min]
+        if hot:
+            print(f"  Sites with >= {args.hotspot_min} mutations in the clade: "
+                  "annotate them, and mask them", file=out)
+            print("  if they look like an artifact (step 7):", file=out)
+            cmd = "annotate_sites.py"
+            if args.annotation:
+                cmd += f" --annotation {args.annotation}"
+            if args.reference:
+                cmd += f" --reference {args.reference}"
+            print(f"    {cmd} --positions {','.join(hot)}", file=out)
     print(file=out)
 
 
-def main():
-    args = parse_args()
+def _selftest_size():
+    import io
+    lines = ["replicate\titeration\tsplit_root_id\tnode_id\tchi2\t"
+             "mutations_below\tmutations_above\n"]
+    # Whole tree 1000: observed splits big; null maxima, node_7 wins 3 of 4.
+    lines.append("observed\t1\tnode_1\tnode_5\t500\t300\t700\n")
+    lines.append("observed\t2\tnode_1\tnode_9\t30\t100\t500\n")      # size 600
+    lines.append("observed\t2\tnode_5\tnode_6\t8\t100\t200\n")       # size 300
+    for rep, node, chi in (("perm1", "node_7", 40), ("perm2", "node_7", 35),
+                           ("perm3", "node_7", 38), ("perm4", "node_8", 33)):
+        lines.append(f"{rep}\t1\tnode_1\t{node}\t{chi}\t200\t800\n")
+        lines.append(f"{rep}\t2\tnode_1\tnode_x\t{chi / 3:.1f}\t150\t550\n")
+        lines.append(f"{rep}\t2\tnode_7\tnode_y\t{chi / 4:.1f}\t50\t250\n")
+    rows = parse_cascade(lines)
+    assert len(rows) == 15
+    null_rows = [r for r in rows if r["replicate"] != "observed"]
+    bins = size_bins([r for r in null_rows if r["iteration"] > 1])
+    assert [len(b) for b in bins] == [4, 4], [len(b) for b in bins]
+    h = hotspot(null_rows, 0.5, 2)
+    assert h["n"] == 4 and list(h["flagged"]) == ["node_7"], h["flagged"]
+    assert len(h["flagged"]["node_7"]) == 2, h["flagged"]   # both signs
+    h = hotspot(null_rows, 0.75, 5)
+    assert h["flagged"] == {}, h["flagged"]
+    args = argparse.Namespace(null_window=1.5, null_quantile=1.0, min_chi=50,
+                              margin=2, min_nulls=5,
+                              hotspot_fraction=0.5, top_maxima=2,
+                              same_clade=0.95, hotspot_sites=3, hotspot_min=3,
+                              annotation="ann.gff3", reference="ref.fa")
+    buf = io.StringIO()
+    size_report(rows, args, buf, flag_chi=50)
+    text = buf.getvalue()
+    # node_9 at 600: the 1.5x window (400-900) holds only the size-700 nulls,
+    # whose max is 40/3 -> margin 2.25, below --min_chi 50, so rejected.
+    line9 = next(l for l in text.splitlines() if "\tnode_9\t" in l)
+    assert line9.split("\t")[5] == "13.3" and "rejected" in line9, line9
+    # node_6 at 300: ceiling 10.0 (40/4), chi 8 -> fails its null.
+    line6 = next(l for l in text.splitlines() if "\tnode_6\t" in l)
+    assert line6.split("\t")[7] == "0.8", line6
+    assert "HOTSPOT at node_7: it is the maximum in 3 of 4" in text, text
+    assert "1k (whole tree)\t4\t36.5\t40.0\t40.0\tperm1 node_7\t1.0x" in text, text
+    # 41 clears the largest whole-tree null, 40.0; it is 41/13.3 = 3.1x the
+    # 700-mutation bin's ceiling, and 4.1x the 300-mutation bin's.
+    assert "Lowest --min_chi that clears the whole-tree null: 41" in text, text
+    assert "700\t4\t12.2\t13.3\t13.3\tperm1 node_x\t3.1x" in text, text
+    assert "300\t4\t9.2\t10.0\t10.0\tperm1 node_y\t4.1x" in text, text
+
+    # A clade that rarely wins but wins big, under two IDs: node_20 and its
+    # child node_21, which holds nearly all of it.  It is the maximum in 2 of
+    # 6 replicates, under the frequency limit, but holds the 2 largest.
+    # Two sites inside it carry most of its mutations.
+    class Node:
+        def __init__(self, nid, muts, children=()):
+            self.id, self.mutations = nid, list(muts)
+            self.children, self.parent = list(children), None
+            for c in self.children:
+                c.parent = self
+
+    class Tree:
+        def __init__(self, root):
+            self.root, self.nodes, stack = root, {}, [root]
+            while stack:
+                n = stack.pop()
+                self.nodes[n.id] = n
+                stack.extend(n.children)
+
+        def get_node(self, nid):
+            return self.nodes[nid]
+
+    leaves = [Node(f"leaf{i}", ["A50G", "T52G"] if i % 2 else ["G50A"])
+              for i in range(8)]
+    n21 = Node("node_21", ["C9T"], leaves)
+    n20 = Node("node_20", ["C7T"], [n21])
+    tree = Tree(Node("node_1", [], [n20, Node("node_30", ["A50G", "G3T"])]
+                     + [Node(f"node_{i}", ["G3T"]) for i in (31, 32, 33)]))
+    lines = lines[:1] + [f"perm{i}\t1\tnode_1\t{node}\t{chi}\t{below}\t900\n"
+                         for i, (node, chi, below) in enumerate(
+                             [("node_20", 45, 100), ("node_21", 31, 98),
+                              ("node_30", 24, 300), ("node_31", 22, 200),
+                              ("node_32", 21, 200), ("node_33", 20, 200)])]
+    rows = parse_cascade(lines)
+    h = hotspot(rows, 0.5, 2)
+    assert h["flagged"] == {}, "without the tree, two IDs hide the clade"
+    first = [r for r in rows if r["iteration"] == 1]
+    clade = same_clades(tree, first, 0.95)
+    assert clade["node_21"] == "node_20" and clade["node_30"] == "node_30"
+    h = hotspot(rows, 0.5, 2, clade)
+    assert list(h["flagged"]) == ["node_20"], h["flagged"]
+    assert "no other clade's exceeds 24.0" in h["flagged"]["node_20"][0]
+    total, sites = clade_sites(tree, "node_20", 3,
+                               site_counts(subtree(tree)))
+    assert total == 14 and sites[0] == (50, 8, 9) and sites[1] == (52, 4, 4), \
+        (total, sites)
+    buf = io.StringIO()
+    size_report(rows, args, buf, tree, flag_chi=50)
+    text = buf.getvalue()
+    assert "HOTSPOT at node_20: it holds the 2 largest maxima (45.0, 31.0)" \
+        in text, text
+    assert ("annotate_sites.py --annotation ann.gff3 --reference ref.fa "
+            "--positions 50,52") in text, text
+    print("ok: size bins, size-matched ceilings, --min_chi flags and the hotspot "
+          "check behave on a constructed cascade")
+    print("ok: a clade under two IDs that holds the largest maxima is flagged, "
+          "with its recurrent sites")
+    ### The same clade logic on the extracted flat tree, through TreeView.
+    class N(object):
+        def __init__(self, nid, muts, kids=()):
+            self.id, self.mutations, self.children = nid, list(muts), list(kids)
+    flat = extract(N("node_1", [], [
+        N("node_20", ["C7T"], [N("node_21", ["C9T"], [
+            N(f"leaf{i}", ["A50G", "T52G"] if i % 2 else ["G50A"])
+            for i in range(8)])]),
+        N("node_30", ["A50G", "G3T"])]
+        + [N(f"node_{i}", ["G3T"]) for i in (31, 32, 33)]))
+    view = TreeView(flat)
+    assert same_clades(view, first, 0.95) == clade
+    assert clade_sites(view, "node_20", 3, site_counts(subtree(view))) == \
+        (total, sites)
+    print("ok: the hotspot check reads the extracted tree as it read bte's")
+
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     if args.selftest:
         return selftest()
@@ -595,15 +1163,13 @@ def main():
     print(f"Extracted {n_nodes} nodes, {n_muts} usable SNVs, "
           f"scoring {ncat} categories ({', '.join(cats)})", file=sys.stderr)
 
-    modal = site_modal_types(tree) if args.mode == "sites" else None
+    modes = ["types", "sites"] if args.mode == "both" else [args.mode]
+    modal = site_modal_types(tree) if "sites" in modes else None
     if modal is not None:
         print(f"Site-level null over {len(modal)} distinct sites", file=sys.stderr)
 
-    replicates = list(range(1, args.replicates + 1))
-    if args.include_observed:
-        replicates = [0] + replicates
-
-    results = []
+    ### Replicate 0 is the unpermuted tree, scored through the same code.
+    replicates = list(range(0, args.replicates + 1))
     use_fork = args.nthreads > 1
     if use_fork:
         try:
@@ -614,42 +1180,69 @@ def main():
                   "Run several instances with different --seed to parallelize.",
                   file=sys.stderr)
             use_fork = False
+    pool = ctx.Pool(processes=args.nthreads) if use_fork else None
 
-    if use_fork:
-        with ctx.Pool(processes=args.nthreads) as pool:
-            jobs = [pool.apply_async(one_replicate,
-                                     (tree, args, ncat, fold_map, modal, r))
-                    for r in replicates]
-            for job in jobs:
-                results.extend(job.get())
-    else:
-        for r in replicates:
-            results.extend(one_replicate(tree, args, ncat, fold_map, modal, r))
+    records, paths = {}, []
+    try:
+        for mode in modes:
+            depth = 1 if mode == "types" else args.max_splits
+            results = []
+            if pool is not None:
+                jobs = [pool.apply_async(one_replicate,
+                                         (tree, args, ncat, fold_map, modal,
+                                          r, mode, depth))
+                        for r in replicates]
+                for job in jobs:
+                    results.extend(job.get())
+            else:
+                for r in replicates:
+                    results.extend(one_replicate(tree, args, ncat, fold_map,
+                                                 modal, r, mode, depth))
+            records[mode] = results
+            name = "types" if mode == "types" else \
+                ("sites_cascade" if depth > 1 else "sites")
+            paths.append(f"{args.prefix}_{name}.tsv")
+            with open(paths[-1], "w") as fh:
+                fh.write("\t".join(["replicate", "iteration", "split_root_id",
+                                    "node_id", "chi2", "mutations_below",
+                                    "mutations_above"]) + "\n")
+                for rec in results:
+                    fh.write("\t".join([
+                        rec["label"], str(rec["iteration"]),
+                        rec["split_root_id"], rec["node_id"],
+                        f"{rec['chi2']:.4f}", str(rec["mutations_below"]),
+                        str(rec["mutations_above"]),
+                    ]) + "\n")
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
+    print(f"\nPer-split records written to {', '.join(paths)}",
+          file=sys.stderr)
 
-    with open(args.output, "w") as fh:
-        fh.write("\t".join(["replicate", "iteration", "split_root_id", "node_id",
-                            "chi2", "mutations_below", "mutations_above"]) + "\n")
-        for rec in results:
-            fh.write("\t".join([
-                rec["label"], str(rec["iteration"]), rec["split_root_id"],
-                rec["node_id"], f"{rec['chi2']:.4f}",
-                str(rec["mutations_below"]), str(rec["mutations_above"]),
-            ]) + "\n")
-    print(f"\nPer-split records written to {args.output}", file=sys.stderr)
-
-    # ---- summary ---------------------------------------------------------
-    per_label = defaultdict(list)
-    for rec in results:
-        per_label[rec["label"]].append(rec["chi2"])
-
-    null_maxima = sorted(max(v) for k, v in per_label.items()
-                         if k != "observed" and v)
-    obs = max(per_label["observed"]) if per_label.get("observed") else None
-    summarize(null_maxima, obs, args, ncat, sys.stdout)
+    # ---- the report ------------------------------------------------------
     out = sys.stdout
-    print("  Next: run spectrumSplits.py with this --min_chi, then confirm the", file=out)
-    print("  surviving splits with --bootstrap_splits, and inspect which", file=out)
-    print("  mutation classes drive each one.", file=out)
+    maxima, obs = {}, None
+    for mode, results in records.items():
+        per_label = defaultdict(list)
+        for rec in results:
+            per_label[rec["label"]].append(rec["chi2"])
+        maxima[mode] = sorted(max(v) for k, v in per_label.items()
+                              if k != "observed" and v)
+        if per_label.get("observed"):
+            obs = max(per_label["observed"])
+    rec_chi = summarize(maxima, obs, args, ncat, out)
+    if "sites" in records:
+        flag = args.flag_min_chi if args.flag_min_chi is not None else rec_chi
+        if args.max_splits == 1:
+            print("  (--max_splits 1: no cascade, so the size bins below hold "
+                  "only the whole tree.)", file=out)
+        size_report(rows_from_records(records["sites"]), args, out,
+                    TreeView(tree), flag)
+    print("  Next: run spectrumSplits.py with the recommended --min_chi "
+          "(step 8), unless the", file=out)
+    print("  hotspot check flagged a clade: then mask its sites and rerun "
+          "this first.", file=out)
     return 0
 
 
