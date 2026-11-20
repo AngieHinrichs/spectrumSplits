@@ -226,6 +226,13 @@ def parse_args():
                         "an unknown context and is not counted")
     p.add_argument("--output_context", type=str, default="hit_context.tsv",
                    help="With --context: per-test, per-context shifts")
+    p.add_argument("--calibrate_context", type=int, default=0, metavar="N",
+                   help="Instead of a test on a tree: simulate N small trees "
+                        "per scenario and report how often the --context "
+                        "tests reach p < 0.05 with no shift, with a whole "
+                        "class shifted in proportion, and with one context "
+                        "shifted.  Honours --fold, --permutations and --seed; "
+                        "needs numpy, not bte")
     p.add_argument("--selftest", action="store_true",
                    help="Check subtree bookkeeping, codon effects and the "
                         "permutation null on synthetic trees, then exit")
@@ -776,10 +783,95 @@ def fmt(x):
     return str(x)
 
 
+def calibrate_context(args):
+    """False-positive rates and power of --context's tests, by simulation.
+
+    Each tree is a _simulate topology with 25 hit subtrees; every branch
+    draws its mutations' contexts from a base mix, and branches below a hit
+    from a shifted one.  Three scenarios, N trees each:
+
+      null          shifted = base: every p < 0.05 is a false positive.
+      proportional  the C>T class (CT|GA folded, CT unfolded) raised 3x, all
+                    its contexts alike: the class test should fire, and the
+                    shape test should not, since the class's mix of contexts
+                    is unchanged.
+      one context   one C>T context raised: the shape test should fire.
+
+    For each, the share of p < 0.05 for: the shape test of every class, the
+    shape test of the C>T class, the within-class test of every context, and
+    the C>T class test.  These are the rates the README quotes.  The trees
+    are small, so the shifts are large; the point is calibration under the
+    null and the proportional shift, and that power is there at all.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        print("error: --calibrate_context needs numpy", file=sys.stderr)
+        return 1
+    import trinucleotide as tn
+    sch = tn.scheme(args.fold)
+    n = sch.n
+    k = sch.class_labels.index("CT|GA" if args.fold else "CT")
+    lo, hi = 16 * k, 16 * k + 16
+
+    class A(object):
+        pass
+    targs = A()
+    targs.max_branch_length = None
+    targs.top_branch = "include"
+    targs.min_focal = 1
+    targs.min_comparator = 5
+    targs.permutations = args.permutations
+    rng = random.Random(args.seed)
+    base = [1.0 + (c % 7) for c in range(n)]
+    tot = sum(base)
+    pbar = [b / tot for b in base]
+    prop = list(base)
+    for c in range(lo, hi):
+        prop[c] *= 3.0
+    one = list(base)
+    one[lo + 8] += 60.0
+    scenarios = (("null", base), ("proportional 3x C>T", prop),
+                 (f"one context +60 ({sch.labels[lo + 8]})", one))
+    print(f"{args.calibrate_context} simulated trees per scenario, "
+          f"{sch.name} context classes, {args.permutations} permutations, "
+          f"seed {args.seed}")
+    print(f"share of p < 0.05 for: shape (every class), shape "
+          f"({sch.class_labels[k]}), within-class (every context), class "
+          f"test ({sch.class_labels[k]})")
+    print("scenario	shape_all	shape_CT	within_all	class_CT")
+    for name, shifted in scenarios:
+        shape_all, shape_k, within, cls = [], [], [], []
+        for _rep in range(args.calibrate_context):
+            tree, own, evs = _context_tree(rng, base, shifted)
+            V, T = subtree_sums(tree, own, n)
+            acc = ContextAccumulator(n, args.permutations,
+                                     np.random.default_rng(
+                                         rng.randrange(1 << 30)))
+            res = run_test(tree, evs, V, T, own, n, targs, pbar, rng, acc)[2]
+            if res is None:
+                continue
+            cx = res[5]
+            shape_all.extend(cx["shape_p"])
+            shape_k.append(cx["shape_p"][k])
+            within.extend(cx["within_p"])
+            cls.append(res[1][k])
+
+        def frac(ps):
+            return sum(1 for p in ps if p < 0.05) / len(ps) if ps else \
+                float("nan")
+        print(f"{name}\t{frac(shape_all):.3f}\t{frac(shape_k):.3f}\t"
+              f"{frac(within):.3f}\t{frac(cls):.3f}")
+        sys.stdout.flush()
+    return 0
+
+
 def main():
     args = parse_args()
     if args.selftest:
         return selftest()
+    if args.calibrate_context:
+        return calibrate_context(args)
     for opt in ("input_tree", "annotation", "reference", "genes"):
         if not getattr(args, opt):
             print(f"error: --{opt} is required (or pass --selftest)",

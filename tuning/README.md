@@ -2313,13 +2313,32 @@ not penalise a shift spread in proportion across contexts: in the self-test, a
 3× rise of a whole class gave shape p < 0.05 in none of 30 trees while its
 class test fired in all of them. A version built on the overall shifts got
 this wrong 40% of the time, because a class that really rises has noisier
-contexts than any no-shift permutation. In 200 simulated null trees, shape p
-< 0.05 came out at 5.4%. `hit_context.tsv` then says which contexts: per test
-and context, the context's tree-wide share of its class, its shift, the
-shift a proportional spread would give, the excess, the within-class share
-shift and their p values. Read the shape p before any one context's: in
-simulation a strong class shift pushed per-context within-class p < 0.05 to
-6.8%, and with 96 of them a few small ones are expected regardless.
+contexts than any no-shift permutation. `hit_context.tsv` then says which
+contexts: per test and context, the context's tree-wide share of its class,
+its shift, the shift a proportional spread would give, the excess, the
+within-class share shift and their p values. Read the shape p before any one
+context's: a strong class shift pushes per-context within-class p < 0.05
+above 5%, and with 96 of them a few small ones are expected regardless.
+
+`--calibrate_context N` measures this on N simulated trees per scenario
+instead of testing your tree. It needs numpy but not `bte`, and checks the
+method, not your data:
+
+```
+gene_hit_contrasts.py --calibrate_context 200 --fold --permutations 200
+```
+
+| Scenario, 96 classes | shape, every class | shape, C>T | within-class, every context | C>T class test |
+| --- | --- | --- | --- | --- |
+| no shift | 5.4% | 4.5% | 5.1% | 7.0% |
+| C>T 3× in proportion | 5.7% | 3.5% | 6.7% | 100% |
+| one C>T context raised | 20% | 100% | 6.4% | 94% |
+
+Each cell is the share of p < 0.05, 200 trees and 200 permutations each, in
+40 seconds. The shape test holds near 5% with no shift and under a
+proportional shift, and finds a one-context shift every time. Without
+`--fold` the 192 classes behave the same: 5.4% shape p with no shift, 2.5% for
+C>T's shape under the proportional shift, and 98% power for one context.
 
 *Worked example*, `dnaE2`, 10,000 permutations, about 25 seconds and 1 GB per run. The
 class result reproduces: `CG|GC` p 0.0001 and `CT|GA` p 0.0003 (internal
@@ -3245,6 +3264,11 @@ Options:
   flanks are unknown. `--output_context` (default `hit_context.tsv`) gets the
   per-context rows. The events file and the `--null_draws` file still report
   the 6 classes, or the 12 types.
+- `--calibrate_context N`: instead of testing a tree, simulate N small trees
+  in each of three scenarios and report how often the context tests reach
+  p < 0.05: no shift, C>T raised 3× in proportion across its contexts, and
+  one C>T context raised (step 12). It honours `--fold`, `--permutations`
+  and `--seed`, and needs numpy but not `bte`.
 
 Outputs:
 
