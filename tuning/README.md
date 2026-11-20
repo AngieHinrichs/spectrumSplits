@@ -3,9 +3,9 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and nine need less: `prune_clade_check.py` and
+library and `bte`, and eight need less: `prune_clade_check.py` and
 `split_drivers.py` use `bte` only with `--input_tree`, and
-`check_gene_names.py`, `control_genes.py`, `branch_hits.py`,
+`check_gene_names.py`, `control_genes.py`,
 `summarize_gene_hits.py`, `split_confidence.py`, `split_composition.py` and
 `match_splits.py` read text files only. Some need more: `split_contexts.py`
 and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
@@ -39,7 +39,6 @@ and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
   - [`check_gene_names.py`](#check_gene_namespy)
   - [`permutation_null.py`](#permutation_nullpy)
   - [`split_drivers.py`](#split_driverspy)
-  - [`branch_hits.py`](#branch_hitspy)
   - [`branch_class_spectra.py`](#branch_class_spectrapy)
   - [`split_confidence.py`](#split_confidencepy)
   - [`split_composition.py`](#split_compositionpy)
@@ -64,8 +63,7 @@ and `gene_hit_contrasts.py --context` need numpy, and `plot_gene_hits.py` and
 | [`annotate_sites.py`](#annotate_sitespy) | 3, 4 | What are the recurrent sites, and which regions should be masked before anything else is trusted? |
 | [`check_gene_names.py`](#check_gene_namespy) | 3, 8 | Does every name in a `--regions` or `--highlight` list resolve to exactly one gene in this annotation, and if not, what is it called there? |
 | [`permutation_null.py`](#permutation_nullpy) | 7 | How large a chi-squared does chance alone reach on this tree, and so where should `--min_chi` sit? How does that ceiling fall with subtree size, which splits does a fixed `--min_chi` wrongly reject, and is one hotspot setting the threshold? |
-| [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, and what mutations define the ones worth interpreting? |
-| [`branch_hits.py`](#branch_hitspy) | 8 | Are the highlighted-gene hits on the split branches more than chance, per branch, per gene on one branch, and per gene across branches? |
+| [`split_drivers.py`](#split_driverspy) | 8 | Which mutation classes drive each split, does one site or weak bootstrap support explain it, which splits are worth interpreting, and are the highlighted-gene hits on their defining branches more than chance? |
 | [`branch_class_spectra.py`](#branch_class_spectrapy) | 9 | Is a split a real mutational difference, or a sequencing-quality gradient on terminal branches? |
 | [`split_confidence.py`](#split_confidencepy) | 10 | Which accepted splits are worth interpreting? Scores each against a size-matched null and the bootstrap replicates. |
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
@@ -1362,26 +1360,24 @@ it recommends.
 
 #### Then interpret
 
-When the run finishes, `split_drivers.py` reads `spectra.tsv` the way you
-would by eye, and lists the splits worth explaining. Its `--highlight` list
-deserves the same check as step 3's mask lists, since a gene the annotation
-names differently drops out of the highlight without anything looking wrong:
-
-```
-check_gene_names.py --names repair_genes.txt \
-    --annotation NC_012345.1.gff3.gz
-```
-
-Then:
+When the run finishes, one command reads the results:
 
 ```
 split_drivers.py --spectra spectra.tsv --splits_log splits.log \
     --bootstrap bootstrap_*_splits_output.tsv \
     --input_tree tree.pruned.masked.pb.gz --max_branch_length 250 \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-    --highlight repair_genes.txt \
-    --output split_drivers.tsv > split_drivers.txt
+    --highlight repair_genes.txt --mask selection_loci.bed,alignment_loci.bed \
+    > split_drivers.txt
 ```
+
+It reads `spectra.tsv` the way you would by eye and lists the splits worth
+explaining. Then it checks the `--highlight` list's names against the
+annotation, annotates those splits' defining branches, and tests their
+highlighted-gene hits against chance. The sections below take these in
+order. It writes `split_drivers.tsv` (one row per split),
+`split_drivers_hits.tsv` (one row per annotated branch) and a
+`node_N_branch.tsv` per annotated branch.
 
 A split driven almost entirely by one mutation class is usually an artifact
 or a single over-mutated site; one spread across several classes that
@@ -1399,42 +1395,29 @@ of those per split, and labels it `interpret` only when it passes all three:
   or one within 10 node numbers of it (`--min_support`, `--neighbourhood`,
   the same window as step 10).
 
-Its `branch_mutations` column lists the mutations on each split's defining
-branch, comma-separated, which is the form `annotate_sites.py --positions`
-takes. Annotating them with `--highlight repair_genes.txt` is the first place
-to look for a mechanism. Do it for the `interpret` splits only. A one-class
-or one-site split is more likely an artifact, and its defining branch is the
+**The highlight list.** The GENE NAME CHECK section checks `--highlight`
+the way `check_gene_names.py` checks step 3's mask lists. A gene the
+annotation names differently drops out of the highlight without anything
+looking wrong, so fix any entry under "To fix" and rerun.
+
+**The defining branches.** The mutations on a split's defining branch are
+the first place to look for a mechanism, and the DEFINING-BRANCH ANNOTATION
+section annotates them for the `interpret` splits only. A one-class or
+one-site split is more likely an artifact, and its defining branch is the
 wrong place to look: the `site` column names the recurrent site to annotate
-instead, as step 4 did for the sites that survived the mask. Skip, too, any
-branch longer than `--max_branch_length`: the search left it out of the
-spectrum, so it cannot have caused the split, and its mutations only label
-the lineage. The report ends with a loop that does all of this, filled in
-with your file names:
-
-```
-awk -F'\t' 'NR>1 && $14=="interpret" && split($15, m, ",") <= 250 {print $1}' split_drivers.tsv |
-while read n; do
-  echo "== $n" >&2
-  annotate_sites.py --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
-      --highlight repair_genes.txt --output ${n}_branch.tsv \
-      --positions "$(awk -F'\t' -v n=$n '$1==n {print $NF}' split_drivers.tsv)"
-done 2> branch_annotation.log
-awk '/^== /{n=$2} /HIGHLIGHTED/{print n":"$0}' branch_annotation.log
-```
-
-It writes one `node_N_branch.tsv` per split, and the last line lists the
-splits whose branch hits a highlighted gene.
+instead, as step 4 did for the sites that survived the mask. Branches longer
+than `--max_branch_length` are skipped too, and named: the search left them
+out of the spectrum, so they cannot have caused the split, and their
+mutations only label the lineage. The section lists each branch that hits a
+highlighted gene, and `node_N_branch.tsv` has every site's annotation
+(`--branch_dir` sets where; `''` skips them). The `branch_mutations` column
+of `split_drivers.tsv` has the same mutations, comma-separated for
+`annotate_sites.py --positions`.
 
 **Expect hits by chance.** A defining branch with hundreds of mutations will
 hit a gene list covering 1-2% of the genome whatever the mechanism, so a hit
-means something only against its expectation. `branch_hits.py` computes it:
-
-```
-branch_hits.py --branches node_*_branch.tsv \
-    --annotation NC_012345.1.gff3.gz --highlight repair_genes.txt \
-    --mask selection_loci.bed,alignment_loci.bed --reference NC_012345.1.fna \
-    --output branch_hits.tsv > branch_hits.txt
-```
+means something only against its expectation. The BRANCH HITS section
+computes it. `--mask` takes step 3's mask BEDs, for the chance rate.
 
 Only hits that change the protein count, by default: a synonymous change
 cannot disable a repair gene, and counting it lets a mutational hotspot pass
@@ -1470,7 +1453,7 @@ the ones the search used. So the screen removes the obvious cases, and step
 
 Three `interpret` splits had branches longer than 250 and were skipped:
 `node_4965` (413 mutations), `node_3548` (832) and `node_4563` (591). The
-other 58 were annotated, and `branch_hits.py` reported:
+other 58 were annotated, and the BRANCH HITS section reported:
 
 ```
   chance rate per mutation: 77,356 / 3,904,767 x 929/1,451 nonsynonymous coding mutations = 1.268%
@@ -1518,7 +1501,7 @@ left after nested splits are carved out, so the two differ whenever a split
 has splits below it.
 
 *Worked example.* Every split carrying a repair-gene result in
-`branch_hits.py`, and the two that step 9 points to, turned out to be a
+BRANCH HITS, and the two that step 9 points to, turned out to be a
 recognised lineage. Three pairs of them are nested (checked with `comm -12`
 on the sorted sample files):
 
@@ -1548,9 +1531,9 @@ spectrum are both properties of lineage 2.2.1, and a single branch cannot
 separate them. Any deep branch carries hundreds of lineage-defining
 mutations, so co-occurrence is guaranteed. What would be evidence is
 independent recurrence: the same gene disrupted on an unrelated branch with
-the same shift. `branch_hits.py` found none that beats chance.
+the same shift. BRANCH HITS found none that beats chance.
 
-The `polA` pair, the one result `branch_hits.py` could not put down to
+The `polA` pair, the one result BRANCH HITS could not put down to
 chance, sits on the branch that defines all of lineage 2, so about 39,000
 genomes share it. That cuts both ways. A misalignment would not normally
 reach every genome in a lineage, but a systematic one would: if lineage 2
@@ -2850,7 +2833,7 @@ parts:
 - **Same locus as an earlier entry**: harmless in a `--regions` list, and
   often deliberate there, since a name plus its locus tag keeps a mask
   working on annotations that name the gene differently. In a `--highlight`
-  list keep one: `branch_hits.py` counts each name as a gene of its own,
+  list keep one: `split_drivers.py` counts each name as a gene of its own,
   which inflates its "by chance" counts.
 - **To fix**: entries matching several loci (use the locus tag of the one
   meant) and entries not found, each with candidates. A candidate is a name
@@ -2959,11 +2942,25 @@ Used in [step 8](#8-run-the-search-with-bootstrap-and-check-where-it-saturates).
 split_drivers.py --spectra spectra.tsv --splits_log splits.log \
     --bootstrap bootstrap_*_splits_output.tsv \
     --input_tree tree.pruned.masked.pb.gz --max_branch_length 250 \
-    --output split_drivers.tsv > split_drivers.txt
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --highlight repair_genes.txt --mask selection_loci.bed,alignment_loci.bed \
+    > split_drivers.txt
 ```
 
-Prints a table of every split, with the splits to interpret listed below it.
-`--output` writes the same per split as a TSV:
+Reads the search's results and prints, in order:
+
+| Section | What to do with it |
+| --- | --- |
+| Split drivers | Every split's residual against its parent's, its top classes, one-site loss, bootstrap support and verdict |
+| Splits to interpret | The `interpret` splits, and each one's defining-branch length; those longer than `--max_branch_length` are not annotated |
+| Gene name check | `check_gene_names.py` on the `--highlight` list: entries shown under another name, duplicates, and entries matching several loci or none, with candidates. Fix those and rerun |
+| Defining-branch annotation | The `interpret` splits' defining branches annotated as `annotate_sites.py` would, and the highlighted-gene hits on each |
+| Branch hits | The hits against chance, below |
+
+The last three need `--input_tree`, `--annotation`, `--reference` and
+`--highlight`; without them the report says what to add.
+
+`PREFIX.tsv` (`--prefix`, default `split_drivers`) has one row per split:
 
 | Column | Meaning |
 | --- | --- |
@@ -2980,45 +2977,31 @@ were carved out of either side, so `chi2_residual` is not `chi_logged`. It
 answers a different question: which classes separate the rows you will read.
 With `--input_tree`, each residual total is rebuilt from the tree and checked
 against `spectra.tsv`; a mismatch means a different tree or
-`--max_branch_length`, and is reported. `--annotation`, `--reference` and
-`--highlight` are only copied into the loop the report ends with, which
-annotates the defining branch of every `interpret` split short enough to be
-in its spectrum.
-`--selftest` checks the chi-squared arithmetic, the residual walk and the
-one-site test on a constructed tree.
+`--max_branch_length`, and is reported.
 
-### `branch_hits.py`
-
-Used in [step 8](#8-run-the-search-with-bootstrap-and-check-where-it-saturates).
-
-```
-branch_hits.py --branches node_*_branch.tsv \
-    --annotation NC_012345.1.gff3.gz --highlight repair_genes.txt \
-    --mask selection_loci.bed,alignment_loci.bed --reference NC_012345.1.fna \
-    --output branch_hits.tsv > branch_hits.txt
-```
-
-Reads the `annotate_sites.py --highlight` output for each branch, which
-`split_drivers.py`'s loop writes as `node_N_branch.tsv`. `--annotation` and
-`--highlight` must be the ones that run used: the gene lengths come from
-resolving the same names the same way. A hit is a site inside a named gene;
-sites `--highlight_flank` labels as `name@+N` are not counted. Only
+**Branch hits.** A hit is a site inside a highlighted gene. Only
 nonsynonymous hits, stop gains included, count unless `--count all` is
 given, and every result's "by chance" column, not its rank, says whether it
-stands out.
-`--genome_size` can replace `--reference`.
+stands out:
 
 | Section | What to do with it |
 | --- | --- |
-| Chance rate | Highlighted genes' length outside the mask over the genome's, times the branches' nonsynonymous share of coding mutations. Check the names reported as not found |
+| Chance rate | Highlighted genes' length outside the `--mask` BEDs over the genome's, times the branches' nonsynonymous share of coding mutations. Check the names reported as not found |
 | All branches | Counted hits against expectation summed over every branch, and the nonsynonymous share of all hits beside the share for every coding mutation on the branches |
 | Per branch | Each branch with counted hits, by P. "by chance" is how many of the branches would reach that P by chance, from each one's own length, so short branches that cannot reach it do not inflate it |
 | One gene, one branch | Genes with several counted hits on one branch, with the mutations. Hits a few bases apart may be one event; check them in the reads before believing them |
 | One gene, several branches | Genes hit on two or more branches, against the branches expected to hit them from the gene's length and each branch's; "by chance" corrects across the gene list |
 
-`--output` writes the per-branch numbers as a TSV. `--selftest` checks the
-Poisson tails, the chance counts, the hit counting and the mask arithmetic on
-constructed files.
+`PREFIX_hits.tsv` has the per-branch numbers. Each annotated branch is also
+written as `node_N_branch.tsv`, with `annotate_sites.py`'s columns, in
+`--branch_dir` (default the current directory; `''` skips them). `--flank`
+(default 200) is the promoter window, and `--seqid` picks the sequence, as
+in `annotate_sites.py`.
+
+`--selftest` checks the chi-squared arithmetic, the residual walk and the
+one-site test on a constructed tree; the Poisson tails, the chance counts,
+the hit counting and the mask arithmetic; and the annotation of two
+constructed branches from a small GFF3 and FASTA, including the name check.
 
 ### `branch_class_spectra.py`
 

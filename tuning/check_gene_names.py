@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a gene-name list against an annotation before using it.
 
-annotate_sites.py --regions and --highlight, and branch_hits.py --highlight,
+annotate_sites.py --regions and --highlight, and split_drivers.py --highlight,
 read a list of gene names and match each against the annotation's gene, Name,
 gene_synonym, Alias, locus_tag and old_locus_tag fields.  A name the
 annotation spells differently is reported as NOT FOUND and silently left out:
@@ -18,7 +18,7 @@ This script resolves every entry the way annotate_sites.py does and reports:
   duplicate  the same locus as an earlier entry (mutM and fpg).  Harmless
              in a --regions list, where a name plus its locus tag keeps a
              mask working on annotations that name the gene differently.
-             Not in a --highlight list: branch_hits.py counts each name as
+             Not in a --highlight list: split_drivers.py counts each name as
              a gene of its own, which inflates its 'by chance' counts, and
              a site's label then depends on which name sorts first.
   several    more than one locus: probably a short or reused name.
@@ -195,7 +195,7 @@ def report(rows, args, out):
     if dups:
         print(file=out)
         print("SAME LOCUS AS AN EARLIER ENTRY (harmless in a --regions list; "
-              "in a --highlight list keep one, since branch_hits.py counts "
+              "in a --highlight list keep one, since split_drivers.py counts "
               "each as a gene)", file=out)
         for r in dups:
             print(f"  {r['entry']}  =  {r['of']}: {r['loci'][0].describe()}",

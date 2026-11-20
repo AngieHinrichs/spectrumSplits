@@ -1004,6 +1004,114 @@ def selftest():
 # main
 # --------------------------------------------------------------------------
 
+def annotate_site(pos, count, mutation, index, seq, header, flank=200,
+                  highlight_names=None, highlight_flank=0):
+    """One site's output row, as a dict over header, plus what it is.
+
+    Returns (row, kind, label, highlight): kind is coding, rna, feature,
+    promoter or intergenic; label the feature it counts toward (None when
+    intergenic); highlight (name, inside) when it falls in, or within
+    highlight_flank of, a highlighted gene, else None.  Shared by main() and
+    split_drivers.py, which annotates each split's defining branch.
+    """
+    highlight_names = highlight_names or {}
+    hl = None
+    hits = index.at(pos)
+    coding = [f for f in hits if f.ftype == "CDS"]
+    rna = [f for f in hits if f.ftype in ("rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA")]
+    row = {k: "" for k in header}
+    row["position"] = pos
+    row["count"] = count if count is not None else ""
+    row["mutation"] = mutation or ""
+
+    if coding:
+        f = coding[0]
+        kind, label = "coding", f.label()
+        codon_no, codon_pos, bases = codon_for(f, pos, seq)
+        ref_aa = translate(bases)
+        row.update({
+            "context": "CDS", "feature_type": f.ftype, "gene": f.gene or "",
+            "locus_tag": f.locus_tag or "",
+            "strand": "+" if f.strand > 0 else "-",
+            "codon": codon_no, "codon_pos": codon_pos,
+            "ref_codon": bases or "", "ref_aa": ref_aa or "",
+            "distance": 0, "product": f.product or "",
+        })
+        if bases and ref_aa:
+            ref_genomic = bases[codon_pos - 1] if f.strand > 0 else \
+                COMPLEMENT.get(bases[codon_pos - 1], "N")
+            if mutation:
+                m = MUT_RE.match(mutation)
+                alt = m.group(3).upper()
+                new = translate(substitute(bases, codon_pos, alt, f.strand))
+                effect = "syn" if new == ref_aa else "nonsyn"
+                row["aa_change"] = f"{ref_aa}{codon_no}{new} ({effect})"
+            else:
+                opts = []
+                for alt in "ACGT":
+                    if alt == ref_genomic:
+                        continue
+                    new = translate(substitute(bases, codon_pos, alt, f.strand))
+                    opts.append(f"{ref_genomic}>{alt}:{ref_aa}{codon_no}{new}")
+                row["aa_change"] = ";".join(opts)
+    elif rna:
+        f = rna[0]
+        kind, label = "rna", f.label()
+        offset = (pos - f.start + 1) if f.strand > 0 else (f.end - pos + 1)
+        row.update({
+            "context": f.ftype, "feature_type": f.ftype, "gene": f.gene or "",
+            "locus_tag": f.locus_tag or "",
+            "strand": "+" if f.strand > 0 else "-",
+            "codon": "", "codon_pos": "",
+            "aa_change": f"{f.label()} position {offset}",
+            "distance": 0, "product": f.product or "",
+        })
+    elif hits:
+        f = hits[0]
+        kind, label = "feature", f.label()
+        row.update({
+            "context": f.ftype, "feature_type": f.ftype, "gene": f.gene or "",
+            "locus_tag": f.locus_tag or "",
+            "strand": "+" if f.strand > 0 else "-",
+            "distance": 0, "product": f.product or "",
+        })
+    else:
+        f, dist = index.nearest(pos)
+        upstream = (f.strand > 0 and dist < 0) or (f.strand < 0 and dist > 0)
+        if upstream and abs(dist) <= flank:
+            context = "promoter"
+            kind, label = "promoter", f.label()
+        else:
+            context = "intergenic"
+            kind, label = "intergenic", None
+        row.update({
+            "context": context, "feature_type": f.ftype, "gene": f.gene or "",
+            "locus_tag": f.locus_tag or "",
+            "strand": "+" if f.strand > 0 else "-",
+            "distance": -abs(dist) if upstream else abs(dist),
+            "aa_change": (f"{f.label()} promoter {-abs(dist)}"
+                          if context == "promoter" else ""),
+            "product": f.product or "",
+        })
+    if highlight_names and f is not None:
+        ### Report the requested name, not the annotation's display
+        ### name, so a hit on a synonym says which name matched.
+        hit = sorted(f.names() & set(highlight_names))
+        ### f is the NEAREST feature, which need not contain the site.
+        ### Only a site inside the gene counts as a hit on it; a site
+        ### merely near one is reported with its distance, and only
+        ### when the user asked for a flank.  Flagging a neighbour as
+        ### a hit overstates the evidence exactly where it is being
+        ### interpreted.
+        dist = row["distance"]
+        inside = (dist == 0)
+        if hit and (inside or abs(dist) <= highlight_flank):
+            name = highlight_names[hit[0]]
+            row["highlight"] = name if inside else f"{name}@{dist:+d}"
+            hl = (name, inside)
+    return row, kind, label, hl
+
+
 def main():
     args = parse_args()
 
@@ -1131,105 +1239,23 @@ def main():
         per_gene = defaultdict(int)
 
         for pos, count, mutation in sites:
-            hits = index.at(pos)
-            coding = [f for f in hits if f.ftype == "CDS"]
-            rna = [f for f in hits if f.ftype in ("rRNA", "tRNA", "ncRNA", "tmRNA", "misc_RNA")]
-            row = {k: "" for k in header}
-            row["position"] = pos
-            row["count"] = count if count is not None else ""
-            row["mutation"] = mutation or ""
-
-            if coding:
-                f = coding[0]
+            row, kind, label, hl = annotate_site(
+                pos, count, mutation, index, seq, header, args.flank,
+                highlight_names, args.highlight_flank)
+            if kind == "coding":
                 n_coding += 1
-                per_gene[f.label()] += 1
-                codon_no, codon_pos, bases = codon_for(f, pos, seq)
-                ref_aa = translate(bases)
-                row.update({
-                    "context": "CDS", "feature_type": f.ftype, "gene": f.gene or "",
-                    "locus_tag": f.locus_tag or "",
-                    "strand": "+" if f.strand > 0 else "-",
-                    "codon": codon_no, "codon_pos": codon_pos,
-                    "ref_codon": bases or "", "ref_aa": ref_aa or "",
-                    "distance": 0, "product": f.product or "",
-                })
-                if bases and ref_aa:
-                    ref_genomic = bases[codon_pos - 1] if f.strand > 0 else \
-                        COMPLEMENT.get(bases[codon_pos - 1], "N")
-                    if mutation:
-                        m = MUT_RE.match(mutation)
-                        alt = m.group(3).upper()
-                        new = translate(substitute(bases, codon_pos, alt, f.strand))
-                        kind = "syn" if new == ref_aa else "nonsyn"
-                        row["aa_change"] = f"{ref_aa}{codon_no}{new} ({kind})"
-                    else:
-                        opts = []
-                        for alt in "ACGT":
-                            if alt == ref_genomic:
-                                continue
-                            new = translate(substitute(bases, codon_pos, alt, f.strand))
-                            opts.append(f"{ref_genomic}>{alt}:{ref_aa}{codon_no}{new}")
-                        row["aa_change"] = ";".join(opts)
-            elif rna:
-                f = rna[0]
-                per_gene[f.label()] += 1
-                offset = (pos - f.start + 1) if f.strand > 0 else (f.end - pos + 1)
-                row.update({
-                    "context": f.ftype, "feature_type": f.ftype, "gene": f.gene or "",
-                    "locus_tag": f.locus_tag or "",
-                    "strand": "+" if f.strand > 0 else "-",
-                    "codon": "", "codon_pos": "",
-                    "aa_change": f"{f.label()} position {offset}",
-                    "distance": 0, "product": f.product or "",
-                })
-            elif hits:
-                f = hits[0]
-                per_gene[f.label()] += 1
-                row.update({
-                    "context": f.ftype, "feature_type": f.ftype, "gene": f.gene or "",
-                    "locus_tag": f.locus_tag or "",
-                    "strand": "+" if f.strand > 0 else "-",
-                    "distance": 0, "product": f.product or "",
-                })
-            else:
-                f, dist = index.nearest(pos)
-                upstream = (f.strand > 0 and dist < 0) or (f.strand < 0 and dist > 0)
-                if upstream and abs(dist) <= args.flank:
-                    n_promoter += 1
-                    context = "promoter"
-                    per_gene[f.label()] += 1
+            elif kind == "promoter":
+                n_promoter += 1
+            elif kind == "intergenic":
+                n_intergenic += 1
+            if label:
+                per_gene[label] += 1
+            if hl:
+                highlight_hits[hl[0]] += 1
+                if hl[1]:
+                    n_highlighted += 1
                 else:
-                    n_intergenic += 1
-                    context = "intergenic"
-                row.update({
-                    "context": context, "feature_type": f.ftype, "gene": f.gene or "",
-                    "locus_tag": f.locus_tag or "",
-                    "strand": "+" if f.strand > 0 else "-",
-                    "distance": -abs(dist) if upstream else abs(dist),
-                    "aa_change": (f"{f.label()} promoter {-abs(dist)}"
-                                  if context == "promoter" else ""),
-                    "product": f.product or "",
-                })
-            if highlight_names and f is not None:
-                ### Report the requested name, not the annotation's display
-                ### name, so a hit on a synonym says which name matched.
-                hit = sorted(f.names() & set(highlight_names))
-                ### f is the NEAREST feature, which need not contain the site.
-                ### Only a site inside the gene counts as a hit on it; a site
-                ### merely near one is reported with its distance, and only
-                ### when the user asked for a flank.  Flagging a neighbour as
-                ### a hit overstates the evidence exactly where it is being
-                ### interpreted.
-                dist = row["distance"]
-                inside = (dist == 0)
-                if hit and (inside or abs(dist) <= args.highlight_flank):
-                    name = highlight_names[hit[0]]
-                    row["highlight"] = name if inside else f"{name}@{dist:+d}"
-                    highlight_hits[name] += 1
-                    if inside:
-                        n_highlighted += 1
-                    else:
-                        n_nearby += 1
+                    n_nearby += 1
             if near_ivs is not None:
                 gap, iv = mask_gap(near_ivs, near_starts, pos)
                 if gap is not None and abs(gap) <= args.near_mask_within:
