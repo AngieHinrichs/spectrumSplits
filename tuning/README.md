@@ -3,11 +3,11 @@
 Read-only scripts for choosing `spectrumSplits.py` parameters on a tree other
 than the one the defaults were calibrated on, and for checking the splits it
 then finds. None of them modifies the tree. They need only the Python standard
-library and `bte`, and nine need less: `prune_clade_check.py`,
+library and `bte`, and ten need less: `prune_clade_check.py`,
 `split_drivers.py` and `null_by_size.py` use `bte` only with `--input_tree`,
 and `check_gene_names.py`, `control_genes.py`, `branch_hits.py`,
-`split_confidence.py`, `split_composition.py` and `match_splits.py` read text
-files only. One needs something else: `plot_gene_hits.py` draws a figure, and
+`summarize_gene_hits.py`, `split_confidence.py`, `split_composition.py` and
+`match_splits.py` read text files only. One needs something else: `plot_gene_hits.py` draws a figure, and
 needs matplotlib rather than `bte`.
 
 ## Contents
@@ -45,6 +45,7 @@ needs matplotlib rather than `bte`.
   - [`split_composition.py`](#split_compositionpy)
   - [`gene_hit_contrasts.py`](#gene_hit_contrastspy)
   - [`control_genes.py`](#control_genespy)
+  - [`summarize_gene_hits.py`](#summarize_gene_hitspy)
   - [`plot_gene_hits.py`](#plot_gene_hitspy)
   - [`match_splits.py`](#match_splitspy)
 - [Gene lists](#gene-lists): the lists `annotate_sites.py` reads, and what each is for.
@@ -68,6 +69,7 @@ needs matplotlib rather than `bte`.
 | [`split_composition.py`](#split_compositionpy) | 11 | What is each split made of: one lineage, or several averaged together? |
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
+| [`summarize_gene_hits.py`](#summarize_gene_hitspy) | 12 | What does `gene_hit_contrasts.py`'s summary say? The control, the excess, the genes that clear the bar and the leads, in a page. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`match_splits.py`](#match_splitspy) | [testing](#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 
@@ -1886,7 +1888,23 @@ decides whether terminal hits contribute at all; see the
 [script reference](#gene_hit_contrastspy) for the trade-off, and for what
 `--selftest` checks.
 
-**What to read in `hit_summary.tsv`.** One row per gene and effect set, plus a
+**What to read in `hit_summary.tsv`.** `summarize_gene_hits.py` reads it,
+and the internal-hits-only and control summaries if you have them (both
+below), and prints the punchline:
+
+```
+summarize_gene_hits.py --summary hit_summary.tsv \
+    --internal hit_summary_internal.tsv \
+    --control hit_summary_control.tsv > hit_summary.txt
+```
+
+In order: whether the synonymous control looks like chance; whether the
+nonsynonymous hits exceed chance and the control genes; each gene that clears
+the bar, with every class at p < 0.05 shown for all hits, internal hits and
+its own synonymous hits; and the leads below the bar. It also says when the
+smallest p is the permutation floor, and when a control rests on few
+effective events. The columns underneath, for reading the file itself: one
+row per gene and effect set, plus a
 pooled `ALL`. `omnibus_p` says whether to look further; `diff_<class>` is the
 weighted mean shift in that class's proportion (hit child minus siblings),
 with `p_<class>` its permutation p. `effective_events` says how many equally
@@ -1941,11 +1959,24 @@ the hit:
 | `lexA` | 254 | +2.80 | 0.04 | 55 | +3.91 | 0.013 |
 
 Only `dnaE2` clears the bar for 56 genes on the omnibus test, at p 0.0001,
-the smallest 10,000 permutations can give. It is also the one that keeps its
-full shift with terminal hits dropped, on hits where per-genome error cannot
-reach. Its 1,109 events are worth 54 effective ones, and no few of them carry
-it: dropping the heaviest 1, 5, 10 or 20 leaves the shift at +1.0 to +1.1
-points. Its own synonymous hits are flat (`CT|GA` +0.25 points, p 0.44), but
+the smallest 10,000 permutations can give. Its shift is in more than one
+class, and `CT|GA` is not the strongest:
+
+```
+  dnaE2: omnibus p 1.0e-04 (the permutation floor; the true p may be smaller)
+    class    all hits               internal hits         synonymous
+    CG|GC    -0.75 pts, p 1.0e-04   -0.87 pts, p 0.0043   -0.58 pts, p 0.0953
+    CT|GA    +0.93 pts, p 6.0e-04   +1.00 pts, p 0.006    +0.25 pts, p 0.444
+    TG|AC    -0.29 pts, p 0.041     -0.56 pts, p 0.0101   -0.14 pts, p 0.136
+    events   1,109 (54 effective)   218 (14 effective)    771 (2 effective)
+```
+
+Below a `dnaE2` hit, C>G and G>C fall as C>T and G>A rise. It is also the
+gene that keeps its full shift with terminal hits dropped, on hits where
+per-genome error cannot reach. Its 1,109 events are worth 54 effective ones, and no few of them carry
+it: dropping the heaviest 1, 5, 10 or 20 leaves the `CT|GA` shift at +1.0
+to +1.1 points. Its own synonymous hits are flat for `CT|GA` (+0.25 points,
+p 0.44) but lean the same way for `CG|GC` (-0.58, p 0.10), and either way
 that control is weak: one deep branch carries 77% of their weight, so they
 are worth 2 effective events. The control that carries weight is the one
 across genes. `udgB`'s `CT|GA` p of 0.0001 clears the bar too, but as one class of
@@ -2031,14 +2062,14 @@ gene_hit_contrasts.py ... --permutations 10000 --top_branch exclude \
 plot_gene_hits.py --summary hit_summary.tsv --null null_draws.tsv \
     --internal_summary hit_summary_internal.tsv \
     --internal_null null_draws_internal.tsv \
-    --gene dnaE2 --class 'CT|GA' --label udgB,ogt,lexA \
+    --gene dnaE2 --class 'CG|GC,CT|GA' --label udgB,ogt,lexA \
     --output dnaE2_figure.pdf
 ```
 
-Panel A plots every gene in the list, both effect sets, by its shift in the
-class and its omnibus p, with the list's bar drawn in. Panel B is the gene's
-null histogram for each run, with the observed shift and the effective event
-count. On this tree the all-hits run took 8 minutes and the internal-only run
+Each class gets a column. On top, every gene in the list, both effect sets,
+by its shift in the class and its omnibus p, with the list's bar drawn in;
+below, the gene's null histogram for each run, with the observed shift, its
+p for the class and the effective event count. On this tree the all-hits run took 8 minutes and the internal-only run
 2.
 
 **What it cannot see.** The tree carries SNVs only, so frameshifts,
@@ -2869,11 +2900,30 @@ environment.
   `--null_draws` file from the same run.
 - `--internal_summary`, `--internal_null` (optional): the same from a
   `--top_branch exclude` run, for a third row in panel B.
-- `--gene`, `--class`: the gene and class to show, the class as the summary
-  columns name it (`'CT|GA'`).
+- `--gene`, `--class`: the gene, and the classes to show as the summary
+  columns name them, comma-separated (`'CG|GC,CT|GA'`), one column each.
+  `summarize_gene_hits.py` lists the classes worth showing.
 - `--label`: other genes to name in panel A. `--title` replaces the default
   title. `--output`: the format follows the extension (`.png`, `.pdf`,
   `.svg`).
+
+### `summarize_gene_hits.py`
+
+Used in [step 12](#12-test-a-candidate-mechanism-genotype-first), which has
+the command and what the report contains. Reads only text.
+
+- `--summary`: a `gene_hit_contrasts.py` summary.
+- `--internal` (optional): the summary of a `--top_branch exclude` run, shown
+  beside each gene that clears the bar and each lead.
+- `--control` (optional): the summary of a control gene list
+  (`control_genes.py`), for the list-versus-control Fisher test and the
+  control's pooled baseline shift per class.
+
+The number of permutations is read from the p-values, which are
+(k + 1) / (permutations + 1). Chance counts use a binomial tail at 5%;
+neither they nor the bar correct for the six classes being correlated, so
+read them as guides. `--selftest` checks the report on a constructed
+summary.
 
 ### `match_splits.py`
 

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Figure for step 12: one gene's spectrum shift, against every gene and its null.
 
-Two panels:
+One column per class given to --class (comma-separated), each with:
 
-  A  Every gene in the list, both effect sets: the shift in one class
-     (x, percentage points, hit child minus siblings) against the omnibus
-     -log10 p (y).  Nonsynonymous hits in colour, the synonymous control in
-     grey.  A dashed line marks 0.05 over the number of genes, a dotted one
-     the smallest p the permutations can give.  The control cloud should sit
-     below the line; a gene beyond it is the result.
+  top     Every gene in the list, both effect sets: the shift in the class
+          (x, percentage points, hit child minus siblings) against the
+          omnibus -log10 p (y).  Nonsynonymous hits in colour, the
+          synonymous control in grey.  A dashed line marks 0.05 over the
+          number of genes, a dotted one the smallest p the permutations can
+          give.  The control cloud should sit below the line; a gene beyond
+          it is the result.
 
-  B  The chosen gene against its own permutation null, one row per test:
-     nonsynonymous hits, nonsynonymous internal hits only (if given), and the
-     synonymous control.  Histogram of the permuted shifts, with the observed
-     shift marked.
+  below   The chosen gene against its own permutation null, one row per
+          test: nonsynonymous hits, nonsynonymous internal hits only (if
+          given), and the synonymous control.  Histogram of the permuted
+          shifts, with the observed shift and its p for the class.
 
 Needs only matplotlib.  The null draws come from gene_hit_contrasts.py
 --null_draws, run with the same settings and seed as the summary it goes
@@ -30,7 +31,7 @@ with, so the histograms are the nulls the p-values were computed from:
   plot_gene_hits.py --summary hit_summary.tsv --null null_draws.tsv \\
       --internal_summary hit_summary_internal.tsv \\
       --internal_null null_draws_internal.tsv \\
-      --gene dnaE2 --class 'CT|GA' --label udgB,ogt,lexA \\
+      --gene dnaE2 --class 'CG|GC,CT|GA' --label udgB,ogt,lexA \\
       --output dnaE2_figure.png
 
 The output format follows the extension (.png, .pdf, .svg).
@@ -113,7 +114,7 @@ def label_points(ax, points, gene):
                         shrinkA=0, shrinkB=3))
 
 
-def panel_a(ax, summary, cls, gene, labels, n_perm):
+def panel_a(ax, summary, cls, gene, labels, n_perm, title):
     genes = sorted({g for (_e, g) in summary if g != "ALL"})
     n_genes = len(genes)
     handles = {}
@@ -152,23 +153,26 @@ def panel_a(ax, summary, cls, gene, labels, n_perm):
     ax.set_xlabel(f"{class_label(cls)} shift below the hit "
                   f"(percentage points)")
     ax.set_ylabel("omnibus  −log$_{10}$ p")
-    series = [(handles[e], n) for e, n, _c in EFFECTS if e in handles]
-    ### Outside the plot, so nothing in it competes with the points.
-    ax.legend([h for h, _n in series + lines], [n for _h, n in series + lines],
-              loc="upper left", bbox_to_anchor=(0, -0.13), ncol=2,
-              frameon=False, fontsize=8.5, columnspacing=1.5,
-              handlelength=2.2)
-    ax.set_title(f"A   All {n_genes} genes", loc="left", fontsize=10.5,
-                 color=INK, fontweight="bold", pad=16)
+    ax.set_title(title, loc="left", fontsize=10.5, color=INK,
+                 fontweight="bold", pad=16)
+    ### The legend goes outside the plots, so nothing in them competes with
+    ### the points; the caller places it once for the whole figure.
+    return [(handles[e], n) for e, n, _c in EFFECTS if e in handles] + lines
 
 
 def panel_b(axes, rows, cls):
     lo = min(min(min(r[1]), r[2]) for r in rows)
     hi = max(max(max(r[1]), r[2]) for r in rows)
     pad = 0.08 * (hi - lo)
-    ### The observed value and its p sit to the right of the line, clear of
-    ### the histogram, so the axis runs on far enough to hold them.
-    right = max(hi + pad, max(r[2] for r in rows) + 0.45 * (hi - lo))
+    ### The observed value and its p sit beside the line on the side away
+    ### from the bulk of the null, clear of the histogram, so the axis runs
+    ### on far enough to hold them.
+    def outside(r):
+        null = sorted(r[1])
+        return r[2] >= null[len(null) // 2]
+    room = 0.45 * (hi - lo)
+    right = max([hi + pad] + [r[2] + room for r in rows if outside(r)])
+    left = min([lo - pad] + [r[2] - room for r in rows if not outside(r)])
     edges_n = 60
     width = (hi - lo + 2 * pad) / edges_n
     bins = [lo - pad + i * width for i in range(edges_n + 1)]
@@ -176,11 +180,12 @@ def panel_b(axes, rows, cls):
         ax.hist(null, bins=bins, color=NULL_FILL, edgecolor=SURFACE,
                 linewidth=0.5)
         ax.axvline(obs, color=colour, lw=2)
+        side = 1 if obs >= sorted(null)[len(null) // 2] else -1
         ax.annotate(f"observed {obs:+.2f}\np = {fmt_p(p)}", (obs, 1.0),
-                    xycoords=("data", "axes fraction"), xytext=(6, -2),
+                    xycoords=("data", "axes fraction"), xytext=(6 * side, -2),
                     textcoords="offset points", color=INK, fontsize=8.5,
-                    va="top", ha="left")
-        ax.set_xlim(lo - pad, right)
+                    va="top", ha="left" if side > 0 else "right")
+        ax.set_xlim(left, right)
         events = f"{k:,} events" + (f", {eff:,.0f} effective" if eff else "")
         ax.text(0.0, 1.02, f"{label}  ({events})", transform=ax.transAxes,
                 fontsize=8.5, color=INK_2, va="bottom")
@@ -205,8 +210,8 @@ def main():
                    help="--null_draws TSV from that run")
     p.add_argument("--gene", required=True)
     p.add_argument("--class", dest="cls", required=True,
-                   help="Class to plot, as in the summary columns, e.g. "
-                        "'CT|GA'")
+                   help="Comma-separated classes to plot, one column each, "
+                        "as in the summary columns, e.g. 'CG|GC,CT|GA'")
     p.add_argument("--label", default="",
                    help="Comma-separated other genes to name in panel A")
     p.add_argument("--title", default=None,
@@ -232,51 +237,81 @@ def main():
     })
 
     summary = read_summary(args.summary)
-    nulls = read_null(args.null, args.gene, args.cls)
-    if not nulls:
-        print(f"error: no draws for {args.gene} in {args.null}; was it in "
-              f"--null_draws_genes?", file=sys.stderr)
-        return 1
-    n_perm = len(nulls.get("nonsynonymous", []))
+    internal = read_summary(args.internal_summary) \
+        if args.internal_summary and args.internal_null else None
+    classes = [c for c in args.cls.split(",") if c]
+    n_genes = len({g for (_e, g) in summary if g != "ALL"})
 
-    def row(summ, nl, es, label, colour):
-        r = summ.get((es, args.gene))
-        if not r or es not in nl:
-            return None
-        return (label, [100 * x for x in nl[es]],
-                100 * float(r[f"diff_{args.cls}"]),
-                float(r[f"p_{args.cls}"]), colour, int(r["informative"]),
-                num(r.get("effective_events")))
+    def rows_for(cls):
+        nulls = read_null(args.null, args.gene, cls)
+        if not nulls:
+            return None, 0
 
-    rows = [row(summary, nulls, "nonsynonymous", "nonsynonymous, all hits",
-                BLUE)]
-    if args.internal_summary and args.internal_null:
-        rows.append(row(read_summary(args.internal_summary),
-                        read_null(args.internal_null, args.gene, args.cls),
-                        "nonsynonymous", "nonsynonymous, internal hits only",
-                        BLUE))
-    rows.append(row(summary, nulls, "synonymous",
-                    "synonymous, all hits (control)", GREY))
-    rows = [r for r in rows if r]
+        def row(summ, nl, es, label, colour):
+            r = summ.get((es, args.gene))
+            if not r or es not in nl:
+                return None
+            return (label, [100 * x for x in nl[es]],
+                    100 * float(r[f"diff_{cls}"]), float(r[f"p_{cls}"]),
+                    colour, int(r["informative"]),
+                    num(r.get("effective_events")))
 
-    fig = plt.figure(figsize=(10, 6.4))
-    grid = fig.add_gridspec(len(rows), 2, width_ratios=[1.15, 1],
-                            wspace=0.22, hspace=0.95, top=0.85, bottom=0.2)
-    ax_a = fig.add_subplot(grid[:, 0])
+        rows = [row(summary, nulls, "nonsynonymous",
+                    "nonsynonymous, all hits", BLUE)]
+        if internal:
+            rows.append(row(internal,
+                            read_null(args.internal_null, args.gene, cls),
+                            "nonsynonymous",
+                            "nonsynonymous, internal hits only", BLUE))
+        rows.append(row(summary, nulls, "synonymous",
+                        "synonymous, all hits (control)", GREY))
+        return [r for r in rows if r], len(nulls.get("nonsynonymous", []))
+
+    per_class = []
+    for cls in classes:
+        rows, n_perm = rows_for(cls)
+        if not rows:
+            print(f"error: no draws for {args.gene} in {args.null}; was it "
+                  f"in --null_draws_genes?", file=sys.stderr)
+            return 1
+        per_class.append((cls, rows, n_perm))
+    n_b = len(per_class[0][1])
+
+    ### One column per class: the all-genes scatter on top, the gene's
+    ### nulls below it.
+    fig = plt.figure(figsize=(5.2 * len(classes), 4.4 + 1.6 * n_b))
+    grid = fig.add_gridspec(1 + n_b, len(classes),
+                            height_ratios=[3.0] + [1] * n_b,
+                            wspace=0.25, hspace=0.7, top=0.9, bottom=0.1)
     labels = {g for g in args.label.split(",") if g}
-    panel_a(ax_a, summary, args.cls, args.gene, labels, n_perm)
-    axes_b = [fig.add_subplot(grid[i, 1]) for i in range(len(rows))]
-    for ax in axes_b[1:]:
-        ax.sharex(axes_b[0])
-    panel_b(axes_b, rows, args.cls)
-    axes_b[0].set_title(f"B   {args.gene} against its permutation null "
-                        f"(grey)",
-                        loc="left", fontsize=10.5, color=INK,
-                        fontweight="bold", pad=16)
-    title = args.title or (f"Coding changes in {args.gene} are followed by "
-                           f"more {class_label(args.cls)} in the subtree "
-                           f"below, relative to sibling subtrees")
-    fig.suptitle(title, x=0.06, ha="left", fontsize=11.5, color=INK, y=0.97)
+    letters = "ABCDEFGH"
+    legend = None
+    for j, (cls, rows, n_perm) in enumerate(per_class):
+        ax_a = fig.add_subplot(grid[0, j])
+        legend = panel_a(ax_a, summary, cls, args.gene, labels, n_perm,
+                         f"{letters[j]}   {class_label(cls)}, all "
+                         f"{n_genes} genes")
+        axes_b = [fig.add_subplot(grid[1 + i, j]) for i in range(n_b)]
+        for ax in axes_b[1:]:
+            ax.sharex(axes_b[0])
+        panel_b(axes_b, rows, cls)
+        axes_b[0].set_title(f"{letters[len(classes) + j]}   {args.gene} "
+                            f"against its permutation null (grey)",
+                            loc="left", fontsize=10.5,
+                            color=INK, fontweight="bold", pad=16)
+    fig.legend([h for h, _n in legend], [n for _h, n in legend],
+               loc="lower center", bbox_to_anchor=(0.5, 0.0),
+               ncol=len(legend), frameon=False, fontsize=8.5,
+               columnspacing=1.8, handlelength=2.2)
+
+    def direction(cls, rows):
+        return ("more " if rows[0][2] > 0 else "less ") + class_label(cls)
+    title = args.title or (
+        f"Coding changes in {args.gene} are followed by "
+        + " and ".join(direction(c, r) for c, r, _n in per_class)
+        + " in the subtree below, relative to sibling subtrees")
+    fig.suptitle(title, x=0.06, ha="left", fontsize=11.5, color=INK,
+                 y=0.975)
     fig.savefig(args.output, dpi=200, bbox_inches="tight")
     print(f"wrote {args.output}", file=sys.stderr)
     return 0
