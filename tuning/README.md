@@ -1827,9 +1827,6 @@ clades include a strain you would not call a natural population.
 
 ### 12. Test a candidate mechanism genotype-first
 
-**Not yet run on real data.** Everything below describes the design and the
-synthetic checks; there are no worked numbers from a tree yet.
-
 Step 8 showed why a repair-gene hit on a split's defining branch proves
 nothing: that branch carries every lineage-defining mutation, so co-occurrence
 is guaranteed. The evidence that would count is independent recurrence -- the
@@ -1841,8 +1838,14 @@ splits:
 gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
     --genes tb_repair_genes.txt --fold --max_branch_length 250 \
+    --permutations 10000 \
     --output_events hit_events.tsv --output_summary hit_summary.tsv
 ```
+
+`--permutations 10000` because the smallest p a permutation test can give is
+1 over the number of permutations plus one, and with dozens of genes the bar
+for any one of them is far below 0.001: 0.05 over 56 genes is 0.0009. The
+default of 1,000 cannot reach it.
 
 It finds every branch with a coding SNV in a listed gene, classifies it
 against the codon as it stood in the *parent's* genome (not the reference,
@@ -1901,6 +1904,44 @@ one that raises `CA|GT` cancel there, so treat it as a screen. With dozens of
 genes and six or twelve classes, a handful of per-class p < 0.05 is expected
 by chance -- trust consistent results across classes and effect sets over a
 single small p.
+
+*Worked example.* `tb_repair_genes.txt` resolves to 56 genes and 42,433
+hit events, 25,233 nonsynonymous and 17,200 synonymous, of which 18,185 and
+13,857 were informative; about 60% of those are terminal. Then the cleaner
+check on internal hits only:
+
+```
+gene_hit_contrasts.py ... --permutations 10000 --top_branch exclude \
+    --output_events hit_events_internal.tsv --output_summary hit_summary_internal.tsv
+```
+
+The synonymous control is clean in both runs: genes with omnibus p < 0.05
+number 3 and 2, against 2.8 expected by chance, and per-class p < 0.05 come
+to 17 and 12 against 16.8. The nonsynonymous hits show about twice the chance
+count, 9 genes and 37 class tests with every hit counted, and 5 and 26 with
+internal hits only. Most of that excess points one way, more `CT|GA` below
+the hit:
+
+| gene | events | `CT\|GA` shift, all hits | p | internal hits | shift | p |
+|---|---|---|---|---|---|---|
+| `dnaE2` | 1,109 | +0.93 points | 0.0006 | 218 | +1.00 | 0.006 |
+| `udgB` | 376 | +2.11 | 0.0001 | 75 | +1.83 | 0.10 |
+| `ogt` | 284 | +1.82 | 0.008 | 57 | +1.47 | 0.12 |
+| `lexA` | 254 | +2.80 | 0.04 | 55 | +3.91 | 0.013 |
+
+Only `dnaE2` clears the bar for 56 genes on the omnibus test, at p 0.0001,
+the smallest 10,000 permutations can give, and its own synonymous hits are
+flat (`CT|GA` +0.25 points, p 0.44). It is also the one that keeps its full
+shift with terminal hits dropped, on hits where per-genome error cannot
+reach. `udgB`'s `CT|GA` p of 0.0001 clears the bar too, but as one class of
+six, its omnibus p is 0.014, and its internal hits alone do not reach
+significance. That is the shape of evidence step 8 could not provide: over a
+thousand independent hits, each against its own siblings, so no single
+lineage carries it. `udgB` and `ogt`, whose loss would be expected to raise
+C>T and G>A, shift the same way by more but on fewer hits, and keep the
+direction but lose significance when the terminal hits are dropped; they are
+worth a closer look, not a claim. The shift is small throughout: `CT|GA` is half of all
+mutations, so +0.93 points is a 2% relative change.
 
 **What it cannot see.** The tree carries SNVs only, so frameshifts,
 deletions and IS6110 insertions -- the commonest ways a gene is actually lost
