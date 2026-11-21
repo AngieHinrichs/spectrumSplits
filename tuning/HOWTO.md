@@ -21,7 +21,9 @@ flowchart TD
     subgraph clean["Clean the tree"]
         s1["1. Profile the raw tree<br/>choose a divergence threshold"]
         s2["2. Prune divergent genomes<br/>and laboratory strains"]
+        pruned[("tree.pruned.pb.gz")]
         s3["3. Mask regions under selection<br/>or prone to misalignment"]
+        masked[("tree.pruned.masked.pb.gz")]
         s4{"4. Re-profile: do hotspots<br/>outside the mask remain?"}
     end
 
@@ -33,6 +35,7 @@ flowchart TD
 
     subgraph screen["Run and screen"]
         s8["8. Search with bootstrap,<br/>screen one-class and one-site drivers"]
+        spectra[("spectra.tsv, splits.log")]
         s9["9. Rule out a sequencing-quality<br/>gradient"]
         s10["10. Rank splits by size-matched<br/>margin and bootstrap support"]
     end
@@ -43,9 +46,6 @@ flowchart TD
         s13["13. Do the spectra show in<br/>resistance mutations?"]
     end
 
-    pruned[("tree.pruned.pb.gz")]
-    masked[("tree.pruned.masked.pb.gz")]
-    spectra[("spectra.tsv, splits.log")]
     clades[("split_clade_samples.tsv")]
     change["After a change to the tree:<br/>replicate and match"]
 
