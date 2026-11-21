@@ -1858,6 +1858,131 @@ On this tree, in 3 minutes, nothing in it reaches its bar: one gene in each
 effect set has omnibus p < 0.05 (`nrdE` nonsynonymous, `dcd` synonymous), as
 chance predicts.
 
+**Pathways: gene sets and joint tests.** A single gene often has too few
+hits to show anything, and `ALL` mixes genes whose loss should do opposite
+things, so they cancel. A pathway sits between the two, and fewer pathways
+than genes means a lower multiple-testing bar. `--gene_sets` groups the
+genes, and every gene and every pathway is then permuted *together*: each
+hit branch gets one random number per permutation, shared by every test
+that contains it, and each test maps it through its own size-biased draw.
+Each test's own null is unchanged (a one-gene set is permuted with exactly
+its gene's draws), but the tests are now coupled, which buys four things:
+
+- **The count of significant genes**, judged against the count expected
+  with every gene permuted together rather than a binomial. Genes are not
+  independent: one branch can hit two of them, and nested hits share
+  subtrees.
+- **A family-wise bar**, the p the list's best gene reaches by chance only
+  5% of the time (min-p), in place of 0.05 over the number of genes.
+- **A pooled test per pathway:** do its genes shift the spectrum the same
+  way? It is the gene test run on the pathway's hits together, with a
+  branch that hits two member genes counted once and every member's hit
+  mutations removed from it.
+- **An any-direction test per pathway:** the sum of the member genes'
+  omnibus statistics, each scaled by its own null mean so that a gene with
+  few events doesn't dominate. Genes pushing opposite ways cancel in the
+  pooled test but not here.
+
+On simulated trees, 300 with no effect gave p < 0.05 in 2% (count), 4%
+(pooled) and 5% (any-direction). Two genes shifting the same way were found
+by the pooled test in 97.5% of 40 trees. Two shifting opposite ways were
+found any-direction in all 40 and pooled in 5%: they cancel there, as they
+should. Those simulations first ran at 8% to 10% under no effect; the cause
+was the simulation, not the test. It drew hit children uniformly where the
+test assumes a size-biased draw, and gave two simulated genes clashing node
+IDs. Both are fixed, and the context calibration above was remeasured after
+the fix.
+
+**The heaviest-branch check.** The weights n1 n2 / (n1 + n2) grow with
+subtree size, so a hit on a deep, lineage-defining branch, compared with a
+single sibling, can carry a whole test, and that is one lineage against
+another. Every gene and pathway row therefore reports the share of its
+weight on its two heaviest events, its shift without them, and how much of
+the shift that keeps. The report marks a gene among those clearing the bar
+or the leads, or a pathway with pooled p below 0.05, as HEAVY when under
+half is kept. This automates the check `dnaE2` was given by hand above.
+Capping the weights instead, for example by random-effects weighting, was
+considered and not adopted: the current weights are efficient when an
+effect is real, and the check shows when they are not doing what they
+should.
+
+*Worked example.* The repair and replication lists together, plus
+`Rv3395c` (`imuA'`) and `Rv3394c` (`imuB`), the rest of `dnaE2`'s mutasome,
+and `Rv3202c` (`adnA`) and `Rv3201c` (`adnB`), the AdnAB helicase-nuclease:
+77 genes in the 13 pathways of `tb_repair_pathways.tsv`, 10,000 shared
+permutations, in 14 minutes and 1.1 GB.
+
+The per-gene results are those of the separate runs, and `dnaE2` is still
+the only gene to clear its bar, now 0.05 / 77. Its two heaviest branches
+carry 16% of its weight, and without them it keeps all of its shift
+(`CT|GA` +1.11 points). The joint count:
+
+| reading | effect set | genes at p < 0.05 | expected, joint null | p |
+| --- | --- | --- | --- | --- |
+| all hits | synonymous | 5 of 77 | 3.8 | 0.35 |
+| all hits | nonsynonymous | 11 of 77 | 3.8 | 0.008 |
+| internal hits | synonymous | 4 | 3.8 | 0.50 |
+| internal hits | nonsynonymous | 7 | 3.8 | 0.13 |
+
+The excess is real with every hit counted, but weaker than the binomial says
+(12 genes, P = 0.0004), and it does not hold on internal hits alone. The
+family-wise bar came out at 0.0007, essentially Bonferroni's 0.00065: the
+genes behave almost independently, so min-p gains nothing here.
+
+Four leads are HEAVY: `Rv3202c` (`adnA`, 87% of its weight in two branches,
+none of its shift kept), `nrdE` (69%, 7% kept), `Rv3395c` (`imuA'`, 59%,
+17% kept) and `lexA` (47%, 28% kept). The other seven leads are not.
+
+The pathways, nonsynonymous:
+
+| pathway | pooled p, all hits | largest shift | kept without top 2 | pooled p, internal hits | any-direction p, all / internal |
+| --- | --- | --- | --- | --- | --- |
+| recombination and SOS | 0.0017 | `CT\|GA` −2.19 pts | 16%, HEAVY | 0.0021 (16%, HEAVY) | 0.081 / 0.071 |
+| Y-family translesion (`dinX`, `dinP`) | 0.022 | `CT\|GA` +0.91 pts | 70% | 0.057 (71%) | 0.036 / 0.14 |
+| mutasome (`dnaE2`, `imuA'`, `imuB`) | 0.089 | `TC\|AG` +0.67 pts | 55% | 0.11 (37%) | 0.0003 / 0.028 |
+| dNTP supply | 0.43 | | | 0.31 | 0.024 / 0.007 |
+| single-strand annealing (`recBCD`) | 0.76 | | | 0.80 | 0.37 / 0.46 |
+
+The other pathways have pooled p of 0.068 or more.
+
+Recombination passes the 13-pathway bar (0.0038) on both readings, and it
+is a lineage contrast. Two branches carry 46% of its weight, 56% on
+internal hits, and nearly all of its shift. Both are `adnA` missense changes
+at the tree's deepest binary splits, each compared with a single sibling:
+`node_13967` (A748V) is lineages 2, 3 and 4 against lineage 1, and
+`node_14005` (E902K) is lineage 2 against lineage 3. Lineage 1 against the
+rest is the search's strongest split (step 8), so a hit on that branch
+inherits the largest spectrum difference on the tree. The other 6,396
+branches add under 0.1 point between them. Each of those two `adnA`
+branches is one comparison of two lineages, and it carries every other
+mutation that separates them, so the data can't attribute the difference
+to `adnA`.
+
+The grouping matters, and both versions belong in any report of this. The
+first draft had RecBCD in recombination and no AdnAB, following *E. coli*.
+In mycobacteria, AdnAB resects DNA ends for RecA-dependent recombination
+and RecBCD works in RecA-independent single-strand annealing (Gupta et al.
+2011, *Mol Microbiol* 79:316, in *M. smegmatis*), so the pathways were
+regrouped. Under the first grouping, recombination's pooled p was 0.40; the
+regrouping brought the two `adnA` branches in.
+
+The Y-family polymerases' `CT|GA` rise is the one pathway lead that doesn't
+rest on its heaviest branches, and it runs the same way as `dnaE2`'s. At
+0.022 it does not clear the 13-pathway bar. The mutasome's any-direction p
+of 0.0003 is mostly `dnaE2`'s own result. `imuA'` shares `dnaE2`'s `CG|GC`
+fall, but on two branches (HEAVY above), so that is no support either.
+
+The synonymous rows are not all clean. Replisome's pooled p is 0.045 on all
+hits and 0.035 on internal hits, HEAVY on both (33% and 44% kept), and nucleotide
+excision's any-direction p is 0.021 and 0.040. Across 13 pathways, two
+statistics and two readings, a few nominal results are expected by chance,
+but a nonsynonymous result for those two pathways should be read against
+its own synonymous rows.
+
+So on this tree the pathway view adds little to `dnaE2`. Its strongest
+signal was a lineage contrast that the heaviest-branch check catches, and
+its one robust lead points the same way as `dnaE2` but is only nominal.
+
 **A figure.** `plot_gene_hits.py` shows one gene against the rest of its list
 and against its own null. It needs the permutation draws, which
 `gene_hit_contrasts.py` writes for the genes named in `--null_draws_genes`,
@@ -1915,15 +2040,19 @@ gene_hit_contrasts.py --calibrate_context 200 --fold --permutations 200
 
 | Scenario, 96 classes | shape, every class | shape, C>T | within-class, every context | C>T class test |
 | --- | --- | --- | --- | --- |
-| no shift | 5.4% | 4.5% | 5.1% | 7.0% |
-| C>T 3× in proportion | 5.7% | 3.5% | 6.7% | 100% |
-| one C>T context raised | 20% | 100% | 6.4% | 94% |
+| no shift | 4.5% | 3.5% | 5.0% | 6.5% |
+| C>T 3× in proportion | 6.1% | 7.5% | 6.8% | 100% |
+| one C>T context raised | 21% | 100% | 6.8% | 96% |
 
 Each cell is the share of p < 0.05, 200 trees and 200 permutations each, in
 40 seconds. The shape test holds near 5% with no shift and under a
 proportional shift, and finds a one-context shift every time. Without
-`--fold` the 192 classes behave the same: 5.4% shape p with no shift, 2.5% for
+`--fold` the 192 classes behave the same: 5.5% shape p with no shift, 5.0% for
 C>T's shape under the proportional shift, and 98% power for one context.
+(These figures are from simulated trees that draw each hit child with the
+size-biased weight the test assumes. An earlier version drew it uniformly,
+and gave 5.4% shape p with no shift and 3.5% for C>T's shape under the
+proportional shift.)
 
 *Worked example*, `dnaE2`, 10,000 permutations, about 25 seconds and 1 GB per run. The
 class result reproduces: `CG|GC` p 0.0001 and `CT|GA` p 0.0003 (internal

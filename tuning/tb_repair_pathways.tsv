@@ -1,0 +1,127 @@
+# M. tuberculosis repair, replication and dNTP genes grouped by pathway, for
+# gene_hit_contrasts.py --gene_sets.  A DRAFT for review: the groupings
+# follow the section headings of tb_repair_genes.txt and
+# tb_replication_genes.txt and the standard M. tuberculosis repair
+# literature, and some genes could defensibly sit in another set.  Fix the
+# groupings BEFORE looking at per-gene results, or the set tests inherit
+# the selection.
+#
+# Format: gene<TAB>set, one gene per line, '#' comments allowed.  Names must
+# be the ones --genes tests; a name --genes does not test is reported and
+# left out.  A gene may be listed under more than one set.
+#
+# To test every pathway in one run, give --genes all three lists together:
+#   cat tb_repair_genes.txt tb_replication_genes.txt > repair_replication.txt
+#   printf 'Rv3395c\nRv3394c\nRv3202c\nRv3201c\n' >> repair_replication.txt
+# Rv3395c (imuA') and Rv3394c (imuB) are the other two genes of dnaE2's
+# mutasome (Warner et al. 2010, PNAS 107:13093).  Rv3202c (adnA) and
+# Rv3201c (adnB) encode AdnAB, the helicase-nuclease that resects DNA ends
+# for RecA-dependent recombination in mycobacteria.  NCBI's NC_000962.3
+# names all four only by locus tag, and none is in tb_repair_genes.txt.
+
+# --- nucleotide-pool sanitation: Nudix hydrolases, dUTPase, MazG -----------
+mutT1	sanitation
+mutT2	sanitation
+mutT3	sanitation
+mutT4	sanitation
+Rv1021	sanitation	# mazG; NCBI names it only by locus tag
+nudC	sanitation
+dut	sanitation
+
+# --- ribonucleotide removal -------------------------------------------------
+Rv2228c	ribonucleotide_excision	# RNase HI domain (rnhC); locus tag only in NCBI
+rnhB	ribonucleotide_excision
+
+# --- alkylation damage: direct reversal and alkylbase glycosylases -----------
+ogt	alkylation
+alkA	alkylation
+alkB	alkylation
+tagA	alkylation
+
+# --- base excision repair: glycosylases and AP endonucleases ----------------
+mutY	base_excision
+ung	base_excision
+udgB	base_excision
+nth	base_excision
+nei	base_excision
+Rv2464c	base_excision	# nei1; NCBI's nei is Rv3297, nei2
+fpg	base_excision
+Rv0944	base_excision	# fpg2; locus tag only in NCBI
+xthA	base_excision
+end	base_excision
+
+# --- mismatch repair surrogate (NucS); a set of one is its gene's own test --
+Rv1321	mismatch	# nucS (EndoMS); locus tag only in NCBI
+
+# --- nucleotide excision repair ---------------------------------------------
+uvrA	nucleotide_excision
+uvrB	nucleotide_excision
+uvrC	nucleotide_excision
+uvrD1	nucleotide_excision
+uvrD2	nucleotide_excision
+mfd	nucleotide_excision
+
+# --- error-prone mutasome: DnaE2 with ImuA' and ImuB -------------------------
+dnaE2	mutasome
+Rv3395c	mutasome	# imuA'; locus tag only in NCBI
+Rv3394c	mutasome	# imuB; locus tag only in NCBI
+
+# --- Y-family translesion polymerases ----------------------------------------
+dinX	translesion_Y
+dinP	translesion_Y
+
+# --- replisome: replicative polymerase, clamp, proofreading, priming -------
+dnaE1	replisome
+dnaN	replisome
+dnaQ	replisome
+polA	replisome
+ligA	replisome
+dnaA	replisome
+dnaB	replisome
+dnaG	replisome
+dnaZX	replisome
+ssb	replisome
+priA	replisome
+topA	replisome
+
+# --- homologous recombination and the SOS response -------------------------
+# In mycobacteria, DNA ends are resected for RecA-dependent recombination by
+# AdnAB, not RecBCD (Gupta et al. 2011, Mol Microbiol 79:316, in
+# M. smegmatis).
+recA	recombination_SOS
+Rv3202c	recombination_SOS	# adnA; locus tag only in NCBI
+Rv3201c	recombination_SOS	# adnB; locus tag only in NCBI
+recF	recombination_SOS
+recG	recombination_SOS
+recN	recombination_SOS
+recO	recombination_SOS
+recR	recombination_SOS
+ruvA	recombination_SOS
+ruvB	recombination_SOS
+ruvC	recombination_SOS
+radA	recombination_SOS
+lexA	recombination_SOS
+
+# --- single-strand annealing: RecBCD, RecA-independent in mycobacteria -----
+# (Gupta et al. 2011, as above.)
+recB	single_strand_annealing
+recC	single_strand_annealing
+recD	single_strand_annealing
+
+# --- non-homologous end joining ---------------------------------------------
+mku	end_joining
+ligD	end_joining
+ligC	end_joining
+ligB	end_joining
+
+# --- dNTP supply --------------------------------------------------------------
+nrdE	dNTP_supply
+nrdF1	dNTP_supply
+nrdF2	dNTP_supply
+nrdH	dNTP_supply
+nrdI	dNTP_supply
+nrdR	dNTP_supply
+nrdZ	dNTP_supply
+ndkA	dNTP_supply
+dcd	dNTP_supply
+tmk	dNTP_supply

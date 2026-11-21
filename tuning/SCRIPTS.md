@@ -722,6 +722,12 @@ Options:
   ones with `--fold`, the 192 forward-strand ones without (needs numpy; see
   step 12). `--mask` gives the BEDs the tree was masked with, so masked
   flanks are unknown.
+- `--gene_sets FILE`: group the genes into pathways, one `gene<TAB>set` per
+  line ([`tb_repair_pathways.tsv`](#tb_repair_pathwaystsv) is the MTBC
+  draft). Every gene and every set is then permuted together, in both
+  readings, and the run adds the joint tests (step 12; needs numpy). Names
+  must be ones `--genes` tests; others are reported and left out.
+- `--joint`: the joint count and family-wise bar without gene sets.
 - `--calibrate_context N`: instead of testing a tree, simulate N small trees
   in each of three scenarios and report how often the context tests reach
   p < 0.05: no shift, C>T raised 3× in proportion across its contexts, and
@@ -740,7 +746,13 @@ reading, `_control` for the control list):
 - `hit_summary.tsv`, `hit_summary_internal.tsv`, `hit_summary_control.tsv`:
   one row per gene and effect set, plus a pooled `ALL`, with event counts,
   `effective_events`, `diff_<class>` and `p_<class>`, and `omnibus` and
-  `omnibus_p`. Step 12 says how to read them.
+  `omnibus_p`. Step 12 says how to read them. The last columns are the
+  heaviest-events check: `top_event_share` and `top2_event_share`, the
+  share of the test's weight on its heaviest one and two events;
+  `diff_without_top2_<class>`, the shift with those two dropped;
+  `retained_without_top2`, how much of the shift that keeps (1 unchanged,
+  0 or less gone, in the omnibus metric); and `heavy`, `yes` when under 50%
+  is kept.
 - `hit_null_draws.tsv` and `hit_null_draws_internal.tsv`, with
   `--null_draws_genes`.
 - With `--context_genes`: `hit_summary_context.tsv` and
@@ -748,6 +760,16 @@ reading, `_control` for the control list):
   `shape_p_<class>` and `shape_omnibus_p`, and `hit_context.tsv` (and
   `_internal`), one row per test and context. The events file still reports
   the 6 classes, or the 12 types.
+- With `--gene_sets` or `--joint`: `hit_joint.tsv` (and `_internal`), one
+  row per gene and effect set from the joint shuffle, with its omnibus p and
+  `familywise_p`, the min-p-adjusted p; and with `--gene_sets`,
+  `hit_sets.tsv` (and `_internal`), one row per set and effect set, with
+  `genes`, `genes_with_events`, `events`, `informative`,
+  `effective_events`, the pooled `diff_<class>` and `p_<class>`,
+  `omnibus_p` (pooled, directional), `any_direction_p`, the heaviest-events
+  check (`top2_event_share`, `retained_without_top2`, `heavy`) and
+  `members`. The report marks a set HEAVY only where its pooled p is below
+  0.05; the `heavy` column is filled for every set.
 
 The report on stdout, in order:
 
@@ -763,11 +785,21 @@ The report on stdout, in order:
    its own synonymous hits, with events and effective events.
 4. The leads: genes reaching p < 0.05 without clearing the bar. Chance alone
    gives about one in twenty.
-5. With `--context_genes`, the shape p values per gene and reading.
+5. With `--gene_sets` or `--joint`, GENE SETS AND JOINT TESTS, per reading
+   and effect set, synonymous first: the count of genes at p < 0.05 against
+   the count expected with every gene permuted together, the family-wise
+   bar against 0.05 over the number of genes and the genes clearing it, and
+   per set the pooled p, its largest class shift and the any-direction p.
+6. With `--context_genes`, the shape p values per gene and reading.
 
 It also says when the smallest p is the permutation floor (more permutations
 could only lower it), when the bar is below that floor (no gene could clear
-it), and when a test rests on few effective events. The number of
+it), and when a test rests on few effective events. Each gene that clears the
+bar gets its shift without its two heaviest branches, and any gene or set
+whose shift doesn't survive that is marked HEAVY. The weights grow with
+subtree size, so a hit on a deep, lineage-defining branch compared with a
+single sibling can carry a whole test; it is then one lineage against
+another. The number of
 permutations is read from the p-values, which are (k + 1) / (permutations +
 1). Chance counts use a binomial tail at 5%; neither they nor the bar correct
 for the six classes being correlated, so read them as guides.
@@ -775,13 +807,22 @@ for the six classes being correlated, so read them as guides.
 `--selftest` checks codon effects on both strands (including ancestral codon
 state and two changes in one codon), checks the cut-subtree bookkeeping
 against brute force, and simulates star-of-polytomy trees for null
-calibration and power. In a larger run of the same simulation, 300 null trees
-gave per-class p < 0.05 at 4.5% and omnibus at 4.0%. It checks the report on
-a constructed summary, and that each reading writes its files and reproduces
-whatever ran before it. With numpy it also checks the context test: the
+calibration and power. In a larger run of the same simulation, 1,000 null
+trees of 100 hit subtrees each gave omnibus p < 0.05 at 4.9%. It checks the
+report on a constructed summary, and that each reading writes its files and
+reproduces whatever ran before it. With numpy it checks the joint tests: a
+one-gene set is permuted with exactly its gene's draws; under no effect the
+count and both set tests stay near 5% (on 300 trees: 2%, 4% and 5%); two
+genes shifting the same way are found by the pooled test; and two shifting
+opposite ways cancel there but are found by the any-direction test. With numpy it also checks the context test: the
 summed contexts equal the 6-class statistic for the same events; the shape
 test stays near 5% with no effect and with a whole-class proportional shift;
 and it finds a shift in one context.
+
+The simulated trees draw each hit child with the size-biased weight the test
+assumes, so the hit child is exchangeable with its siblings under no effect.
+(Before November 2026 they drew it uniformly; the calibration figures in
+step 12 were remeasured after the change.)
 
 ### `control_genes.py`
 
@@ -882,7 +923,8 @@ forward-strand opportunity counts fold onto the 32.
 
 Four lists of *M. tuberculosis* loci ship with these scripts, for
 `annotate_sites.py --regions` and `--highlight` and `gene_hit_contrasts.py
---genes`. Two are masked and two are deliberately not. Run [`check_gene_names.py`](#check_gene_namespy) on any of
+--genes`. Two are masked and two are deliberately not. A fifth file groups
+the unmasked genes into pathways for `gene_hit_contrasts.py --gene_sets`. Run [`check_gene_names.py`](#check_gene_namespy) on any of
 them, or on a list of your own, against the annotation you will use.
 
 ### `tb_resistance_genes.txt`, and a caution
@@ -938,6 +980,31 @@ separate so that each list is its own family in step 12: adding its 17 genes
 to the repair list would raise every repair gene's bar. `gyrA`, `gyrB`,
 `thyA` and `thyX` are in the resistance list, so they are masked and carry no
 hits. Every name resolves against NC_000962.3 (`check_gene_names.py`).
+
+### `tb_repair_pathways.tsv`
+
+`tb_repair_pathways.tsv` assigns the 73 genes of `tb_repair_genes.txt` and
+`tb_replication_genes.txt`, plus four that NCBI's NC_000962.3 names only by
+locus tag, to 13 pathways. The four are `Rv3395c` (`imuA'`) and `Rv3394c`
+(`imuB`), the rest of `dnaE2`'s mutasome, and `Rv3202c` (`adnA`) and
+`Rv3201c` (`adnB`), the AdnAB end-resection helicase-nuclease. The pathways
+are:
+
+- nucleotide-pool sanitation, ribonucleotide excision, alkylation, base
+  excision, the mismatch surrogate NucS and nucleotide excision;
+- the `dnaE2`/`imuA'`/`imuB` mutasome and the Y-family translesion
+  polymerases;
+- the replisome;
+- RecA-dependent recombination and SOS, with AdnAB;
+- single-strand annealing, with RecBCD. In mycobacteria RecBCD works in
+  this RecA-independent pathway, not in recombination (Gupta et al. 2011,
+  *Mol Microbiol* 79:316, in *M. smegmatis*).
+- end joining and dNTP supply.
+
+It is a draft for review: some genes could defensibly sit in another set,
+and the groupings should be settled before looking at per-gene results.
+None of the four locus-tag genes is in a list; add them to `--genes` as the
+file's header shows.
 
 ### `tb_alignment_loci.txt`
 

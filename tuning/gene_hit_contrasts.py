@@ -71,6 +71,13 @@ Statistics, per test (one gene and one effect set, plus a pooled ALL row):
                  test is worth.  A handful means the result is about those
                  few branches, whatever the event count.
 
+Heaviest events.  The weights grow with subtree size, so a hit on a deep,
+lineage-defining branch, compared with a single sibling, can carry a whole
+test, and that is one lineage against another.  Every summary row (and set
+row) reports the heaviest one and two events' share of the weight, the
+shift with the two dropped, and how much of the shift that keeps; a row
+keeping under half is marked heavy, and the report says so.
+
 No rate test.  A mutator should also raise the mutation count below the hit,
 but this permutation cannot test that honestly.  The size-biased draw gets
 the chance of each child carrying the hit right, but not the extra branch
@@ -105,6 +112,33 @@ IS6110 insertions -- the commonest ways a gene is actually lost -- are
 invisible here.  Promoter changes are not tested.  And the ALL row pools
 genes whose mechanisms differ: a gene that raises CT|GA and one that raises
 CA|GT cancel there.  ALL is a screen.  The evidence is in the per-gene rows.
+
+Gene sets and joint tests (--gene_sets, --joint).  A single gene often has
+too few hits, and ALL mixes genes whose loss should do opposite things.
+--gene_sets groups the genes into pathways (gene<TAB>set), and every gene
+and every set is then permuted together: each hit branch gets one random
+number per permutation, shared by every test that contains it, mapped
+through that test's own size-biased draw.  That adds, per reading and
+effect set:
+
+  per set, pooled   the set's hits as one test: do its genes shift the
+                    spectrum the same way?  Genes pushing opposite ways
+                    cancel here.
+  per set, any      the sum of the member genes' omnibus statistics, each
+                    scaled by its own null mean: does anything happen in
+                    the set, in any direction?
+  count             how many genes reach omnibus p < 0.05, against the
+                    count expected with every gene permuted together, so
+                    their dependence (a branch hitting two genes, nested
+                    hits) is in the null, in place of a binomial.
+  family-wise bar   the p the list's best gene reaches by chance only 5%
+                    of the time (min-p over genes), in place of 0.05 over
+                    the number of genes.
+
+Written to PREFIX_sets.tsv and PREFIX_joint.tsv (and _internal); the
+report adds a GENE SETS AND JOINT TESTS section.  --joint gives the count
+and the bar without sets.  Fix the sets before looking at per-gene results,
+or the set tests inherit the selection.
 
 Trinucleotide context (--context_genes).  For the genes named, in both
 readings, the same events, comparators and controls, counted in
@@ -237,6 +271,14 @@ def parse_args(argv=None):
                         "permutation's class shifts are written to "
                         "PREFIX_null_draws.tsv (and _internal), for "
                         "plot_gene_hits.py --prefix")
+    p.add_argument("--gene_sets", type=str, default=None,
+                   help="gene<TAB>set file grouping --genes into pathways: "
+                        "adds the joint tests, with every gene and set "
+                        "permuted together (needs numpy); see the module "
+                        "docstring")
+    p.add_argument("--joint", action="store_true",
+                   help="The joint tests without gene sets: the count of "
+                        "significant genes and the family-wise bar")
     p.add_argument("--context_genes", type=str, default=None,
                    help="Comma-separated genes from --genes to test again in "
                         "trinucleotide context classes: 96 folded with "
@@ -614,51 +656,104 @@ def permutation_test(preps, ncat, pbar, permutations, rng):
     return obs_d, p_class, o, p_omni, perm_d
 
 
-def run_test(tree, test_events, V, T, own, ncat, args, pbar, rng,
-             accumulator=None):
-    """Events for one test (they define the cut set), then the permutation."""
+def prepare_test(tree, test_events, V, T, own, ncat, args, top):
+    """One test's events, prepared: (rows, [(hit node, Prepared)]).
+
+    The events define the cut set.  Several genes can be hit on one branch;
+    within one test a branch is one event, with every hit mutation of every
+    gene in the test removed from its counts.
+    """
     hits = set(e["node"] for e in test_events)
     adj, nested = cut_adjustments(tree, V, T, hits, ncat)
     cap = args.max_branch_length
-    rows = []
-    preps = []
-    w0 = []
-    ### Several genes can be hit on one branch; within one test a branch is
-    ### one event, or the ALL row would count it twice.
-    seen = set()
+    by_node = {}
     for e in test_events:
-        h = e["node"]
-        if h in seen:
-            continue
-        seen.add(h)
+        by_node.setdefault(e["node"], []).append(e)
+    rows, items = [], []
+    for h, es in by_node.items():
         hit_vec = [0] * ncat
         if cap is None or tree.raw_len[h] <= cap:
-            for c in e["hit_cats"]:
-                hit_vec[c] += 1
-        row, prep = prepare_event(tree, h, hits, V, T, own, adj,
-                                  args.top_branch, ncat, hit_vec,
-                                  args.min_focal, args.min_comparator)
+            for e in es:
+                for c in e["hit_cats"]:
+                    hit_vec[c] += 1
+        row, prep = prepare_event(tree, h, hits, V, T, own, adj, top, ncat,
+                                  hit_vec, args.min_focal,
+                                  args.min_comparator)
         if row is None:
             continue
-        row.update({"node_id": tree.node_ids[h], "gene": e["gene"],
-                    "effect": e["effect"], "aa_changes": e["aa_changes"],
-                    "mutations": e["mutations"],
+        e = es[0]
+        genes_here = []
+        for x in es:
+            if x["gene"] not in genes_here:
+                genes_here.append(x["gene"])
+        row.update({"node_id": tree.node_ids[h],
+                    "gene": ",".join(genes_here),
+                    "effect": e["effect"],
+                    "aa_changes": ";".join(x["aa_changes"] for x in es),
+                    "mutations": ";".join(x["mutations"] for x in es),
                     "nested_under": tree.node_ids[nested[h]]
                     if h in nested else ""})
         rows.append(row)
         if prep is not None:
-            w0.append(prep.w[0])
-            ### With context classes, holding every event's draws until the end
-            ### costs gigabytes on a large list; the accumulator consumes
-            ### each event as it is built.
-            if accumulator is not None:
-                accumulator.add(prep)
-            else:
-                preps.append(prep)
+            items.append((h, prep))
+    return rows, items
+
+
+HEAVY_RETAINED = 0.5
+
+
+def robustness(preps, pbar, drop=2):
+    """How much of a test's shift survives dropping its heaviest events.
+
+    The weights n1 n2 / (n1 + n2) grow with subtree size, so an event on a
+    deep, lineage-defining branch can carry a test: compared with a single
+    sibling, it is one lineage against another.  Returns the heaviest
+    event's and the `drop` heaviest events' share of the weight, the shift
+    with those dropped, and `retained`, the observed shift's projection onto
+    itself after the drop (1: unchanged; 0 or less: gone), in the omnibus
+    metric.  None when there are too few events to drop any.
+    """
+    ev = [(p.w[0], p.wd[0]) for p in preps if p.w[0] > 0]
+    if len(ev) <= drop:
+        return None
+    ev.sort(key=lambda x: -x[0])
+    ncat = len(ev[0][1])
+    W = sum(w for w, _ in ev)
+    full = [sum(wd[k] for _, wd in ev) / W for k in range(ncat)]
+    Wr = sum(w for w, _ in ev[drop:])
+    rest = [sum(wd[k] for _, wd in ev[drop:]) / Wr for k in range(ncat)]
+    num_, den = 0.0, 0.0
+    for k in range(ncat):
+        if pbar[k] > 0:
+            num_ += rest[k] * full[k] / pbar[k]
+            den += full[k] * full[k] / pbar[k]
+    return {"top_share": ev[0][0] / W,
+            "top_drop_share": sum(w for w, _ in ev[:drop]) / W,
+            "full": full, "without": rest,
+            "retained": num_ / den if den > 0 else float("nan")}
+
+
+def run_test(tree, test_events, V, T, own, ncat, args, pbar, rng,
+             accumulator=None, robust_out=None):
+    """Events for one test (they define the cut set), then the permutation.
+    With robust_out, a list, the test's robustness() is appended to it."""
+    rows, items = prepare_test(tree, test_events, V, T, own, ncat, args,
+                               args.top_branch)
+    if robust_out is not None:
+        robust_out.append(robustness([p for _h, p in items], pbar))
+    w0 = [prep.w[0] for _h, prep in items]
     result = None
-    if w0:
-        result = accumulator.finish(pbar) if accumulator is not None else \
-            permutation_test(preps, ncat, pbar, args.permutations, rng)
+    if items:
+        if accumulator is not None:
+            ### With context classes, holding every event's draws costs
+            ### gigabytes on a large list; the accumulator consumes each
+            ### event in turn.
+            for _h, prep in items:
+                accumulator.add(prep)
+            result = accumulator.finish(pbar)
+        else:
+            result = permutation_test([p for _h, p in items], ncat, pbar,
+                                      args.permutations, rng)
     return rows, len(w0), result, effective_events(w0)
 
 
@@ -981,6 +1076,32 @@ def main():
                                 cats, args, "include", pbar,
                                 f"{pre}", set(), tag="_control")
 
+    ### The joint tests: every gene and set permuted together.
+    joint_results = []
+    if args.gene_sets or args.joint:
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            print("error: --gene_sets and --joint need numpy",
+                  file=sys.stderr)
+            return 1
+        sets = {}
+        if args.gene_sets:
+            sets, unmatched = read_gene_sets(args.gene_sets, genes)
+            print(f"{args.gene_sets}: {len(sets)} sets over "
+                  f"{sum(len(v) for v in sets.values())} tested genes",
+                  file=sys.stderr)
+            if unmatched:
+                print(f"  not among the genes tested (left out): "
+                      f"{', '.join(unmatched)}", file=sys.stderr)
+        for top in tops:
+            tag = "" if top == "include" else "_internal"
+            res, paths = joint_analysis(tree, events, genes, sets, V, T, own,
+                                        ncat, cats, args, top, pbar, pre, tag)
+            written += paths
+            joint_results.append(("all hits" if top == "include"
+                                  else "internal hits", res))
+
     ### The context tests, for the genes named.
     if ctx_genes:
         import trinucleotide as tn
@@ -1038,6 +1159,8 @@ def main():
         internal=f"{pre}_summary_internal.tsv" if internal else None,
         control=f"{pre}_summary_control.tsv" if ctrl else None)
     summary_report(main_rows, shim, sys.stdout, internal, ctrl)
+    if joint_results:
+        joint_report(joint_results, cats, 0.05, sys.stdout)
     if ctx_genes:
         context_report(pre, tops, cats, sys.stdout)
     return 0
@@ -1157,6 +1280,23 @@ def count_line(label, n, o, t, k, out):
           f"P = {fmt_p(binom_tail(k, t, 0.05))})", file=out)
 
 
+def robust_line(r, shown):
+    """The two-heaviest-events check for a gene's report entry."""
+    keep = num(r.get("retained_without_top2"))
+    if keep is None:
+        return "    (too few events to drop the heaviest two)"
+    share = num(r.get("top2_event_share")) or 0.0
+    shifts = ", ".join(
+        f"{c} {100 * num(r[f'diff_without_top2_{c}']):+.2f} pts"
+        for c in shown if num(r.get(f"diff_without_top2_{c}")) is not None)
+    line = (f"    without its 2 heaviest branches ({100 * share:.0f}% of the "
+            f"weight): {shifts}; {100 * keep:.0f}% of the shift kept")
+    if r.get("heavy") == "yes":
+        line += ("\n    HEAVY: one or two branches carry this result; check "
+                 "what lineage they define (step 8)")
+    return line
+
+
 def summary_report(main, args, out, internal=None, control=None):
     cls = classes_of(main)
     n_perm = permutations_from(main)
@@ -1265,6 +1405,7 @@ def summary_report(main, args, out, internal=None, control=None):
         if e is not None and e < FEW_EFFECTIVE:
             print(f"    WARNING: only {e:.0f} effective events; the result "
                   f"is about those few branches", file=out)
+        print(robust_line(r, shown), file=out)
 
     # 4. leads --------------------------------------------------------------
     leads = sorted((r for r in ns if bar <= num(r["omnibus_p"]) < 0.05),
@@ -1282,6 +1423,8 @@ def summary_report(main, args, out, internal=None, control=None):
         print(f"  {r['gene']:<10} omnibus p {fmt_p(num(r['omnibus_p'])):<8} "
               f"{c} {d:+.2f} points (p {fmt_p(p)}), {eff_str(r)} effective"
               f"{extra}", file=out)
+        if r.get("heavy") == "yes":
+            print(robust_line(r, [c]), file=out)
 
 
 def proportions(V):
@@ -1364,11 +1507,16 @@ def run_analysis(tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
                 + [f"diff_{c}" for c in cats] + [f"p_{c}" for c in cats]
                 + ["omnibus", "omnibus_p"])
     paths = [f"{prefix}_summary{tag}.tsv", f"{prefix}_events{tag}.tsv"]
+    rob_cols = (["top_event_share", "top2_event_share",
+                 "retained_without_top2", "heavy"]
+                + [f"diff_without_top2_{c}" for c in cats])
     ctx_out = null_out = None
     if context:
         import numpy
         sum_cols += [f"shape_p_{c}" for c in cats] + ["shape_omnibus_p"]
         np_rng = numpy.random.default_rng(args.seed)
+        ### Robustness is in the classes the summary reports.
+        pbar_cls = [sum(pbar[16 * k:16 * k + 16]) for k in range(nsum)]
         ### The context table is named for the reading, not the summary:
         ### PREFIX_context.tsv and PREFIX_context_internal.tsv.
         ctx_path = f"{prefix}{tag}.tsv"
@@ -1384,9 +1532,11 @@ def run_analysis(tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
                                  + [f"diff_{c}" for c in cats]) + "\n")
     print(f"testing {prefix}{tag or ''} ({top} top branch) ...",
           file=sys.stderr)
+    if not context:
+        pbar_cls = pbar
     with open(paths[1], "w") as ev_out, open(paths[0], "w") as sum_out:
         ev_out.write("\t".join(ev_cols) + "\n")
-        sum_out.write("\t".join(sum_cols) + "\n")
+        sum_out.write("\t".join(sum_cols + rob_cols) + "\n")
         for es in effect_sets:
             in_set = [e for e in events if e["effect"] in EFFECT_SETS[es]]
             for gene in genes + ["ALL"]:
@@ -1394,9 +1544,10 @@ def run_analysis(tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
                     [e for e in in_set if e["gene"] == gene]
                 accumulator = ContextAccumulator(
                     ncat, args.permutations, np_rng) if context else None
+                rob = []
                 rows, n_inf, result, n_eff = run_test(
                     tree, test_events, V, T, own, ncat, a, pbar, rng,
-                    accumulator)
+                    accumulator, robust_out=rob)
                 if gene != "ALL":
                     for r in rows:
                         fv = summary_vec(r["focal_vec"])
@@ -1437,6 +1588,8 @@ def run_analysis(tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
                             null_out.write("\t".join(
                                 [es, gene, str(i)] + [fmt(x) for x in pd])
                                 + "\n")
+                out += robust_fields(rob[0] if rob else None, summary_vec,
+                                     pbar_cls, nsum)
                 sum_out.write("\t".join(fmt(x) for x in out) + "\n")
                 if result is not None and gene == "ALL":
                     print(f"  {es} ALL: {n_inf} informative events, omnibus "
@@ -1445,6 +1598,337 @@ def run_analysis(tree, events, genes, V, T, own, ncat, cats, args, top, pbar,
         if fh:
             fh.close()
     return paths
+
+
+# --------------------------------------------------------------------------
+# gene sets and joint tests
+# --------------------------------------------------------------------------
+
+def read_gene_sets(path, genes):
+    """{set: [genes]} from a gene<TAB>set file, in file order, using the
+    names --genes tested; plus the entries that name no tested gene."""
+    tested = {g.lower(): g for g in genes}
+    sets, unmatched = {}, []
+    with smart_open(path) as fh:
+        for line in fh:
+            line = line.split("#", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            f = line.split("\t") if "\t" in line else line.split(None, 1)
+            if len(f) < 2:
+                continue
+            gene, name = f[0].strip(), f[1].strip()
+            g = tested.get(gene.lower())
+            if g is None:
+                unmatched.append(gene)
+                continue
+            members = sets.setdefault(name, [])
+            if g not in members:
+                members.append(g)
+    return sets, unmatched
+
+
+class _P(object):
+    """Just enough of a Prepared for robustness(): w and wd, as lists."""
+
+    def __init__(self, wd, w):
+        self.wd = [list(x) for x in wd]
+        self.w = list(w)
+
+
+class JointTest(object):
+    """One test in the joint shuffle: a gene or a gene set."""
+
+    def __init__(self, kind, name, members, rows, items, np):
+        self.kind, self.name, self.members = kind, name, members
+        self.rows = rows
+        self.nodes = [h for h, _p in items]
+        self.arrays = [(np.asarray(p.wd, dtype=float),
+                        np.asarray(p.w, dtype=float),
+                        np.asarray(p.cum, dtype=float), float(p.total))
+                       for _h, p in items]
+        self.w0 = [p.w[0] for _h, p in items]
+        self.robust = None
+        ncat = len(items[0][1].wd[0]) if items else 0
+        acc = np.zeros(ncat)
+        W = 0.0
+        for wd, w, _c, _t in self.arrays:
+            if w[0] > 0:
+                acc += wd[0]
+                W += w[0]
+        self.obs = acc / W if W > 0 else acc
+
+
+def joint_draws(tests, ncat, permutations, nprng, chunk=500):
+    """Every test's permuted shift vectors from shared draws.
+
+    Each hit branch gets one uniform number per permutation, shared by every
+    test that contains it, and each test maps it through its own eligible
+    children's size-biased weights.  A gene and the set it belongs to are
+    therefore permuted together, and so are two genes hit on one branch;
+    each test's own null is unchanged.  Returns {test: (permutations, ncat)}.
+    """
+    import numpy as np
+    nodes = sorted({h for t in tests for h in t.nodes})
+    pos = {h: i for i, h in enumerate(nodes)}
+    D = {id(t): np.zeros((permutations, ncat)) for t in tests}
+    done = 0
+    while done < permutations:
+        c = min(chunk, permutations - done)
+        U = nprng.random((len(nodes), c))
+        for t in tests:
+            acc = np.zeros((c, ncat))
+            W = np.zeros(c)
+            for h, (wd, w, cum, total) in zip(t.nodes, t.arrays):
+                idx = np.searchsorted(cum, U[pos[h]] * total, side="right")
+                acc += wd[idx]
+                W += w[idx]
+            ok = W > 0
+            acc[ok] /= W[ok, None]
+            acc[~ok] = 0.0
+            D[id(t)][done:done + c] = acc
+        done += c
+    return D
+
+
+def omnibus(np, D, obs, pbar):
+    """As permutation_test(): centred shifts, per-class and omnibus p, and
+    the omnibus statistic for every permutation."""
+    P = D.shape[0]
+    mean = D.mean(axis=0)
+    pb = np.asarray(pbar, dtype=float)
+    ok = pb > 0
+    null = (((D - mean)[:, ok]) ** 2 / pb[ok]).sum(axis=1)
+    o = float((((obs - mean)[ok]) ** 2 / pb[ok]).sum())
+    p_omni = (1 + int((null >= o - 1e-15).sum())) / (P + 1)
+    p_class = [(1 + int((np.abs(D[:, k] - mean[k])
+                         >= abs(obs[k] - mean[k]) - 1e-15).sum())) / (P + 1)
+               for k in range(D.shape[1])]
+    return {"omni": o, "null": null, "p_omni": p_omni, "p_class": p_class}
+
+
+def joint_analysis(tree, events, genes, sets, V, T, own, ncat, cats, args,
+                   top, pbar, prefix, tag, alpha=0.05):
+    """The joint tests for one reading: every gene and every gene set
+    permuted together, per effect set.  Writes PREFIX_sets{tag}.tsv and
+    PREFIX_joint{tag}.tsv and returns what the report needs."""
+    import copy
+    import numpy as np
+    a = copy.copy(args)
+    a.top_branch = top
+    nprng = np.random.default_rng([args.seed, 1])
+    effect_sets = [x.strip() for x in args.effects.split(",") if x.strip()]
+    P = args.permutations
+    out = {}
+    set_rows, gene_rows = [], []
+    for es in effect_sets:
+        in_set = [e for e in events if e["effect"] in EFFECT_SETS[es]]
+        tests = []
+        for g in genes:
+            evs = [e for e in in_set if e["gene"] == g]
+            rows, items = prepare_test(tree, evs, V, T, own, ncat, a, top)
+            if items:
+                tests.append(JointTest("gene", g, [g], rows, items, np))
+        for name, members in sets.items():
+            evs = [e for e in in_set if e["gene"] in members]
+            rows, items = prepare_test(tree, evs, V, T, own, ncat, a, top)
+            if items:
+                tests.append(JointTest("set", name, members, rows, items,
+                                       np))
+        print(f"  joint {es}{tag}: {len(tests)} tests, {P} shared "
+              f"permutations ...", file=sys.stderr)
+        for t in tests:
+            if t.kind == "set":
+                t.robust = robustness(
+                    [p for p in (_P(wd, w) for wd, w, _c, _t in t.arrays)],
+                    pbar)
+        D = joint_draws(tests, ncat, P, nprng)
+        stats = {id(t): omnibus(np, D[id(t)], t.obs, pbar) for t in tests}
+        gtests = [t for t in tests if t.kind == "gene"]
+
+        ### Per-permutation p of each gene against its own null, for the
+        ### count of significant genes and the min-p bar.
+        if gtests:
+            pnull = np.empty((P, len(gtests)))
+            pobs = np.empty(len(gtests))
+            for j, t in enumerate(gtests):
+                st = stats[id(t)]
+                srt = np.sort(st["null"])
+                pnull[:, j] = (P - np.searchsorted(srt, st["null"] - 1e-15,
+                                                   side="left")) / P
+                pobs[j] = st["p_omni"]
+            count_null = (pnull < alpha).sum(axis=1)
+            count_obs = int((pobs < alpha).sum())
+            p_count = (1 + int((count_null >= count_obs).sum())) / (P + 1)
+            minp = pnull.min(axis=1)
+            adj = [(1 + int((minp <= pobs[j] + 1e-15).sum())) / (P + 1)
+                   for j in range(len(gtests))]
+            bar = float(np.quantile(minp, alpha))
+        else:
+            count_null = np.zeros(1)
+            count_obs, p_count, adj, bar = 0, float("nan"), [], float("nan")
+        for j, t in enumerate(gtests):
+            gene_rows.append({
+                "effect_set": es, "gene": t.name,
+                "informative": len(t.w0),
+                "effective_events": round(effective_events(t.w0), 1),
+                "omnibus_p": stats[id(t)]["p_omni"],
+                "familywise_p": adj[j]})
+
+        ### Sets: the pooled shift (directional), and the any-direction
+        ### sum of the member genes' omnibus statistics, each scaled by its
+        ### own null mean so a gene with few events does not dominate.
+        by_gene = {t.name: t for t in gtests}
+        srows = []
+        for t in tests:
+            if t.kind != "set":
+                continue
+            st = stats[id(t)]
+            mem = [by_gene[g] for g in t.members if g in by_gene]
+            if mem:
+                s_null = np.zeros(P)
+                s_obs = 0.0
+                for m in mem:
+                    ms = stats[id(m)]
+                    scale = ms["null"].mean() or 1.0
+                    s_null += ms["null"] / scale
+                    s_obs += ms["omni"] / scale
+                p_any = (1 + int((s_null >= s_obs - 1e-12).sum())) / (P + 1)
+            else:
+                p_any = float("nan")
+            rb = t.robust
+            retained = rb["retained"] if rb else float("nan")
+            row = {"effect_set": es, "set": t.name,
+                   "top2_event_share": rb["top_drop_share"] if rb
+                   else float("nan"),
+                   "retained_without_top2": retained,
+                   "heavy": "yes" if retained < HEAVY_RETAINED else "",
+                   "genes": len(t.members), "genes_with_events": len(mem),
+                   "events": len(t.rows), "informative": len(t.w0),
+                   "effective_events": round(effective_events(t.w0), 1),
+                   "omnibus_p": st["p_omni"], "any_direction_p": p_any,
+                   "members": ",".join(t.members)}
+            for k, c in enumerate(cats):
+                row[f"diff_{c}"] = float(t.obs[k])
+                row[f"p_{c}"] = st["p_class"][k]
+            srows.append(row)
+        set_rows += srows
+        out[es] = {"genes": len(gtests), "count_obs": count_obs,
+                   "count_expected": float(count_null.mean()),
+                   "p_count": p_count, "bar": bar,
+                   "familywise": [(r["gene"], r["omnibus_p"],
+                                   r["familywise_p"])
+                                  for r in gene_rows
+                                  if r["effect_set"] == es
+                                  and r["familywise_p"] < alpha],
+                   "sets": srows}
+
+    set_cols = (["effect_set", "set", "genes", "genes_with_events", "events",
+                 "informative", "effective_events"]
+                + [f"diff_{c}" for c in cats] + [f"p_{c}" for c in cats]
+                + ["omnibus_p", "any_direction_p", "top2_event_share",
+                   "retained_without_top2", "heavy", "members"])
+    gene_cols = ["effect_set", "gene", "informative", "effective_events",
+                 "omnibus_p", "familywise_p"]
+    paths = [f"{prefix}_sets{tag}.tsv", f"{prefix}_joint{tag}.tsv"]
+    for path, cols, rows in ((paths[0], set_cols, set_rows),
+                             (paths[1], gene_cols, gene_rows)):
+        with open(path, "w") as fh:
+            fh.write("\t".join(cols) + "\n")
+            for r in rows:
+                fh.write("\t".join(fmt(r[c]) for c in cols) + "\n")
+    return out, paths
+
+
+def fmt_keep(r):
+    """retained_without_top2 as a percentage, flagged HEAVY when the set's
+    pooled p is below 0.05: for a shift that is mostly noise, how much
+    survives the drop says nothing."""
+    v = r.get("retained_without_top2")
+    v = num(v) if isinstance(v, str) else v
+    if v is None or v != v:
+        return "-"
+    p = num(r.get("omnibus_p")) if isinstance(r.get("omnibus_p"), str) \
+        else r.get("omnibus_p")
+    flag = r.get("heavy") == "yes" and p is not None and p < 0.05
+    return f"{100 * v:.0f}%" + (" HEAVY" if flag else "")
+
+
+def joint_report(results, cats, alpha, out):
+    """GENE SETS AND JOINT TESTS, per reading, synonymous control first."""
+    print("=" * 72, file=out)
+    print("GENE SETS AND JOINT TESTS (every gene and set permuted together)",
+          file=out)
+    print("=" * 72, file=out)
+    print("  count: genes at omnibus p < 0.05, against the count expected "
+          "when every gene", file=out)
+    print("  is permuted together, so their dependence is in the null.  "
+          "family-wise bar:", file=out)
+    print("  the p a gene must beat for the list's best gene to reach it by "
+          "chance only", file=out)
+    print("  5% of the time (min-p), in place of 0.05 / genes.  Sets: "
+          "pooled = do the", file=out)
+    print("  members shift the spectrum the same way; any = does anything "
+          "happen in them,", file=out)
+    print("  in any direction.  Read the synonymous control first: it "
+          "should show nothing.", file=out)
+    print("  kept without top 2: how much of the pooled shift survives "
+          "dropping the set's two", file=out)
+    print(f"  heaviest branches; HEAVY under {100 * HEAVY_RETAINED:.0f}%, "
+          f"when one or two deep, lineage-defining", file=out)
+    print("  branches carry the result (marked only where the pooled p is "
+          "below 0.05).", file=out)
+    for label, res in results:
+        for es in sorted(res, key=lambda e: e != "synonymous"):
+            r = res[es]
+            print(f"\n  {label}, {es}:", file=out)
+            print(f"    {r['count_obs']} of {r['genes']} genes at p < "
+                  f"{alpha:g}, {r['count_expected']:.1f} expected "
+                  f"(p {fmt_p(r['p_count'])}).", file=out)
+            print(f"    family-wise bar: p < {r['bar']:.2g}, against "
+                  f"{alpha / max(r['genes'], 1):.2g} for 0.05 / "
+                  f"{r['genes']}.", file=out)
+            if r["familywise"]:
+                print("    clearing it: " + ", ".join(
+                    f"{g} (p {fmt_p(p)}, family-wise {fmt_p(q)})"
+                    for g, p, q in r["familywise"]), file=out)
+            else:
+                print("    no gene clears it.", file=out)
+            if r["sets"]:
+                print("    set\tgenes\tevents (effective)\tpooled p\t"
+                      "largest shift\tany-direction p\tkept without top 2",
+                      file=out)
+                for sr in sorted(r["sets"], key=lambda x: x["omnibus_p"]):
+                    k = max(range(len(cats)),
+                            key=lambda i: abs(sr[f"diff_{cats[i]}"]))
+                    c = cats[k]
+                    print(f"    {sr['set']}\t{sr['genes_with_events']}/"
+                          f"{sr['genes']}\t{sr['informative']} "
+                          f"({sr['effective_events']})\t"
+                          f"{fmt_p(sr['omnibus_p'])}\t{c} "
+                          f"{100 * sr[f'diff_{c}']:+.2f} pts "
+                          f"(p {fmt_p(sr[f'p_{c}'])})\t"
+                          f"{fmt_p(sr['any_direction_p'])}\t"
+                          f"{fmt_keep(sr)}", file=out)
+    print(file=out)
+
+
+def robust_fields(r, summary_vec, pbar_cls, nsum):
+    """Summary columns from robustness(): shares, retained, the heavy flag
+    and the shift per reported class with the two heaviest events dropped.
+    Context-class vectors are summed to their classes first."""
+    if r is None:
+        return [float("nan")] * 3 + [""] + [float("nan")] * nsum
+    full = summary_vec(r["full"])
+    rest = summary_vec(r["without"])
+    num_ = sum(rest[k] * full[k] / pbar_cls[k] for k in range(nsum)
+               if pbar_cls[k] > 0)
+    den = sum(full[k] ** 2 / pbar_cls[k] for k in range(nsum)
+              if pbar_cls[k] > 0)
+    retained = num_ / den if den > 0 else float("nan")
+    heavy = "yes" if retained < HEAVY_RETAINED else ""
+    return ([r["top_share"], r["top_drop_share"], retained, heavy]
+            + list(rest))
 
 
 def context_report(pre, tops, cats, out):
@@ -1504,12 +1988,13 @@ def _brute_child(tree, c, hits, own, top, ncat):
     return v, tips
 
 
-def _simulate(rng, n_parents, effect, ncat):
+def _simulate(rng, n_parents, effect, ncat, prefix=""):
     """Star-of-polytomies tree with one hit child per parent.
 
     Each parent has 2-40 children, each a small subtree.  Every child draws
     its mutations from the same base spectrum, except the hit child's
-    subtree, which has `effect` added to class 0's weight.
+    subtree, which has `effect` added to class 0's weight.  The hit child is
+    chosen with the size-biased weight the test assumes.
     """
     base = [1.0] * 12
     counter = [0]
@@ -1536,16 +2021,20 @@ def _simulate(rng, n_parents, effect, ncat):
     for i in range(n_parents):
         kids = []
         n_kids = rng.randint(2, 40)
-        h = rng.randrange(n_kids)
+        ### The hit lands on a child in proportion to its top-branch SNVs
+        ### plus one, the size bias the test's draw assumes, so that under
+        ### no effect the hit child is exchangeable with its siblings.
+        tops = [rng.randint(0, 5) for _ in range(n_kids)]
+        h = rng.choices(range(n_kids), weights=[t + 1 for t in tops])[0]
         for j in range(n_kids):
             if j == h:
-                node = subtree(f"p{i}.c{j}", shifted, rng.randint(1, 6))
+                node = subtree(f"{prefix}p{i}.c{j}", shifted, tops[j])
                 hit_ids.append(node.id)
             else:
-                node = subtree(f"p{i}.c{j}", base, rng.randint(0, 5))
+                node = subtree(f"{prefix}p{i}.c{j}", base, tops[j])
             kids.append(node)
-        parents.append(_N(f"p{i}", muts(2, base), kids))
-    return _N("root", [], parents), hit_ids
+        parents.append(_N(f"{prefix}p{i}", muts(2, base), kids))
+    return _N(f"{prefix}root", [], parents), hit_ids
 
 
 def selftest():
@@ -1694,6 +2183,8 @@ def selftest():
         print("skipped: --context checks need numpy")
         print("all self-tests passed")
         return 0
+    _selftest_robustness()
+    _selftest_joint(numpy)
     _selftest_context(numpy, targs)
     print("all self-tests passed")
     return 0
@@ -1849,6 +2340,110 @@ def _selftest_run():
           "null draws only for the genes named, and a reading reproduces "
           "whatever ran before it")
     return 0 if ok else 1
+
+
+def _selftest_robustness():
+    """One heavy event carrying a shift is flagged; the same shift spread
+    over many events is kept."""
+    class P(object):
+        def __init__(self, w, d):
+            self.w = [w]
+            self.wd = [[w * x for x in d]]
+    pbar = [1 / 6.0] * 6
+    up = [0.02, -0.02, 0, 0, 0, 0]
+    flat = [0.0] * 6
+    heavy = robustness([P(1000.0, up), P(900.0, up)]
+                       + [P(10.0, flat) for _ in range(50)], pbar)
+    spread = robustness([P(10.0, up) for _ in range(50)], pbar)
+    assert abs(heavy["top_drop_share"] - 1900 / 2400) < 1e-9 \
+        and heavy["retained"] < 0.05, heavy
+    assert abs(spread["retained"] - 1.0) < 1e-9, spread
+    assert robustness([P(1.0, up), P(1.0, up)], pbar) is None
+    print("ok: a shift carried by two heavy events is flagged; the same "
+          "shift over 50 equal events is kept whole")
+
+
+def _joint_tree(rng, effects):
+    """One tree holding a _simulate block per gene, each block's hit
+    children shifted by that gene's effect on class 0."""
+    roots, events = [], []
+    for g, eff in effects.items():
+        ### A prefix per gene keeps node IDs unique across blocks.
+        root, hit_ids = _simulate(rng, 50, eff, 12, prefix=f"{g}.")
+        roots.append((g, root, hit_ids))
+    tree = extract(_N("top", [], [r for _g, r, _h in roots]))
+    idx = {nid: i for i, nid in enumerate(tree.node_ids)}
+    for g, _r, hit_ids in roots:
+        events += [{"node": idx[x], "gene": g, "effect": "missense",
+                    "aa_changes": "", "mutations": "", "hit_types": [],
+                    "hit_cats": [], "hit_k": []} for x in hit_ids]
+    return tree, events
+
+
+def _selftest_joint(np):
+    """Joint tests: shared draws couple a set to its members; the count and
+    set tests hold their level under the null; a same-direction pair lights
+    the pooled test, and an opposite pair, which cancels there, the
+    any-direction test."""
+    import io
+    import tempfile
+    rng = random.Random(21)
+    d = tempfile.mkdtemp()
+    args = parse_args(["--permutations", "200", "--effects", "nonsynonymous"])
+
+    def run(effects, sets):
+        tree, events = _joint_tree(rng, effects)
+        own = own_spectra(tree, tree.types, 12, None, float("inf"))
+        V, T = subtree_sums(tree, own, 12)
+        res, _paths = joint_analysis(tree, events, list(effects), sets, V,
+                                     T, own, 12, MUT_TYPES, args, "include",
+                                     proportions(V), os.path.join(d, "j"),
+                                     "")
+        return res["nonsynonymous"]
+
+    ### A one-member set is permuted with exactly its gene's draws.
+    tree, events = _joint_tree(rng, {"a": 0.0, "b": 0.0})
+    own = own_spectra(tree, tree.types, 12, None, float("inf"))
+    V, T = subtree_sums(tree, own, 12)
+    tests = []
+    for kind, name in (("gene", "a"), ("set", "only_a")):
+        rows, items = prepare_test(tree, [e for e in events
+                                          if e["gene"] == "a"],
+                                   V, T, own, 12, args, "include")
+        tests.append(JointTest(kind, name, ["a"], rows, items, np))
+    D = joint_draws(tests, 12, 50, np.random.default_rng(3))
+    if not np.array_equal(D[id(tests[0])], D[id(tests[1])]):
+        raise AssertionError("joint draws are not shared")
+    print("ok: a one-gene set is permuted with exactly its gene's draws")
+
+    ### Effects of +1.0 and -0.9 on class 0's weight move its share by
+    ### about +7 and -7 points, so an opposite pair cancels when pooled.
+    null = [run({"a": 0.0, "b": 0.0, "c": 0.0, "e": 0.0},
+                {"ab": ["a", "b"]}) for _ in range(30)]
+    same = [run({"a": 1.0, "b": 1.0}, {"ab": ["a", "b"]}) for _ in range(8)]
+    opp = [run({"a": 1.0, "b": -0.9}, {"ab": ["a", "b"]}) for _ in range(8)]
+
+    def frac(rs, key):
+        return sum(key(r) < 0.05 for r in rs) / len(rs)
+    fp = [frac(null, lambda r: r["p_count"]),
+          frac(null, lambda r: r["sets"][0]["omnibus_p"]),
+          frac(null, lambda r: r["sets"][0]["any_direction_p"])]
+    pw_same = frac(same, lambda r: r["sets"][0]["omnibus_p"])
+    pw_any = frac(opp, lambda r: r["sets"][0]["any_direction_p"])
+    cancel = frac(opp, lambda r: r["sets"][0]["omnibus_p"])
+    assert max(fp) <= 0.2, fp
+    assert pw_same >= 0.75 and pw_any >= 0.75 and cancel <= 0.5, \
+        (pw_same, pw_any, cancel)
+    print(f"ok: under the null, p < 0.05 in {fp[0]:.0%} (gene count), "
+          f"{fp[1]:.0%} (pooled set) and {fp[2]:.0%} (any-direction set) "
+          f"of 30 trees; a same-direction pair is found pooled in "
+          f"{pw_same:.0%}, and an opposite pair any-direction in "
+          f"{pw_any:.0%}, pooled in {cancel:.0%}")
+    buf = io.StringIO()
+    joint_report([("all hits", {"nonsynonymous": same[0]})], MUT_TYPES,
+                 0.05, buf)
+    assert "family-wise bar" in buf.getvalue() and "ab\t" in buf.getvalue()
+    print("ok: the joint report renders")
 
 
 def _selftest_summary():

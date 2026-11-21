@@ -669,7 +669,12 @@ size of the MTBC one.
 3. **Genes that clear the bar** (0.05 over the genes tested). For each, the
    classes that shift, with all hits, internal hits only, and its own
    synonymous hits, and the effective number of events. A result resting on
-   a handful of effective events is about those few branches.
+   a handful of effective events is about those few branches. The line
+   below each gene gives its shift without its two heaviest branches. A
+   gene or pathway marked **HEAVY** keeps less than half its shift without
+   them: one or two deep branches carry it, each compared with a single
+   sibling, so it is one lineage against another. Check which lineages
+   those branches define, as in step 8, before reading a mechanism into it.
 4. **Leads** below the bar: about one in twenty is expected by chance.
 
 **Then, for the genes worth a closer look,** rerun with them named. The run
@@ -687,6 +692,35 @@ The report then ends with a TRINUCLEOTIDE CONTEXT section. Read its
 contexts, and `hit_context.tsv` says which. Test another gene list, such as
 replication genes, as a separate run with its own control and
 `--prefix hit_replication`.
+
+**To test pathways rather than single genes,** group the genes in a
+`gene<TAB>pathway` file, settled *before* you look at the per-gene results,
+and run every candidate gene together. [`tb_repair_pathways.tsv`](SCRIPTS.md#tb_repair_pathwaystsv)
+is the MTBC draft; its header shows how to build the combined list.
+
+```
+gene_hit_contrasts.py --input_tree tree.pruned.masked.pb.gz \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --genes repair_replication.txt --gene_sets pathways.tsv \
+    --fold --max_branch_length 250 --permutations 10000 \
+    --prefix hit_pathways > hit_pathways.txt
+```
+
+Every gene and pathway is permuted together. The report adds a GENE SETS
+AND JOINT TESTS section, per reading and effect set, synonymous first:
+
+- **The count:** how many genes reach p < 0.05, against the count expected
+  with every gene permuted together. This replaces the binomial count above,
+  which assumes the genes are independent.
+- **The family-wise bar:** the p a gene must beat for the best gene in the
+  list to reach it by chance only 5% of the time, in place of 0.05 over the
+  number of genes. Genes clearing it are listed.
+- **Per pathway:**
+  - The **pooled** p asks whether the pathway's genes shift the spectrum the
+    same way. The largest class shift beside it says which way.
+  - The **any-direction** p asks whether anything happens in the pathway at
+    all. Genes pushing opposite ways cancel in the pooled test but not here.
+  - Read the synonymous rows first: they should show nothing.
 
 **Decide** which genes, if any, carry a mechanism worth following up.
 Remember that the tree carries SNVs only: frameshifts, deletions and
