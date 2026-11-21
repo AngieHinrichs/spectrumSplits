@@ -12,8 +12,62 @@ The MTBC values are examples, not defaults. Another species or another
 sampling scheme will give different numbers, and sometimes different
 decisions; the point of each step is to read them off your own tree.
 
+## Overview
+
+```mermaid
+flowchart TD
+    raw[("tree.pb.gz")]
+
+    subgraph clean["Clean the tree"]
+        s1["1. Profile the raw tree<br/>choose a divergence threshold"]
+        s2["2. Prune divergent genomes<br/>and laboratory strains"]
+        s3["3. Mask regions under selection<br/>or prone to misalignment"]
+        s4{"4. Re-profile: do hotspots<br/>outside the mask remain?"}
+    end
+
+    subgraph params["Choose the parameters"]
+        s5["5. Decide whether to fold,<br/>profile contexts"]
+        s6["6. Pick --min_mutations and<br/>--max_branch_length"]
+        s7["7. Calibrate --min_chi<br/>against permutation nulls"]
+    end
+
+    subgraph screen["Run and screen"]
+        s8["8. Search with bootstrap,<br/>screen one-class and one-site drivers"]
+        s9["9. Rule out a sequencing-quality<br/>gradient"]
+        s10["10. Rank splits by size-matched<br/>margin and bootstrap support"]
+    end
+
+    subgraph interpret["Interpret"]
+        s11["11. What each split contains,<br/>trinucleotide-context shifts"]
+        s12["12. Candidate genes genotype-first,<br/>against siblings and a control list"]
+        s13["13. Do the spectra show in<br/>resistance mutations?"]
+    end
+
+    pruned[("tree.pruned.pb.gz")]
+    masked[("tree.pruned.masked.pb.gz")]
+    spectra[("spectra.tsv, splits.log")]
+    clades[("split_clade_samples.tsv")]
+    change["After a change to the tree:<br/>replicate and match"]
+
+    raw --> s1 --> s2 --> pruned --> s3 --> masked --> s4
+    s4 -- "yes: another round" --> s3
+    s4 -- no --> s5 --> s6 --> s7 --> s8
+    s8 --> spectra --> s9 --> s10 --> clades
+    clades --> s11 --> s12
+    clades --> s13
+    pruned -. "unmasked tree" .-> s13
+    interpret -. "a locus to mask, a lab stock,<br/>a new release" .-> change
+    change -. "rerun from the changed step" .-> s3
+```
+
+Steps 3 and 4 repeat until the remaining hotspots are only flanks of loci
+already masked. Steps 5 to 12 run on the masked tree. Step 13 goes back to
+the pruned tree before masking, because the mask removed the resistance
+mutations it looks for.
+
 ## Contents
 
+- [Overview](#overview)
 - [Before you start](#before-you-start)
 - [Step 1. Profile the raw tree](#step-1-profile-the-raw-tree)
 - [Step 2. Prune samples with implausible divergence](#step-2-prune-samples-with-implausible-divergence)
