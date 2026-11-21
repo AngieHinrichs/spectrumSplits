@@ -24,6 +24,7 @@ script.
 - [Step 10. Rank the splits before interpreting them](#step-10-rank-the-splits-before-interpreting-them)
 - [Step 11. Check what each split contains before claiming a mechanism](#step-11-check-what-each-split-contains-before-claiming-a-mechanism)
 - [Step 12. Test a candidate mechanism genotype-first](#step-12-test-a-candidate-mechanism-genotype-first)
+- [Step 13. Ask whether the splits' spectra show in their resistance mutations](#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations)
 - [Record: the four rounds of tree modification](#record-the-four-rounds-of-tree-modification)
 - [Testing the method](#testing-the-method)
 
@@ -33,7 +34,7 @@ script.
 rest of the tree, scoring every candidate with a chi-squared statistic and
 keeping those above `--min_chi`. Its parameters can't be copied from one
 tree to another, and its output can't be read as mechanism without checks.
-The workflow has twelve steps in four groups:
+The workflow has thirteen steps in four groups:
 
 - **Clean the tree (steps 1 to 4).** Profile the tree, prune genomes with
   implausible divergence and any laboratory strains, and mask regions under
@@ -53,11 +54,12 @@ The workflow has twelve steps in four groups:
   sequencing-quality gradient by comparing internal and terminal branches.
   Rank each split by its margin over a size-matched null and its bootstrap
   support.
-- **Interpret (steps 11 and 12).** Check what each split contains, and
+- **Interpret (steps 11 to 13).** Check what each split contains, and
   whether it differs in trinucleotide context more than random clades of
   its size. Then test candidate genes genotype-first, comparing every hit
   child with its siblings across all independent hits, so that lineage
-  can't stand in for mechanism.
+  can't stand in for mechanism. Finally, ask whether the splits' spectra
+  change how often, or with which variants, they acquire resistance.
 
 On the MTBC tree (129,314 samples) this pruned 396 genomes and masked 11.5%
 of the genome in four rounds. The search at `--min_chi 30` accepted 66
@@ -65,7 +67,9 @@ splits, all clearing their size-matched null (33 tier A, 28 B and 5 C).
 Their spectra track lineage, not sequencing quality. Eight differ in
 trinucleotide context beyond what random clades show. Among 56 repair genes,
 only `dnaE2` is followed by a consistent spectrum shift (more C>T and G>A,
-less C>G and G>C), with every hit and with internal hits only.
+less C>G and G>C), with every hit and with internal hits only. The splits'
+spectra change their supply of resistance mutations by at most 11%, and
+tilt which resistance variants arise only slightly.
 
 ## Background
 
@@ -2084,6 +2088,211 @@ clear a gene.
 If a late change forces a rerun from the mask on, as a re-mask prompted by a
 locus found under a split would, match the new splits to the old ones by
 membership: see [Testing the method](#testing-the-method).
+
+## Step 13. Ask whether the splits' spectra show in their resistance mutations
+
+How-to: [Step 13. Ask whether the splits' spectra show in their resistance mutations](HOWTO.md#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations).
+
+The search never sees resistance mutations: step 3 masks their genes because
+selection makes the same sites recur on thousands of branches. That
+recurrence is also what makes the reverse question answerable. Each
+acquisition of, say, `katG` S315T is an independent event on a known branch,
+and the step-13 question is whether a split's spectrum shapes those events.
+There are two ways it could:
+
+- in **rate**, by making resistance mutations more or less available;
+- in **composition**, by tilting which of the resistant variants arise.
+
+### What the tree can show
+
+`resistance_spectra.py` takes the graded variants of the chosen confidence
+groups from the catalogue, and keeps those one single-nucleotide
+substitution can make:
+
+- missense, stop-gained, start-lost and stop-lost codon changes;
+- upstream (`c.-N`) and rRNA (`n.N`) changes.
+
+Two of the catalogue's rules reach past the variants it lists:
+
+- a graded `GENE_LoF` row covers every stop-gained or start-lost
+  substitution in the gene;
+- a graded `RRDR` row covers every missense substitution in `rpoB` codons
+  426 to 452.
+
+A variant the catalogue grades explicitly keeps its own grade, even where a
+rule would say otherwise. Frameshifts, in-frame indels and gene deletions
+are invisible, which matters most for the drugs whose resistance comes
+mostly from losing a gene: ethionamide (`ethA`), pyrazinamide (`pncA`),
+streptomycin (`gid`).
+
+Each substitution in a catalogue gene, or upstream of it, is named against
+its parent's genome, reconstructed down the tree, as the catalogue would
+name it (`rpoB_p.Ser450Leu`). A lineage whose codon differs from H37Rv's
+then gets the name its isolates would get.
+
+Naming against the parent needs one guard: a substitution that gives back
+the reference's amino acid or base is never an event. Without it, `rpoB`
+Leu450Ser on an S450L background, a back-mutation to susceptibility, is a
+missense change in the RRDR and the rule counts it as rifampicin
+resistance. Such back-mutations are counted and reported per drug, because
+a lot of them would mean the tree places resistance mutations badly.
+
+Splits are carried over to this tree by the most recent common ancestor of
+their samples, since node IDs don't transfer. Branches are assigned to
+residual groups, as in `spectra.tsv`.
+
+### Rate
+
+Each group's spectrum is its trinucleotide-context counts at unmasked
+sites, shrunk towards the whole tree's by `--prior` pseudo-mutations. A
+context's rate is its share of the spectrum over its opportunity, as in
+step 11. A resistance substitution gets its own context's rate. A drug's
+events are then shared out over the groups in two ways:
+
+- `E_global`, by each group's mutations;
+- `E_spectrum`, by mutations times the summed rate of the drug's
+  resistance substitutions under that group's spectrum.
+
+`spectrum_factor` = `E_spectrum` / `E_global` is how much the spectrum
+alone changes the supply of resistance mutations. `O / E_spectrum` is what
+is left for treatment and selection. The rate side has no p value: how
+often, and with what, a lineage's patients were treated swamps mutation
+supply, and nothing in the tree models that.
+
+### Composition, and why its null permutes the spectrum
+
+Among a split's events for one drug, two statistics compare its variants
+with the rest of the tree's:
+
+- `G` is the 2 x V likelihood-ratio statistic: the variants differ, for any
+  reason.
+- `llr` asks whether the split's spectrum predicts how they differ.
+  - The rest's variant shares `q` are reweighted by `rho`, the ratio of
+    each variant's rate under the split's spectrum to its rate under the
+    rest's, and renormalised to `q'`.
+  - `llr` is the sum over the split's events of `log(q'/q)`. It is positive
+    when the events lean towards the variants the split's spectrum favours.
+  - `llr_expected` = n KL(q' || q) is the llr the events would give if the
+    spectrum were all that differed. Near zero, the spectrum can't move the
+    composition enough to see.
+
+`G` is tested by shuffling the drug's events between splits. The obvious
+null for `llr` is the same shuffle, and it is wrong. On this tree every
+large split's composition differs from the rest's (G q of about 0.01 for
+nearly all of them), for reasons unrelated to mutation, such as treatment
+history and local epidemics. Under a label shuffle, a composition that
+differs that much and happens to lean the spectrum's way looks like a
+spectrum effect.
+
+The self-test checks this. It simulates splits whose compositions are
+shifted at random, independently of their spectra. Label shuffling called
+the spectrum responsible in 27 to 34 cases out of 100. Instead,
+`resistance_spectra.py`:
+
+- holds each split's counts as observed;
+- permutes `rho` across the drug's variants, with one permutation shared by
+  all splits.
+
+The question becomes: does the composition lean towards the variants this
+spectrum favours more than towards a random reassignment of the same
+ratios? In the same simulation that called a spectrum effect in 2 to 4
+cases out of 100. The per-drug total of llr is tested on the same
+permutations.
+
+A caution: llr is dominated by a drug's commonest variants. A split
+whose events are mostly one variant (`katG` S315T, `rpsL` K43R) passes or
+fails largely on where that variant's ratio falls among the others. A drug
+with only a handful of variants (amikacin has 4) has too few distinct
+permutations for its p values to get small.
+
+### On the MTBC tree
+
+The run used WHO catalogue 3rd edition groups 1 and 2, the round-4 masks,
+`--fold`, `--max_branch_length 250` and 10,000 permutations.
+
+**What is visible.** One substitution can make only part of what the
+catalogue grades:
+
+| Drug | SNV-type rows | Graded rows |
+| --- | --- | --- |
+| Ethionamide | 91 | 429 |
+| Streptomycin | 58 | 231 |
+| Pyrazinamide | 254 | 451 |
+| Rifampicin | 110 | 149, plus the RRDR rule |
+
+Frameshifts account for most of the rest.
+
+**Events.** The tree has 44,919 resistance substitutions, 57,075 counting
+each drug they confer. Between 50% and 70% are on terminal branches. There
+were 574 back-mutations of rifampicin substitutions, against 10,309
+rifampicin events, and 445 of isoniazid ones, against 9,718 events: about
+5%.
+
+**Rate.** Across the splits, `spectrum_factor` for all drugs pooled runs
+from 0.93 to 1.11, so no split's spectrum changes its supply of resistance
+mutations by more than about 10%. The observed rates vary far more: among
+splits with at least 100 events, from 0.3 times `E_spectrum` (lineage 1
+splits `node_4965`, `node_4975`) to 9.3 times (`node_21970`, lineage
+2.2.1). The lineage 2.2.1 splits are the richest in resistance, with
+`O/E_sp` of 2 to 9, and their spectra predict slightly fewer resistance
+mutations, not more (factor about 0.95). Their resistance comes from
+treatment and transmission, not from mutation.
+
+**Composition.** `G` is significant for nearly every split with a few
+hundred events. The top variants follow lineage: `rpsL` K43R in lineage
+2.2.1, `katG` S315T in lineage 3 and lineage 4 splits, and `inhA` c.-777C>T
+(`fabG1` c.-15C>T) in several lineage 4 splits.
+
+`llr`, summed over the splits for all drugs pooled, is positive:
+
+| Reading | llr_total | p |
+| --- | --- | --- |
+| All branches | 320 | 3e-4 |
+| Internal branches | 129 | 1e-4 |
+
+So the splits' resistance variants lean, on the whole, towards what their
+spectra favour. Few splits carry it on their own at q < 0.05:
+
+- **All branches:** lineage 4.5 (`node_69238`), lineage 3 (`node_36254`),
+  and lineage 2.2.1 (`node_14336`, `node_21897`).
+- **Internal branches:** `node_36254`, `node_69238`, `node_14331` (lineage
+  2.2.1), `node_285` (*M. africanum* La1) and `node_34074` (lineage
+  2.2.1).
+- **Both readings:** only `node_36254` and `node_69238`.
+
+The clearest single drug is streptomycin:
+
+| Reading | llr_total | p |
+| --- | --- | --- |
+| All branches | 210 | 1e-4 |
+| Internal branches | 82 | 4e-4 |
+
+On internal branches nine splits pass at q < 0.05. Lineage 2.2.1's
+`node_14336` leads, with llr 45.7 against an expected 8.7, through `rpsL`
+K43R.
+
+An llr five times what the spectrum alone could produce says the
+composition leans the spectrum's way, but more strongly than mutation
+supply explains. A fitness cost of K43R that differs by lineage would do
+the same, and this test can't tell the two apart.
+
+Some drugs go the other way:
+
+| Drug | llr_total, all branches |
+| --- | --- |
+| Kanamycin | -101 |
+| Amikacin | -27 |
+| Levofloxacin | -81 |
+
+Their variants lean against the spectra (kanamycin's through the `eis`
+promoter variants of lineage 2.2.1 splits), though the permutations do
+not call any of these significant.
+
+The conclusion: the splits' spectra do not make resistance more or less
+available, and they tilt which resistance variants arise only slightly,
+detectably when pooled and in a few lineages, most clearly for
+streptomycin. Lineage and treatment history, which `G` and `O/E_spectrum`
+show, matter far more.
 
 ## Record: the four rounds of tree modification
 

@@ -20,6 +20,7 @@ Usage, inputs, outputs and options for each script, and the gene lists they read
 | [`gene_hit_contrasts.py`](#gene_hit_contrastspy) | 12 | Does a candidate gene's mutation shift the spectrum below it? Tests every independent hit against its siblings, so lineage cannot stand in for mechanism, with every hit and with internal hits only, against a control list, and reports the control, the excess, the genes that clear the bar and the leads. |
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
+| [`resistance_spectra.py`](#resistance_spectrapy) | 13 | Does a split's spectrum change how often, or with which variants, it acquires resistance mutations, against the rest of the tree, by a graded catalogue? |
 | [`match_splits.py`](#match_splitspy) | [testing](METHODS.md#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 | [`trinucleotide.py`](#trinucleotidepy) | 5, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
 
@@ -857,6 +858,92 @@ environment.
 - `--label`: other genes to name in panel A. `--title` replaces the default
   title. `--output`: the format follows the extension (`.png`, `.pdf`,
   `.svg`).
+
+### `resistance_spectra.py`
+
+Used in [step 13](HOWTO.md#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations), which has
+the command. Finds every resistance substitution on the unmasked tree, from
+a catalogue of graded variants, and asks of each split and drug whether its
+spectrum changes how many it acquires (rate) or which (composition). Needs
+`bte`, numpy and `openpyxl`; it reuses `annotate_sites.py`'s annotation
+code, `trinucleotide.py`'s contexts and `split_contexts.py`'s helpers.
+
+Inputs:
+
+- `--input_tree`: the tree from before the mask. On the masked tree these
+  sites have no mutations.
+- `--clade_samples`: every sample of every split, as assembled in step 10.
+  Each split is placed at its samples' most recent common ancestor. A split
+  whose ancestor's clade has extra samples, or some of whose samples are
+  missing, is reported.
+- `--catalogue`: the WHO catalogue's Web Annex B (`.xlsx`), or a catalogue
+  in its layout:
+  - `Graded_Mutation_List`, with `drug`, `Gene`, `variant`, `effect`,
+    `SUPPLEMENTARY GRADING CONSIDERATIONS` and `FINAL CONFIDENCE GRADING`;
+  - `Gene_Coordinates`, with `Gene`, `Rv ID`, `Left` and `Right`.
+- `--groups` (default `1,2`): the confidence groups that count as
+  resistance.
+- `--annotation`: each catalogue gene's strand and type, found by the
+  catalogue's locus tag. Where its coordinates differ from the catalogue's,
+  the catalogue's are used and the difference is reported.
+- `--reference`: the root genome.
+- `--mask`: the masks the search's tree was built with. Spectra and
+  opportunity are counted outside them; resistance sites are read
+  regardless.
+- `--fold`, `--max_branch_length`: match the search.
+
+Options:
+
+- `--prior` (default 100): the pseudo-mutations shrinking each group's
+  spectrum towards the tree's.
+- `--min_events` (default 5): the events a split needs for its composition
+  to be tested.
+- `--permutations` (default 10000): label shuffles for G, and spectrum-ratio
+  permutations for llr, per drug and reading.
+- `--max_q` (default 0.05): the q below which the report lists a split under
+  a drug.
+- `--seed` and `--prefix` (default `resistance_spectra`).
+
+Outputs:
+
+- **The report**, on stdout:
+  - the catalogue table (graded rows, those one substitution makes, those
+    it can't reach, the rules, and what is invisible);
+  - events per drug, with back-mutations;
+  - then, per reading, the drug table, the `any drug` table per split, and
+    the per-drug hits.
+- **`PREFIX_events.tsv`:** one row per event and drug. Columns: `node`,
+  `terminal`, `split`, `pos`, `parent_base`, `alt`, `drug`, `gene`,
+  `variant` (named against the parent), `effect`, `group`, and `route` (the
+  catalogue's supplementary grading, `listed`, or `Rule: LoF (not listed)`
+  / `Rule: RRDR (not listed)` for a rule reaching an unlisted variant).
+- **`PREFIX.tsv`:** one row per reading, drug and split. Columns:
+  - `events` and `mutations`;
+  - `e_global`, `e_spectrum`, `spectrum_factor` and `obs_over_spectrum`;
+  - `llr`, `llr_expected`, `llr_p` and `llr_q`;
+  - `g`, `g_p` and `g_q`;
+  - `top_variant`, the variant most over-represented against the rest, as
+    observed / expected.
+- **`PREFIX_drugs.tsv`:** one row per reading and drug. Columns: `events`;
+  `variants_seen`; `substitutions` (the site-base pairs that make a
+  resistance variant from the reference); `splits_tested`; `llr_total` and
+  its p; `g_all` and its p.
+
+`--selftest` checks:
+
+- naming on both strands, including upstream, rRNA, start-lost, stop-lost
+  and a background codon change;
+- the catalogue's precedence: an explicit grade over a rule, the LoF and
+  RRDR rules, and a group outside `--groups`;
+- events on a small tree, with a back-mutation that would otherwise be named
+  as resistance;
+- split placement;
+- the G statistic against the textbook formula, and llr_expected against
+  simulated draws;
+- that a spectrum-driven composition is found;
+- that a composition shifted for other reasons is not called a spectrum
+  effect by the ratio permutation (2 to 4 in 100), where label shuffling
+  would (27 to 34 in 100).
 
 ### `match_splits.py`
 

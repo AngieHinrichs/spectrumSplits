@@ -27,6 +27,7 @@ decisions; the point of each step is to read them off your own tree.
 - [Step 10. Rank the splits before interpreting them](#step-10-rank-the-splits-before-interpreting-them)
 - [Step 11. Check what each split contains before claiming a mechanism](#step-11-check-what-each-split-contains-before-claiming-a-mechanism)
 - [Step 12. Test a candidate mechanism genotype-first](#step-12-test-a-candidate-mechanism-genotype-first)
+- [Step 13. Ask whether the splits' spectra show in their resistance mutations](#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations)
 - [After a change to the tree: replicate and match](#after-a-change-to-the-tree-replicate-and-match)
 
 ## Before you start
@@ -733,6 +734,78 @@ control). Only `dnaE2` cleared the bar: C>T and G>A rise and C>G and G>C fall
 below its hits, on all hits and on internal hits alone. Its context test did
 not localise the shift.
 [Methods for step 12.](METHODS.md#step-12-test-a-candidate-mechanism-genotype-first)
+
+## Step 13. Ask whether the splits' spectra show in their resistance mutations
+
+Resistance genes were masked in step 3 because selection makes their
+mutations recur all over the tree. With the splits found, the question can
+be turned round: does a split's spectrum change how often it acquires
+resistance mutations, or which ones?
+
+**Get a catalogue** of graded resistance variants. For the MTBC, that is the
+WHO catalogue of mutations (3rd edition, Web Annex B, an `.xlsx`).
+`resistance_spectra.py` reads its `Graded_Mutation_List` and
+`Gene_Coordinates` sheets, so a catalogue for another species has to be put
+in that layout. Choose which confidence groups count as resistance with
+`--groups`; 1 and 2 ("associated with resistance", and "- interim") are the
+default.
+
+**Run** it on the tree from before the mask (the masked tree has lost these
+mutations), with the clade samples assembled in step 10:
+
+```
+resistance_spectra.py --input_tree tree.pruned.pb.gz \
+    --clade_samples split_clade_samples.tsv \
+    --catalogue WHO-catalogue-annex-B.xlsx --groups 1,2 \
+    --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
+    --mask selection_loci.bed,alignment_loci.bed \
+    --fold --max_branch_length 250 > resistance_spectra.txt
+```
+
+`--mask` is the masks the search's tree was built with: each split's
+spectrum is counted outside them, as the search saw it. It needs `openpyxl`
+as well as `bte` and numpy. It took 3 minutes on the MTBC tree.
+
+**Read** `resistance_spectra.txt` from the top:
+
+- **The catalogue table:** how many graded rows one substitution can make
+  (`SNV-type`), and what the tree can't show (frameshifts, in-frame indels,
+  gene deletions). For a drug whose resistance is mostly frameshifts, what
+  follows sees only part of it.
+- **Resistance events:** per drug, how many, the share on terminal branches,
+  and the **back-mutations**, substitutions that return a resistance site to
+  the reference. These are not events. Many of them would suggest the tree
+  places resistance mutations badly.
+- **Per reading** (all branches, then internal branches only), one row per
+  drug:
+  - `G_all` and its p: whether the splits' resistance variants differ at
+    all. Expect yes; treatment history differs between lineages.
+  - `llr_total` and its p: whether, summed over the splits, each one's
+    variants lean towards those its own spectrum favours.
+- **The `any drug` table**, one row per split:
+  - `factor`: how much the split's spectrum alone raises or lowers the
+    supply of resistance mutations, against the tree's.
+  - `O/E_sp`: its resistance events over that expectation. Treatment
+    history, not mutation, sets this.
+  - `llr`, against `llr_exp` (what the spectrum alone would give), with p
+    and q.
+- **Per drug:** the splits with llr or G q below `--max_q`.
+
+**Decide** whether any split's spectrum explains which resistance variants
+it acquires. Count a split only if its llr q passes on both readings, and
+compare llr with llr_exp. An llr well above llr_exp leans the spectrum's way
+by more than the spectrum alone can produce, so look for another cause too,
+such as a fitness cost that differs by lineage.
+
+**On the MTBC tree:** the splits' spectra change the supply of resistance
+mutations by at most 11% (`factor` 0.93 to 1.11), while their observed
+rates run from 0.3 to 9 times that expectation, so treatment history sets
+how much resistance a lineage acquires. Which variants it acquires leans
+towards its spectrum when pooled across splits (p 3e-4 on all branches,
+1e-4 on internal ones). Only lineage 3 (`node_36254`) and lineage 4.5
+(`node_69238`) pass on their own in both readings, and streptomycin
+carries the clearest per-drug signal, led by `rpsL` K43R in lineage 2.2.1.
+[Methods for step 13.](METHODS.md#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations)
 
 ## After a change to the tree: replicate and match
 
