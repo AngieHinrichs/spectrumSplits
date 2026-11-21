@@ -1887,11 +1887,25 @@ its gene's draws), but the tests are now coupled, which buys four things:
   few events doesn't dominate. Genes pushing opposite ways cancel in the
   pooled test but not here.
 
-On simulated trees, 300 with no effect gave p < 0.05 in 2% (count), 4%
-(pooled) and 5% (any-direction). Two genes shifting the same way were found
-by the pooled test in 97.5% of 40 trees. Two shifting opposite ways were
-found any-direction in all 40 and pooled in 5%: they cancel there, as they
-should. Those simulations first ran at 8% to 10% under no effect; the cause
+`--calibrate_joint N` measures this on N simulated trees per scenario,
+each gene a block of 50 hit subtrees and the set its genes `a` and `b`. Like
+`--calibrate_context`, it needs numpy but not `bte`, and checks the method,
+not your data:
+
+```
+gene_hit_contrasts.py --calibrate_joint 300 --permutations 200
+```
+
+| Scenario, 300 trees each | gene count | set, pooled | set, any-direction |
+| --- | --- | --- | --- |
+| no effect, four genes | 1.3% | 6.0% | 4.0% |
+| `a` and `b` shifted the same way | 71% | 99% | 97% |
+| `a` and `b` shifted opposite ways | 83% | 3.7% | 100% |
+
+The share of trees with p < 0.05 stays near 5% under no effect. The count
+runs low because a count of significant genes among four is coarse. An
+opposite pair cancels in the pooled test, as it should, and the
+any-direction test finds it. Those simulations first ran at 8% to 10% under no effect; the cause
 was the simulation, not the test. It drew hit children uniformly where the
 test assumes a size-biased draw, and gave two simulated genes clashing node
 IDs. Both are fixed, and the context calibration above was remeasured after
@@ -1967,8 +1981,11 @@ first draft had RecBCD in recombination and no AdnAB, following *E. coli*.
 In mycobacteria, AdnAB resects DNA ends for RecA-dependent recombination
 and RecBCD works in RecA-independent single-strand annealing (Gupta et al.
 2011, *Mol Microbiol* 79:316, in *M. smegmatis*), so the pathways were
-regrouped. Under the first grouping, recombination's pooled p was 0.40; the
-regrouping brought the two `adnA` branches in.
+regrouped. Under the first grouping, recombination's pooled p was 0.40 on
+all hits and 0.50 on internal hits (any-direction 0.43 and 0.39); the
+regrouping brought the two `adnA` branches in. The header of
+`tb_repair_pathways.tsv` has the commands that rebuild the first grouping
+and its 75-gene list.
 
 The Y-family polymerases' `CT|GA` rise is the one pathway lead that doesn't
 rest on its heaviest branches, and it runs the same way as `dnaE2`'s. At

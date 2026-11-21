@@ -18,6 +18,15 @@
 # Rv3201c (adnB) encode AdnAB, the helicase-nuclease that resects DNA ends
 # for RecA-dependent recombination in mycobacteria.  NCBI's NC_000962.3
 # names all four only by locus tag, and none is in tb_repair_genes.txt.
+#
+# The first draft, which METHODS.md step 12 also reports, followed E. coli:
+# recB, recC and recD in recombination_SOS, and no adnA or adnB (75 genes).
+# To rebuild it from this file:
+#   grep -v '^Rv320[12]c' tb_repair_pathways.tsv \
+#       | sed 's/\tsingle_strand_annealing/\trecombination_SOS/' \
+#       > tb_repair_pathways_draft1.tsv
+#   cat tb_repair_genes.txt tb_replication_genes.txt > repair_replication_draft1.txt
+#   printf 'Rv3395c\nRv3394c\n' >> repair_replication_draft1.txt
 
 # --- nucleotide-pool sanitation: Nudix hydrolases, dUTPase, MazG -----------
 mutT1	sanitation

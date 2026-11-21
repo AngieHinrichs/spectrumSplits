@@ -295,6 +295,14 @@ def parse_args(argv=None):
                         "class shifted in proportion, and with one context "
                         "shifted.  Honours --fold, --permutations and --seed; "
                         "needs numpy, not bte")
+    p.add_argument("--calibrate_joint", type=int, default=0, metavar="N",
+                   help="Instead of a test on a tree: simulate N small trees "
+                        "per scenario and report how often the joint tests "
+                        "(the gene count, and a two-gene set's pooled and "
+                        "any-direction tests) reach p < 0.05 with no effect, "
+                        "with both genes shifting the same way, and with "
+                        "them shifting opposite ways.  Honours "
+                        "--permutations and --seed; needs numpy, not bte")
     p.add_argument("--selftest", action="store_true",
                    help="Check subtree bookkeeping, codon effects and the "
                         "permutation null on synthetic trees, then exit")
@@ -981,12 +989,74 @@ def calibrate_context(args):
     return 0
 
 
+def calibrate_joint(args):
+    """False-positive rates and power of the joint tests, by simulation.
+
+    Each tree joins one _joint_tree block of 50 hit subtrees per gene, and a
+    gene's effect shifts class 0 below its hit children.  Three scenarios,
+    N trees each, with the set {a, b}:
+
+      null      four genes (a, b, c, e), no effect: every p < 0.05 is a
+                false positive.
+      same      a and b both +1.0: the pooled test should fire.
+      opposite  a +1.0, b -0.9 (about +7 and -7 points of class 0): the
+                shifts cancel in the pooled test, and the any-direction test
+                should fire.
+
+    For each, the share of p < 0.05 for the gene count, the set's pooled
+    test and its any-direction test, and the mean expected count.  These are
+    the rates METHODS.md step 12 quotes.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        print("error: --calibrate_joint needs numpy", file=sys.stderr)
+        return 1
+    import tempfile
+    rng = random.Random(args.seed)
+    d = tempfile.mkdtemp()
+    targs = parse_args(["--permutations", str(args.permutations),
+                        "--effects", "nonsynonymous", "--seed",
+                        str(args.seed)])
+    sets = {"ab": ["a", "b"]}
+    scenarios = (("null", {"a": 0.0, "b": 0.0, "c": 0.0, "e": 0.0}),
+                 ("same direction", {"a": 1.0, "b": 1.0}),
+                 ("opposite directions", {"a": 1.0, "b": -0.9}))
+    print(f"{args.calibrate_joint} simulated trees per scenario, "
+          f"{args.permutations} permutations, seed {args.seed}")
+    print("share of p < 0.05 for: the gene count, set {a, b} pooled, set "
+          "{a, b} any-direction; and the mean expected count")
+    print("scenario\tcount\tpooled\tany_direction\texpected_count")
+    for name, effects in scenarios:
+        rs = []
+        for _rep in range(args.calibrate_joint):
+            tree, events = _joint_tree(rng, effects)
+            own = own_spectra(tree, tree.types, 12, None, float("inf"))
+            V, T = subtree_sums(tree, own, 12)
+            res, _paths = joint_analysis(tree, events, list(effects), sets,
+                                         V, T, own, 12, MUT_TYPES, targs,
+                                         "include", proportions(V),
+                                         os.path.join(d, "j"), "")
+            rs.append(res["nonsynonymous"])
+
+        def frac(key):
+            return sum(key(r) < 0.05 for r in rs) / len(rs)
+        print(f"{name}\t{frac(lambda r: r['p_count']):.3f}\t"
+              f"{frac(lambda r: r['sets'][0]['omnibus_p']):.3f}\t"
+              f"{frac(lambda r: r['sets'][0]['any_direction_p']):.3f}\t"
+              f"{sum(r['count_expected'] for r in rs) / len(rs):.2f}")
+        sys.stdout.flush()
+    return 0
+
+
 def main():
     args = parse_args()
     if args.selftest:
         return selftest()
     if args.calibrate_context:
         return calibrate_context(args)
+    if args.calibrate_joint:
+        return calibrate_joint(args)
     for opt in ("input_tree", "annotation", "reference", "genes"):
         if not getattr(args, opt):
             print(f"error: --{opt} is required (or pass --selftest)",

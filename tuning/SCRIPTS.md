@@ -735,6 +735,12 @@ Options:
   p < 0.05: no shift, C>T raised 3× in proportion across its contexts, and
   one C>T context raised (step 12). It honours `--fold`, `--permutations`
   and `--seed`, and needs numpy but not `bte`.
+- `--calibrate_joint N`: instead of testing a tree, simulate N small trees
+  in each of three scenarios and report how often the joint tests (the gene
+  count, and a two-gene set's pooled and any-direction tests) reach
+  p < 0.05: no effect, both genes shifted the same way, and shifted opposite
+  ways (step 12). It honours `--permutations` and `--seed`, and needs numpy
+  but not `bte`.
 - `--prefix` (default `hit`) names the outputs.
 
 Outputs, with the default prefix (`_internal` for the internal-only
@@ -814,7 +820,8 @@ trees of 100 hit subtrees each gave omnibus p < 0.05 at 4.9%. It checks the
 report on a constructed summary, and that each reading writes its files and
 reproduces whatever ran before it. With numpy it checks the joint tests: a
 one-gene set is permuted with exactly its gene's draws; under no effect the
-count and both set tests stay near 5% (on 300 trees: 2%, 4% and 5%); two
+count and both set tests stay near 5% (`--calibrate_joint` measures this
+on more trees); two
 genes shifting the same way are found by the pooled test; and two shifting
 opposite ways cancel there but are found by the any-direction test. With numpy it also checks the context test: the
 summed contexts equal the 6-class statistic for the same events; the shape
@@ -1172,7 +1179,9 @@ are:
 It is a draft for review: some genes could defensibly sit in another set,
 and the groupings should be settled before looking at per-gene results.
 None of the four locus-tag genes is in a list; add them to `--genes` as the
-file's header shows.
+file's header shows. The header also rebuilds the first draft, with RecBCD
+in recombination and no AdnAB, which METHODS.md step 12 reports beside the
+final grouping.
 
 ### `tb_alignment_loci.txt`
 
