@@ -760,6 +760,8 @@ resistance_spectra.py --input_tree tree.pruned.pb.gz \
     --annotation NC_012345.1.gff3.gz --reference NC_012345.1.fna \
     --mask selection_loci.bed,alignment_loci.bed \
     --fold --max_branch_length 250 > resistance_spectra.txt
+plot_resistance_spectra.py --prefix resistance_spectra \
+    --composition split_composition.tsv
 ```
 
 `--mask` is the masks the search's tree was built with: each split's
@@ -790,6 +792,13 @@ as well as `bte` and numpy. It took 3 minutes on the MTBC tree.
   - `llr`, against `llr_exp` (what the spectrum alone would give), with p
     and q.
 - **Per drug:** the splits with llr or G q below `--max_q`.
+- **The figures:**
+  - `resistance_spectra_rate.pdf`: predicted against observed supply, per
+    split. The predicted dots should hug 1 while the observed spread.
+  - `_composition.pdf`: llr against llr_expected. Labelled splits pass at
+    q < 0.05; read their distance from the diagonal.
+  - `_example.pdf`: the shares behind one split's llr. Pick the split and
+    drug with `--example_split` and `--example_drug`.
 
 **Decide** whether any split's spectrum explains which resistance variants
 it acquires. Count a split only if its llr q passes on both readings, and

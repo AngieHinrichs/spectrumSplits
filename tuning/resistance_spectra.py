@@ -98,6 +98,10 @@ Outputs, named from --prefix (default resistance_spectra):
   PREFIX.tsv          one row per reading, drug and split
   PREFIX_drugs.tsv    one row per reading and drug: totals and the pooled
                       tests
+  PREFIX_variants.tsv per reading, drug and tested split, the shares
+                      behind llr: each variant's share of the rest (q), as
+                      the split's spectrum reweights it (q'), and of the
+                      split's own events; for plot_resistance_spectra.py
 The report goes to stdout.
 
 Usage:
@@ -820,7 +824,34 @@ def analyse_drug(np, drug, events, alts, groups, gid, exposure, rate_of,
     if res is not None:
         drug_row.update(llr_total=res[0][2], llr_total_p=float(rho_tot),
                         g_all=res[0][3], g_all_p=float(res[2]))
-    return rows, drug_row
+    var_rows = variant_rows(np, drug, groups, C, logrho, tested, names) \
+        if res is not None else []
+    return rows, drug_row, var_rows
+
+
+def variant_rows(np, drug, groups, C, logrho, tested, names, min_share=0.005):
+    """Per tested split, the shares behind its llr: q (the rest's, with 0.5
+    added to each variant), q' (q reweighted by the split's spectrum) and
+    the split's own, for each variant the split has or that makes up
+    min_share or more of q or q'."""
+    out = []
+    tot = C.sum(0)
+    V = C.shape[1]
+    for s in np.flatnonzero(tested):
+        rest = tot - C[s]
+        q = (rest + 0.5) / (rest.sum() + 0.5 * V)
+        w = q * np.exp(logrho[s])
+        qp = w / w.sum()
+        n = C[s].sum()
+        for v in range(V):
+            if C[s, v] or q[v] >= min_share or qp[v] >= min_share:
+                out.append({"drug": drug, "split": groups[s],
+                            "variant": names[v], "observed": int(C[s, v]),
+                            "split_events": int(n),
+                            "observed_share": float(C[s, v] / n),
+                            "rest_share": float(q[v]),
+                            "spectrum_share": float(qp[v])})
+    return out
 
 
 def top_variant(np, s, labels, cats, names, V):
@@ -914,6 +945,8 @@ ROW_COLS = ["reading", "drug", "split", "events", "mutations", "e_global",
             "e_spectrum", "spectrum_factor", "obs_over_spectrum", "llr",
             "llr_expected", "llr_p", "llr_q", "g", "g_p", "g_q",
             "top_variant"]
+VAR_COLS = ["reading", "drug", "split", "variant", "observed",
+            "split_events", "observed_share", "rest_share", "spectrum_share"]
 DRUG_COLS = ["reading", "drug", "events", "variants_seen", "substitutions",
              "splits_tested", "llr_total", "llr_total_p", "g_all",
              "g_all_p"]
@@ -953,7 +986,7 @@ def run_reading(np, tree, events, group, split_of, alts, contexts, masked,
     rate_of = lambda s, ctx: rate_tab[s, ctx]
     kept = [e for e in events if group[e[0]] >= -1
             and counted(tree, e[0], cap, internal_only)]
-    rows, drug_rows = [], []
+    rows, drug_rows, var_rows = [], [], []
     per_drug = defaultdict(list)
     seen = {}
     for e in kept:
@@ -967,11 +1000,12 @@ def run_reading(np, tree, events, group, split_of, alts, contexts, masked,
     for d in sorted(per_drug) + [ANY]:
         ev = list(seen.values()) if d == ANY else per_drug[d]
         al = union if d == ANY else alts.get(d, {})
-        r, dr = analyse_drug(np, d, ev, list(al), labels, row_of, exposure,
-                             rate_of, sch, ref, args, rng)
+        r, dr, vr = analyse_drug(np, d, ev, list(al), labels, row_of,
+                                 exposure, rate_of, sch, ref, args, rng)
         rows.extend(x for x in r if x["split"] != "(outside)")
         drug_rows.append(dr)
-    return rows, drug_rows
+        var_rows.extend(x for x in vr if x["split"] != "(outside)")
+    return rows, drug_rows, var_rows
 
 
 def main(argv=None):
@@ -1068,18 +1102,17 @@ def main(argv=None):
               file=out)
 
     rng = np.random.default_rng(args.seed)
-    all_rows, all_drugs = [], []
+    all_rows, all_drugs, all_vars = [], [], []
     for internal_only, label in ((False, "all"), (True, "internal")):
-        rows, drug_rows = run_reading(np, tree, events, group, split_of,
-                                      alts, contexts, masked, opp_ctx, sch,
-                                      ref, internal_only, args, rng)
+        rows, drug_rows, var_rows = run_reading(
+            np, tree, events, group, split_of, alts, contexts, masked,
+            opp_ctx, sch, ref, internal_only, args, rng)
         report_reading(f"{label} branches", rows, drug_rows, args, out)
-        for r in rows:
-            r["reading"] = label
-        for r in drug_rows:
+        for r in rows + drug_rows + var_rows:
             r["reading"] = label
         all_rows += rows
         all_drugs += drug_rows
+        all_vars += var_rows
 
     pre = args.prefix
     with open(f"{pre}_events.tsv", "w") as fh:
@@ -1093,8 +1126,9 @@ def main(argv=None):
                 + tuple(e[1:9]) + (e[9] or "listed",))) + "\n")
     write_rows(f"{pre}.tsv", ROW_COLS, all_rows)
     write_rows(f"{pre}_drugs.tsv", DRUG_COLS, all_drugs)
-    print(f"Wrote {pre}_events.tsv, {pre}.tsv, {pre}_drugs.tsv",
-          file=sys.stderr)
+    write_rows(f"{pre}_variants.tsv", VAR_COLS, all_vars)
+    print(f"Wrote {pre}_events.tsv, {pre}.tsv, {pre}_drugs.tsv, "
+          f"{pre}_variants.tsv", file=sys.stderr)
     return 0
 
 
@@ -1254,6 +1288,13 @@ def selftest():
     check(abs(res[0][4][0] - mean_llr) < 0.5,
           f"llr_expected ({res[0][4][0]:.2f}) is the mean llr of events "
           f"drawn from q' ({mean_llr:.2f})")
+    vr = variant_rows(np, "D", ["a", "b", "c", "d"], C, logrho, tested,
+                      [f"v{v}" for v in range(V)], min_share=0.0)
+    from_rows = sum(r["observed"] * math.log(r["spectrum_share"]
+                                             / r["rest_share"])
+                    for r in vr if r["split"] == "a")
+    check(abs(from_rows - res[0][0][0]) < 1e-6,
+          "the variants table's shares reproduce llr")
     # A composition shifted for some other reason (treatment, lineage),
     # unrelated to the spectrum.  Shuffling split labels calls the spectrum
     # responsible far too often; permuting the ratios across variants does not.

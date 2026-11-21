@@ -39,7 +39,7 @@ Each step in HOWTO.md links to its section in METHODS.md, and back.
 | 10 | Rank splits by size-matched margin and bootstrap support | [`split_confidence.py`](SCRIPTS.md#split_confidencepy) |
 | 11 | Check what each split contains, and test it for a trinucleotide-context shift | [`split_composition.py`](SCRIPTS.md#split_compositionpy), [`split_contexts.py`](SCRIPTS.md#split_contextspy), [`plot_split_contexts.py`](SCRIPTS.md#plot_split_contextspy) |
 | 12 | Test candidate genes genotype-first, against their siblings and a control list | [`gene_hit_contrasts.py`](SCRIPTS.md#gene_hit_contrastspy), [`control_genes.py`](SCRIPTS.md#control_genespy), [`plot_gene_hits.py`](SCRIPTS.md#plot_gene_hitspy) |
-| 13 | Ask whether the splits' spectra change how often, or with which variants, they acquire resistance mutations | [`resistance_spectra.py`](SCRIPTS.md#resistance_spectrapy) |
+| 13 | Ask whether the splits' spectra change how often, or with which variants, they acquire resistance mutations | [`resistance_spectra.py`](SCRIPTS.md#resistance_spectrapy), [`plot_resistance_spectra.py`](SCRIPTS.md#plot_resistance_spectrapy) |
 
 The order matters more than any single setting. Masking changes the
 spectrum, the spectrum sets the floor under `--min_mutations`, and both
@@ -63,8 +63,9 @@ Some need more:
 - `split_contexts.py` and `gene_hit_contrasts.py --context_genes` need numpy.
 - `resistance_spectra.py` needs numpy, and `openpyxl` to read the WHO
   catalogue's `.xlsx`.
-- `plot_gene_hits.py` and `plot_split_contexts.py` draw figures, and need
-  matplotlib rather than `bte`.
+- `plot_gene_hits.py`, `plot_split_contexts.py` and
+  `plot_resistance_spectra.py` draw figures, and need matplotlib rather than
+  `bte`.
 
 All but `profile_tree.py`, `prune_clade_check.py` and `plot_gene_hits.py`
 have `--selftest`.

@@ -21,6 +21,7 @@ Usage, inputs, outputs and options for each script, and the gene lists they read
 | [`control_genes.py`](#control_genespy) | 12 | Is a gene list's excess its own, or what any genes of that length would show? Draws a length-matched random control list. |
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`resistance_spectra.py`](#resistance_spectrapy) | 13 | Does a split's spectrum change how often, or with which variants, it acquires resistance mutations, against the rest of the tree, by a graded catalogue? |
+| [`plot_resistance_spectra.py`](#plot_resistance_spectrapy) | 13 | Figures of `resistance_spectra.py`'s results: predicted against observed resistance supply per split, llr against what the spectrum alone predicts, and the shares behind one split's llr. |
 | [`match_splits.py`](#match_splitspy) | [testing](METHODS.md#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 | [`trinucleotide.py`](#trinucleotidepy) | 5, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
 
@@ -928,6 +929,11 @@ Outputs:
   `variants_seen`; `substitutions` (the site-base pairs that make a
   resistance variant from the reference); `splits_tested`; `llr_total` and
   its p; `g_all` and its p.
+- **`PREFIX_variants.tsv`:** the shares behind each llr, for
+  `plot_resistance_spectra.py`. One row per reading, drug, tested split and
+  variant: each variant the split has, or that makes up 0.5% or more of q
+  or q'. Columns: `observed`, `split_events`, `observed_share`,
+  `rest_share` (q) and `spectrum_share` (q').
 
 `--selftest` checks:
 
@@ -940,10 +946,85 @@ Outputs:
 - split placement;
 - the G statistic against the textbook formula, and llr_expected against
   simulated draws;
-- that a spectrum-driven composition is found;
+- that a spectrum-driven composition is found, and that the variants
+  table's shares reproduce its llr;
 - that a composition shifted for other reasons is not called a spectrum
   effect by the ratio permutation (2 to 4 in 100), where label shuffling
   would (27 to 34 in 100).
+
+### `plot_resistance_spectra.py`
+
+Used in [step 13](HOWTO.md#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations).
+Draws three figures from one `resistance_spectra.py` run. Needs only
+matplotlib.
+
+```
+plot_resistance_spectra.py --prefix resistance_spectra \
+    --composition split_composition.tsv
+plot_resistance_spectra.py --prefix resistance_spectra --format png \
+    --example_drug Isoniazid --example_split node_36254 --example_reading all
+```
+
+It reads `PREFIX.tsv` and `PREFIX_variants.tsv`. `--composition`
+(`split_composition.py`'s output) names each split's main lineage and
+colours it:
+
+- L1 to L4 each get a colour;
+- *M. africanum* (L5, L6 and La) shares one;
+- anything else is gray.
+
+`--drug` (default `any drug`, every drug pooled) picks the drug of the
+first two figures.
+
+Captions:
+
+- **`PREFIX_rate`.** *Resistance supply: what each split's spectrum
+  predicts, and what it got.* Each row is a split, on one log axis of
+  resistance events relative to the tree-wide expectation, `E_global` (the
+  dashed line at 1).
+  - The hollow circle is `spectrum_factor`: how many resistance mutations
+    the split's own spectrum would make available, relative to the tree's.
+  - The filled circle, coloured by lineage, is what the split acquired.
+  - Rows are sorted by the all-branch observed rate. The right panel, for
+    internal branches only, keeps that order.
+  - A split with no events is a left-pointing triangle at the axis's left
+    edge.
+
+  How far the hollow circles stray from 1 is how much mutation supply
+  could matter. How far the filled ones stray is how much treatment and
+  transmission do.
+
+- **`PREFIX_composition`.** *Resistance variants: does a split's spectrum
+  predict which it acquires?* One point per split tested
+  (`--min_events`), on all branches and on internal branches only.
+  - x is `llr_expected`, the lean towards the spectrum's favoured variants
+    that the spectrum alone would produce. y is the observed `llr`.
+  - On the dashed diagonal, a split leans its spectrum's way by as much as
+    its spectrum predicts.
+  - Above the diagonal, it leans further than the spectrum explains. Below
+    zero, it leans against its spectrum.
+  - Filled, labelled points pass at llr q below `--max_q`; the p value
+    comes from permuting the spectrum ratios across variants.
+  - Both axes are symmetric-log: linear within 1 of zero, logarithmic
+    beyond.
+
+- **`PREFIX_example`.** *What an llr is made of.* For one split and drug
+  (`--example_split`, `--example_drug`, `--example_reading`; default
+  `node_14336`, Streptomycin, internal), its `--top_variants` (default 8)
+  commonest variants, each with three bars:
+  - gray: the variant's share of the rest of the tree's events (q);
+  - orange: the share the split's spectrum predicts (q');
+  - blue: the split's own share, with its count.
+
+  The title gives the split's llr, llr_expected and q. llr sums log(q'/q)
+  over the split's events, so it is positive where blue follows orange
+  away from gray. Blue going well past orange is a lean the spectrum
+  alone doesn't explain.
+
+`--output` sets the figures' prefix (default `--prefix`), and `--format`
+sets pdf, png or svg. `--selftest` checks the lineage names and colour
+groups, and that all three figures draw from constructed files, with and
+without lineages, and without a variants table.
 
 ### `match_splits.py`
 
