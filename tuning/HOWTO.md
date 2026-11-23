@@ -44,6 +44,7 @@ flowchart TD
         s11["11. What each split contains,<br/>trinucleotide-context shifts"]
         s12["12. Candidate genes genotype-first,<br/>against siblings and a control list"]
         s13["13. Do the spectra show in<br/>resistance mutations?"]
+        s14["14. Mutator or spectrum-shifter?<br/>rate against sister clades"]
     end
 
     clades[("split_clade_samples.tsv")]
@@ -55,13 +56,14 @@ flowchart TD
     s8 --> spectra --> s9 --> s10 --> clades
     clades --> s11 --> s12
     clades --> s13
+    spectra --> s14
     pruned -. "unmasked tree" .-> s13
     interpret -. "a locus to mask, a lab stock,<br/>a new release" .-> change
     change -. "rerun from the changed step" .-> s3
 ```
 
 Steps 3 and 4 repeat until the remaining hotspots are only flanks of loci
-already masked. Steps 5 to 12 run on the masked tree. Step 13 goes back to
+already masked. Steps 5 to 12 and 14 run on the masked tree. Step 13 goes back to
 the pruned tree before masking, because the mask removed the resistance
 mutations it looks for.
 
@@ -82,6 +84,7 @@ mutations it looks for.
 - [Step 11. Check what each split contains before claiming a mechanism](#step-11-check-what-each-split-contains-before-claiming-a-mechanism)
 - [Step 12. Test a candidate mechanism genotype-first](#step-12-test-a-candidate-mechanism-genotype-first)
 - [Step 13. Ask whether the splits' spectra show in their resistance mutations](#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations)
+- [Step 14. Ask whether a split is a mutator, a spectrum-shifter, or both](#step-14-ask-whether-a-split-is-a-mutator-a-spectrum-shifter-or-both)
 - [After a change to the tree: replicate and match](#after-a-change-to-the-tree-replicate-and-match)
 
 ## Before you start
@@ -869,6 +872,93 @@ towards its spectrum when pooled across splits (p 3e-4 on all branches,
 (`node_69238`) pass on their own in both readings, and streptomycin
 carries the clearest per-drug signal, led by `rpsL` K43R in lineage 2.2.1.
 [Methods for step 13.](METHODS.md#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations)
+
+## Step 14. Ask whether a split is a mutator, a spectrum-shifter, or both
+
+A spectrum can shift in two ways. A clade can gain mutations of some
+classes on top of the rest, as a lost repair pathway would, or it can trade
+some classes for others at about the same overall rate. The spectrum alone
+can't tell these apart; the rate can.
+
+**Run** it on the tree the search ran on, with the search's `--fold` and
+`--max_branch_length`:
+
+```
+split_rates.py --input_tree tree.pruned.masked.pb.gz \
+    --spectra spectra.tsv --fold --max_branch_length 250 \
+    --composition split_composition.tsv > split_rates.txt
+```
+
+It needs `bte` and numpy, and took 11 seconds on the MTBC tree.
+
+**If collection dates are available** for some samples, add them; a clade
+sampled earlier than its sisters otherwise looks slower. `--dates` is a
+TSV with a header line (gzipped is fine); on the MTBC tree:
+
+```
+split_rates.py --input_tree tree.pruned.masked.pb.gz \
+    --spectra spectra.tsv --fold --max_branch_length 250 \
+    --composition split_composition.tsv \
+    --dates mtb.20240912.metadata.tsv.gz --sample_column sample_index \
+    --date_column date_collected > split_rates.txt
+```
+
+There is no clock: a branch's length is its mutation count. So each split
+is compared with its sister clades, which descend from the same ancestor
+and, if sampled at about the same time, have had as long to mutate. A
+split whose tips sit further from that ancestor has mutated faster.
+
+**Read** the READING section at the top of `split_rates.txt`. The script
+applies the decision rules itself, and says in words what it concluded and
+why:
+
+- **Conclusion:** which splits, if any, are class-specific mutators, and
+  what the rest are.
+- **Resolution:** how big a rate change random clades of the splits' sizes
+  reach. "Unchanged rate" means unchanged within that.
+- **Dates** (with `--dates`): how many tips are dated and how precisely,
+  whether the dates carry a clock signal, how far allowing for them moves
+  any split, and which splits had too few dated tips to adjust.
+- **Each split, by category**, with its reason:
+
+| Category | What the script found | What it means |
+| --- | --- | --- |
+| `mutator`, `antimutator` | Rate differs on both runs (q), and one class's change departs from the overall change more than in random clades (the shape test) | A class-specific change in mutation, the pattern of a repair defect or its reverse. A candidate for step 12 |
+| `genome-wide faster`, `genome-wide slower` | Rate differs on both runs, but every class changed alike | Not a spectrum effect: suspect sampling dates, selection, or the rooting |
+| `sampling time` | Rate differs undated, but not once collection dates are allowed for | Sampled at a different time, not mutating at a different rate |
+| `terminal only` | Rate differs on all branches, not on internal ones | Per-genome sequencing error or a noisier study |
+| `suggestive faster`, `suggestive slower` | p passes on both runs, q doesn't | Worth rechecking on a larger tree if class-specific; the reason says which |
+| `unchanged rate` | Within the range of random clades of its size | A spectrum shift at an unchanged rate, within the resolution given. "classes traded" marks splits whose classes moved in opposite directions |
+| `untestable` | Too few clades of its size on the tree for p to reach `--max_q` | Nothing to judge it against |
+
+A reason also says when a split is compared next to the root (where
+rooting and reference mapping can move its ratio), and when it had to be
+compared with the 40 clades nearest its size because few are within 2-fold.
+
+Below the reading, DETAILS has the per-split tables of both runs and the
+summary table, for checking a reading. `split_rates.tsv` has each split's
+reading and reason in its last columns, for other tools.
+
+**Decide** which splits to take to step 12: the `mutator` and
+`antimutator` splits, and `suggestive` ones the reading calls
+class-specific if the tree can't be made larger. The reading calls a
+split faster or slower only if the undated test passes on all branches and
+on internal ones, and, with dates, the date-adjusted test agrees. The date
+adjustment uses all branches only, since a tip's date says nothing about
+when its parent lived.
+
+**On the MTBC tree** (with collection dates for 52% of tips, 95% of them a
+year only): no split is a detectable class-specific mutator. 58 of the 66
+shifted their spectrum at a rate within the range of random clades of
+their size, which is about ±30% at the median split's size. The other 8
+differ in rate before correction but not after (q 0.07 to 0.18), and none
+in a class-specific way. Four of them are next to the root: lineage 5
+(`node_4563`, 72% slower), La3 (`node_3548`, 66% slower), lineage 1.1.3
+(`node_4965`, 45% slower) and La1.2/La2 (`node_6`, 140% faster). The
+dates have a clock of 0.46 mutations per year but explain almost none of
+the root-to-tip variation (r² 0.001), and allowing for them moves no
+split's ratio by more than 0.05 log2.
+[Methods for step 14.](METHODS.md#step-14-ask-whether-a-split-is-a-mutator-a-spectrum-shifter-or-both)
 
 ## After a change to the tree: replicate and match
 

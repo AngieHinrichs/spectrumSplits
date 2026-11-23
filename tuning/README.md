@@ -40,6 +40,7 @@ Each step in HOWTO.md links to its section in METHODS.md, and back.
 | 11 | Check what each split contains, and test it for a trinucleotide-context shift | [`split_composition.py`](SCRIPTS.md#split_compositionpy), [`split_contexts.py`](SCRIPTS.md#split_contextspy), [`plot_split_contexts.py`](SCRIPTS.md#plot_split_contextspy) |
 | 12 | Test candidate genes genotype-first, against their siblings and a control list | [`gene_hit_contrasts.py`](SCRIPTS.md#gene_hit_contrastspy), [`control_genes.py`](SCRIPTS.md#control_genespy), [`plot_gene_hits.py`](SCRIPTS.md#plot_gene_hitspy) |
 | 13 | Ask whether the splits' spectra change how often, or with which variants, they acquire resistance mutations | [`resistance_spectra.py`](SCRIPTS.md#resistance_spectrapy), [`plot_resistance_spectra.py`](SCRIPTS.md#plot_resistance_spectrapy) |
+| 14 | Ask whether each split mutates faster than its sister clades, and in which classes | [`split_rates.py`](SCRIPTS.md#split_ratespy) |
 
 The order matters more than any single setting. Masking changes the
 spectrum, the spectrum sets the floor under `--min_mutations`, and both
@@ -60,7 +61,8 @@ splits to the old by their samples
 
 Some need more:
 
-- `split_contexts.py` and `gene_hit_contrasts.py --context_genes` need numpy.
+- `split_contexts.py`, `split_rates.py` and `gene_hit_contrasts.py --context_genes`
+  need numpy.
 - `resistance_spectra.py` needs numpy, and `openpyxl` to read the WHO
   catalogue's `.xlsx`.
 - `plot_gene_hits.py`, `plot_split_contexts.py` and

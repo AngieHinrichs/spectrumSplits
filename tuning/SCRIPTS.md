@@ -22,6 +22,7 @@ Usage, inputs, outputs and options for each script, and the gene lists they read
 | [`plot_gene_hits.py`](#plot_gene_hitspy) | 12 | A figure: one gene's shift against every gene in its list, and against its own permutation null. |
 | [`resistance_spectra.py`](#resistance_spectrapy) | 13 | Does a split's spectrum change how often, or with which variants, it acquires resistance mutations, against the rest of the tree, by a graded catalogue? |
 | [`plot_resistance_spectra.py`](#plot_resistance_spectrapy) | 13 | Figures of `resistance_spectra.py`'s results: predicted against observed resistance supply per split, llr against what the spectrum alone predicts, and the shares behind one split's llr. |
+| [`split_rates.py`](#split_ratespy) | 14 | Is a split a mutator, a spectrum-shifter, or both? Tests its rate against its sister clades, per class, against size-matched random clades, optionally allowing for collection dates, and reads the result into a verdict per split. |
 | [`match_splits.py`](#match_splitspy) | [testing](METHODS.md#testing-the-method) | Which splits of a second search on a changed tree are the same clades as the first's? |
 | [`trinucleotide.py`](#trinucleotidepy) | 5, 11, 12 | Not run directly: calls each mutation's trinucleotide context from its parent's genome, for `profile_tree.py`, `split_contexts.py` and `gene_hit_contrasts.py --context`. |
 
@@ -1032,6 +1033,115 @@ Captions:
 sets pdf, png or svg. `--selftest` checks the lineage names and colour
 groups, and that all three figures draw from constructed files, with and
 without lineages, and without a variants table.
+
+### `split_rates.py`
+
+Used in [step 14](HOWTO.md#step-14-ask-whether-a-split-is-a-mutator-a-spectrum-shifter-or-both), which has
+the command. Asks of each split whether it mutates faster or slower than
+its sister clades, and in which classes, against every non-split clade of
+its size on the tree. Needs `bte` and numpy.
+
+```
+split_rates.py --input_tree tree.pruned.masked.pb.gz \
+    --spectra spectra.tsv --fold --max_branch_length 250 \
+    --composition split_composition.tsv > split_rates.txt
+split_rates.py ... --dates metadata.tsv --sample_column biosample \
+    --date_column collection_date > split_rates.txt
+split_rates.py --selftest
+```
+
+For each split, A is its nearest ancestor with at least
+`--min_outgroup_tips` (default 10) tips outside it, and `log2_rate` is the
+log2 ratio of the mean mutations from A to the split's tips and to the
+other tips below A. The controls are every non-split node scored the same
+way, within `--control_window` (default 2) fold of the split's tip count,
+less any that one split holds `--control_overlap` (default 0.5) of. When
+fewer than `--min_controls` (default 40) are within the window, the 40
+nearest in size are used instead. The shape test asks whether any class's
+change departs from the split's overall change more than in those controls
+(two-sided per class, Bonferroni over the classes): `shape_p` at or below
+`--max_q` makes a rate change class-specific. The
+test is two-sided, and q is Benjamini-Hochberg over the splits, at
+`--max_q` (default 0.05). It runs on all branches and on internal branches
+only. `--fold` and `--max_branch_length` should match the search;
+`--composition` (`split_composition.py`'s output) labels the summary.
+
+**Collection dates** (optional). `--dates` is a TSV with a header line,
+gzipped if its name ends in `.gz`;
+`--sample_column` (default the first) names the column holding the tree's
+sample names, and `--date_column` the dates, each by header name or 1-based
+number. Dates can be `YYYY`, `YYYY-MM`, `YYYY-MM-DD` (a time after it is
+ignored), a decimal year, or a range `A/B`, used at its midpoint if its
+ends are at most a year apart. A partial date sits at the middle of its
+interval, and `--min_date_precision` (year, month or day; default year)
+drops coarser ones. A sample listed twice with different dates is dropped.
+The report says how many rows were read, kept, empty, unparsed (with
+examples) and too coarse.
+
+With dates, on all branches only and using dated tips alone, the script
+adds:
+
+- the tree's root-to-tip clock, mutations per year over every dated tip,
+  with its r² (a slope at or below zero is flagged: no clock signal);
+- `adj_log2_rate`: `log2_rate` with the split's mean depth moved to the
+  outgroup's mean date along that clock, against controls adjusted the
+  same way;
+- `slope_S` and `slope_out`: root-to-tip slopes within the split and within
+  its outgroup, with the q of their difference against the controls'.
+
+A side needs `--min_dated_tips` (default 10) dated tips. There is no dated
+internal-branch run: dropping terminal branches drops the part of each path
+the sampling date governs.
+
+**The reading.** The report opens with a READING section that applies
+[step 14](HOWTO.md#step-14-ask-whether-a-split-is-a-mutator-a-spectrum-shifter-or-both)'s
+decision rules: a conclusion, the resolution, what the dates did, and every
+split by category with its reason in words. HOWTO.md's table lists the
+categories. `--near_root` (default 5) is how many nodes below the root a
+comparison ancestor can sit before the reason warns that rooting can move
+it. The per-run tables and the summary table follow under DETAILS.
+
+Outputs, named from `--prefix` (default `split_rates`):
+
+- `PREFIX.tsv`, one row per split:
+
+  | Column | Meaning |
+  | --- | --- |
+  | `log2_rate`, `q` | The all-branch rate ratio against the sisters, and its q against the controls |
+  | `log2_rate_internal`, `q_internal` | The same on internal branches only |
+  | `mix`, `mix_internal` | 1 - \|Σ d_k\| / Σ \|d_k\| over the per-class depth differences d_k: 0 when every class moves the same way, 1 when they cancel |
+  | `verdict` | `faster` or `slower` (passes on both runs, same sign), `terminal only` (passes on all branches only), or `not different` |
+  | `classes` | Classes whose own rate passes on both runs, signed |
+  | `excess_classes` | The three largest d_k, each over the sisters' mean depth |
+  | `dated_tips`, `dated_out` | With `--dates`: dated tips in the split and its outgroup |
+  | `adj_log2_rate`, `q_adj` | The date-adjusted rate ratio, and its q |
+  | `date_verdict` | `faster`, `slower` or `not different` from `q_adj`; `-` if a side had too few dated tips |
+  | `slope_S`, `slope_out`, `q_slope` | Mutations per year within the split and its outgroup, and the q of their difference |
+  | `reading` | The READING category |
+  | `shape_p` | The shape test's p: is the change class-specific? |
+  | `concentration` | Half the summed difference between each class's share of the excess and of the sisters' spectrum: descriptive, 0 for a change in proportion |
+  | `clades` | The split's top clades, from `--composition` |
+  | `reason` | The READING's reason, in words |
+
+- `PREFIX_classes.tsv`, one row per split, run and class: `mean_S`,
+  `mean_out`, `excess` (d_k), `share` (of the total excess), `log2_rate`,
+  `ctrl_median`, `ctrl_p` and `q`.
+- `PREFIX_controls.tsv`: every control's tips and all-class `log2_rate`,
+  per run, to plot the null, and with `--dates` its `adj_log2_rate` and
+  `slope_diff`.
+
+The report on stdout has both runs' per-split tables, sorted by `ctrl_p`,
+with the controls' median and middle-95% width, then the summary.
+`--selftest` checks the depth sums against hand counts, and that a
+simulated class-specific mutator is called `faster` in its class while a
+simulated spectrum shift at the same rate is `not different`. It checks the
+date parser, and on a simulated timed tree that a clade sampled 30 years
+early looks slower until adjusted, that a mutator stays faster with a
+steeper clock, and that the tree's clock is recovered. It checks the
+reading: the simulated mutator is a class-specific `mutator` in its class,
+the simulated shift is `unchanged rate` with classes traded, a uniform
+mutator is not called class-specific, too few controls is `untestable`,
+and the control window widens only when short.
 
 ### `match_splits.py`
 

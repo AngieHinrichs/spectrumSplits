@@ -25,6 +25,7 @@ script.
 - [Step 11. Check what each split contains before claiming a mechanism](#step-11-check-what-each-split-contains-before-claiming-a-mechanism)
 - [Step 12. Test a candidate mechanism genotype-first](#step-12-test-a-candidate-mechanism-genotype-first)
 - [Step 13. Ask whether the splits' spectra show in their resistance mutations](#step-13-ask-whether-the-splits-spectra-show-in-their-resistance-mutations)
+- [Step 14. Ask whether a split is a mutator, a spectrum-shifter, or both](#step-14-ask-whether-a-split-is-a-mutator-a-spectrum-shifter-or-both)
 - [Record: the four rounds of tree modification](#record-the-four-rounds-of-tree-modification)
 - [Testing the method](#testing-the-method)
 
@@ -34,7 +35,7 @@ script.
 rest of the tree, scoring every candidate with a chi-squared statistic and
 keeping those above `--min_chi`. Its parameters can't be copied from one
 tree to another, and its output can't be read as mechanism without checks.
-The workflow has thirteen steps in four groups:
+The workflow has fourteen steps in four groups:
 
 - **Clean the tree (steps 1 to 4).** Profile the tree, prune genomes with
   implausible divergence and any laboratory strains, and mask regions under
@@ -54,12 +55,14 @@ The workflow has thirteen steps in four groups:
   sequencing-quality gradient by comparing internal and terminal branches.
   Rank each split by its margin over a size-matched null and its bootstrap
   support.
-- **Interpret (steps 11 to 13).** Check what each split contains, and
+- **Interpret (steps 11 to 14).** Check what each split contains, and
   whether it differs in trinucleotide context more than random clades of
   its size. Then test candidate genes genotype-first, comparing every hit
   child with its siblings across all independent hits, so that lineage
   can't stand in for mechanism. Finally, ask whether the splits' spectra
-  change how often, or with which variants, they acquire resistance.
+  change how often, or with which variants, they acquire resistance, and
+  whether each split mutates faster than its sister clades, and in which
+  classes.
 
 On the MTBC tree (129,314 samples) this pruned 396 genomes and masked 11.5%
 of the genome in four rounds. The search at `--min_chi 30` accepted 66
@@ -69,7 +72,9 @@ trinucleotide context beyond what random clades show. Among 56 repair genes,
 only `dnaE2` is followed by a consistent spectrum shift (more C>T and G>A,
 less C>G and G>C), with every hit and with internal hits only. The splits'
 spectra change their supply of resistance mutations by at most 11%, and
-tilt which resistance variants arise only slightly.
+tilt which resistance variants arise only slightly. No split mutates
+faster or slower than its sister clades by more than random clades of its
+size do.
 
 ## Background
 
@@ -2310,6 +2315,239 @@ available, and they tilt which resistance variants arise only slightly,
 detectably when pooled and in a few lineages, most clearly for
 streptomycin. Lineage and treatment history, which `G` and `O/E_spectrum`
 show, matter far more.
+
+## Step 14. Ask whether a split is a mutator, a spectrum-shifter, or both
+
+How-to: [Step 14. Ask whether a split is a mutator, a spectrum-shifter, or both](HOWTO.md#step-14-ask-whether-a-split-is-a-mutator-a-spectrum-shifter-or-both).
+
+Spectrum and rate are separable. A lost repair pathway adds mutations of
+the classes it used to repair, so the clade's spectrum shifts *and* its
+rate rises, by about as much as the shifted classes gained. A change that
+trades one class for another, such as a shift in the balance of two damage
+sources, moves the spectrum at an unchanged rate. The chi-squared search
+sees only proportions, so it finds both alike.
+
+### A relative-rate test
+
+On a mutation-annotated tree a branch's length is its mutation count, so
+there is no time axis to divide by. `split_rates.py` holds time fixed
+instead, as the classical relative-rate test does. A split S and its
+sister clades descend from one ancestor A. If their genomes were sampled at
+about the same time, every lineage from A to a tip has had the same time,
+so the mean number of mutations from A to S's tips, against the mean to the
+sisters' tips, is the ratio of their rates:
+
+  log2_rate = log2(mean_S / mean_out)
+
+A is S's parent unless the sisters have fewer than `--min_outgroup_tips`
+tips (default 10); then it is the nearest ancestor that has that many
+outside S, so the outgroup isn't one genome. S is the split's whole clade,
+nested splits included: a mutator's descendants inherit its defect.
+
+The mean is over tips, so a densely sampled subclade weighs more, but its
+tips share their path from A, and the expected depth of every tip is the
+same under a constant rate, whatever the sampling. Densely sampled clades
+make the estimate noisier, not biased.
+
+### The null: every other clade on the tree
+
+Tips share branches, so their depths are far from independent, and a
+clade's mean depth rests on the few deep branches near A. No analytic
+variance is worth trusting. The null is therefore empirical: the same
+statistic for every node of the tree that is not a split, with A chosen by
+the same rule, and a split is set against those within `--control_window`
+(default 2) fold of its tip count. `ctrl_p` is two-sided, the share of
+those controls at least as far from their median as the split, and q is
+Benjamini-Hochberg over the splits.
+
+The largest splits have few clades of their size on the tree. When fewer
+than `--min_controls` (default 40) are within the window, the split is
+compared with the 40 nearest in log size instead, and the reading says so.
+For the largest splits those are mostly smaller clades, whose ratios
+spread more, so the widening is conservative. Without it, five MTBC splits
+had 1 to 3 controls and p could not fall below 0.25.
+
+A control is left out when one split holds `--control_overlap` (default
+half) or more of its tips: the parent of a mutator split would otherwise
+re-score the split and widen its own null. Controls whose outgroup is a
+split are kept; a fast split makes its sisters look slow, and the
+two-sided test absorbs it.
+
+This null contains everything that moves tip depths on this tree besides a
+split's own rate: sampling dates, Poisson noise on few deep branches, real
+rate variation between sublineages. It is the right comparison for "is
+this split's rate unusual for a clade of its size", and it is wide.
+
+### Which classes carry it
+
+The same statistic is computed per class, each with its own controls. The
+class differences d_k = mean_S,k - mean_out,k say where a rate change
+lies. They add up to the total, and the summary prints the largest as
+fractions of the sisters' mean depth. `mix` summarises them:
+
+  mix = 1 - |Σ d_k| / Σ |d_k|
+
+It is 0 when every class moves the same way, and 1 when gains and losses
+cancel: a split with `mix` 0.5 or more and an unchanged rate traded
+classes.
+
+A rate change can be class-specific (a repair defect adds the mutations
+of the classes it repaired) or genome-wide (every class in proportion,
+which dates, selection or rooting would produce). The **shape test**
+separates them. For each class, the departure of its log2 rate ratio from
+the split's overall ratio is set against the same departure in the
+split's controls, two-sided; `shape_p` is the smallest of those p values
+times the number of classes. At or below `--max_q`, the change is
+class-specific.
+
+A fixed cutoff on how concentrated the excess is (`concentration`, half
+the summed difference between each class's share of the excess and its
+share of the sisters' spectrum) was tried first. On simulated trees it
+sometimes called a uniform mutator class-specific, because noise across 12
+classes adds up, and on the MTBC tree it called four splits concentrated
+whose shape p was 0.10 to 0.15. The calibrated test replaced it;
+`concentration` is still written out as a description.
+
+### The reading
+
+The report opens with the decision, made by the script:
+
+| Category | Rule |
+| --- | --- |
+| `untestable` | Fewer controls than it takes for p to reach `--max_q` (19 at 0.05) |
+| `sampling time` | q passes on both undated runs, but not once dates are allowed for |
+| `mutator`, `antimutator` | q passes on both runs (and the date-adjusted test, if there are dates), and the shape test passes |
+| `genome-wide faster`, `genome-wide slower` | The same, but the shape test doesn't pass |
+| `terminal only` | q passes on all branches, not on internal ones |
+| `suggestive faster`, `suggestive slower` | p, not q, passes on both runs with the same sign; the reason says whether the shape test passes |
+| `unchanged rate` | Anything else; `classes traded` if `mix` is 0.5 or more |
+
+Each reason gives the numbers behind it in words, and says when the
+comparison ancestor is within `--near_root` (default 5) nodes of the root,
+and when the controls had to be widened. Above the categories, the
+reading gives a conclusion, the resolution (half the middle 95% of each
+split's controls, as a percentage), and with dates, the clock, its r², how
+far the adjustment moved any split, and which splits had too few dated
+tips.
+
+### Two runs
+
+As in steps 9 and 11, everything is done on all branches and on internal
+branches alone. Terminal branches carry per-genome sequencing error, and a
+clade sequenced by one study with a noisier pipeline has deeper tips
+without mutating faster. A difference that passes only with terminal
+branches is called `terminal only`.
+
+### With collection dates
+
+The test's one assumption is that a split and its sisters were sampled at
+about the same time. A clade sampled decades earlier looks slower, and
+ancient DNA much slower. Given dates for some samples (`--dates`), the
+script uses the dated tips in three ways.
+
+**The tree's clock.** A root-to-tip regression over every dated tip: the
+slope b in mutations per year, and its r². This is the measure of temporal
+signal. Lineage structure confounds it (lineages differ in both depth and
+sampling era), so it is a rough clock, but the adjustment below only needs
+it to be roughly right over the few years separating a split's samples
+from its sisters'.
+
+**The date-adjusted rate.** Under a clock, a tip's depth from A is
+r × (date − date of A). If the split and its outgroup share r, the
+difference in their mean depths is r × (mean date_S − mean date_out), so
+moving the split's mean depth to the outgroup's mean date,
+
+  adj_S = mean_S − b × (mean date_S − mean date_out)
+
+removes the part of the difference that sampling time explains, and
+`adj_log2_rate` = log2(adj_S / mean_out). The controls are adjusted the
+same way, so the null keeps whatever the dates don't explain. A split
+`faster` or `slower` undated but `not different` adjusted was sampled at a
+different time, not mutating at a different rate.
+
+**Each side's own clock.** Root-to-tip slopes within the split and within
+its outgroup measure mutations per year directly, and their difference is
+scored against the controls'. This needs no assumption about sampling
+times, but a slope over a few decades of dates rests on a few mutations per
+genome, so it is far noisier than the adjusted ratio, and is a check on it
+rather than a test of its own.
+
+All three use the depth sums the undated test uses, restricted to dated
+tips (each node keeps sums over its dated tips of 1, t, t², y, yt and y²,
+where y is root-to-tip distance), so every node on the tree is scored at
+no extra cost. A side needs `--min_dated_tips` (default 10).
+
+There is no dated internal-branch run. A tip's date fixes how long its
+whole path from A ran; dropping the terminal branch drops the part of the
+path the sampling date governs, and leaves a regression of the tip's
+parent's depth on a date that isn't the parent's. So the date-adjusted
+verdict guards against sampling time but not against terminal-branch
+error, and is read beside the undated internal-branch run, which guards
+against the second but not the first.
+
+### Caveats
+
+- **Sampling dates.** Without `--dates`, the test's one assumption goes
+  unchecked. With them, the adjustment is only as good as the dates (a
+  submission date standing in for collection is a common error) and the
+  tree's clock.
+- **Selection.** It measures the substitutions that survived. A clade under
+  relaxed purifying selection looks faster without mutating faster.
+- **The root.** For a split near the root, A's outgroup is a whole
+  lineage, and the comparison inherits any error in the rooting, and any
+  difference in how well that lineage's reads map to the reference.
+- **Capped branches.** Branches over `--max_branch_length` are left out,
+  as the search left them out, which shortens every tip below them. The
+  report counts them; on the MTBC tree there were 14.
+
+### On the MTBC tree
+
+66 of the 67 splits were scored (the root split has no sisters), against
+79,313 control clades, with collection dates for 67,149 tips (52%), 95% of
+them a year only. The controls set the resolution:
+
+| Clade tips | Controls | Middle 95% of log2_rate |
+| --- | --- | --- |
+| 10 to 100 | 15,682 | -0.51 to +0.71 |
+| 100 to 1,000 | 2,363 | -0.36 to +0.53 |
+| 1,000 to 10,000 | 310 | -0.27 to +0.41 |
+| 10,000 and up | 23 | -0.14 to +0.18 |
+
+At the median split's size, a rate change under about 30% can't be told
+from chance.
+
+No split is a detectable mutator, class-specific or otherwise. 58 of the
+66 are `unchanged rate`, 25 of them with classes traded. The other 8 pass
+on p but not q:
+
+| Split | Clades | Tips | log2_rate all / internal | q all / internal | shape p |
+| --- | --- | --- | --- | --- | --- |
+| `node_4563` | lineage 5 | 489 | -1.83 / -2.01 | 0.07 / 0.07 | 0.46 |
+| `node_3548` | La3 | 269 | -1.54 / -1.80 | 0.14 / 0.16 | 0.55 |
+| `node_6` | La1.2, La2 (mixed) | 8,393 | +1.26 / +1.57 | 0.18 / 0.29 | 0.10 |
+| `node_4965` | lineage 1.1.3 (mixed) | 11,468 | -0.86 / -0.96 | 0.18 / 0.29 | 0.14 |
+| `node_21970` | lineage 2.2.1 | 3,844 | +0.56 / +0.90 | 0.18 / 0.29 | 0.11 |
+| `node_14336` | lineage 2.2.1 | 31,716 | +0.34 / +1.01 | 0.18 / 0.29 | 0.15 |
+| `node_14331` | lineage 2.2.1 | 35,044 | +0.29 / +0.39 | 0.18 / 0.36 | 0.44 |
+| `node_21897` | lineage 2.2.1 | 16,291 | -0.21 / -0.19 | 0.18 / 0.36 | 0.15 |
+
+None is class-specific. The first four are compared next to the root (A
+two to five nodes below it), where the outgroup is a whole lineage and the
+ratio inherits any error in the rooting or in how well each lineage's
+reads map to the reference. The last three were compared with the 40
+clades nearest their size, few clades being as large.
+
+The dates change nothing. Their root-to-tip clock is 0.46 mutations per
+year, but with r² 0.001: over dates with an SD of 5.8 years, lineage depth
+swamps sampling time. Allowing for them moves no split's ratio by more
+than 0.05 log2 (`node_47761`, sampled four years before its sisters on
+average), and changes no reading. Seven splits had too few dated tips on
+one side to adjust, among them `node_6`, `node_21970` and `node_14336`. No
+split's own root-to-tip slope differs from its sisters'.
+
+The conclusion: on this tree the splits are spectrum shifts, not
+detectable mutators. A mutator adding a third or more to a clade's
+mutations would have shown, and none did.
 
 ## Record: the four rounds of tree modification
 
